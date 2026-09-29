@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "psx_key_contest.glsl"
 
 /* Terrain KEY pass vertex stage: rasterise opaque keyed terrain with depth =
  * the og OT KEY (true view-Z + 128*slots world) instead of true view-Z, into
@@ -15,9 +17,18 @@
  * out past kv ~= 3e6. Keys are FLAT per face (all three verts carry the
  * same kv), so any monotone encoding raster-interpolates exactly; the
  * (zc, W) pair uses W == the key view-Z so window depth survives the
- * hardware clipper (the scene stages' clip-invariance rule). */
+ * hardware clipper (the scene stages' clip-invariance rule).
+ *
+ * A PLAYER face in the actor batch carries the player band's stored value
+ * (OP_PKEY_BASE + slot*OP_PKEY_STEP, pack_player_key_z) as its z instead
+ * of an NDC depth, and the stage writes it unchanged as z_ndc = z at w = 1,
+ * so it reaches the image bit-exact and op_pkey_is recognises it. Decoded
+ * as a depth it would floor to view-Z 1 and store as a real key 1, which
+ * wins every actor contest over the player's pixels. A non-band NDC z
+ * inside the band's range encodes a key view-Z of about 0.004 to 0.17
+ * world units, at the eye, and also stores as a band value. */
 
-layout(location = 0) in vec3 inPos;   /* xy = clip-space screen, z = canonical NDC depth (true vz) */
+layout(location = 0) in vec3 inPos;   /* xy = clip-space screen, z = canonical NDC depth (true vz) or player band value */
 layout(location = 1) in vec2 inUV;
 layout(location = 2) in vec4 inColor;
 layout(location = 4) in float inW;    /* TRUE per-vertex view-Z (textured cutout UV) */
@@ -43,7 +54,9 @@ void main()
     float vz = 4096.0 * z / max(1.0 - z, 1e-6);    /* view-Z the depth encodes */
     vz = max(vz, 1.0);
     float kv = vz + max(abs(inKoff) - 0.5, 0.0);   /* og key view-Z */
-    gl_Position = vec4(inPos.xy * kv, kv * kv / (kv + 4096.0), kv);   /* z_ndc = kv/(kv+4096) */
+    gl_Position = op_pkey_is(inPos.z)
+        ? vec4(inPos.xy, inPos.z, 1.0)                        /* band value, stored as is */
+        : vec4(inPos.xy * kv, kv * kv / (kv + 4096.0), kv);   /* z_ndc = kv/(kv+4096) */
     float wq = AFFINE_UV ? 1.0 : max(inW, 1.0);
     vColor = inColor;
     vUV = inUV / wq;
