@@ -202,6 +202,17 @@ layout(location = 4)      out float vQ;     /* q (frag divides UV/colour by it) 
 layout(location = 5) flat out uint  vHd;    /* HD-fold: entry id (bits 0-15, 0=none)
                                              * | ladder-face 1<<16 | fogbias 1<<17  */
 
+/* Double-precision select, emitted as OpSelect (mix with a bool), never as a
+ * branch: t when c holds, else f, for every input including NaN. Every
+ * double-valued clamp, min/max scan and guarded pick in this stage goes
+ * through it. AMD's LLPC compiler (its RDNA4 / gfx12 backend) turns a
+ * branch-and-merge of a double compare against one of its own operands
+ * (`c ? x : k`, `if (x > k) x = k`) into the pre-gfx12 V_MAX_F64 / V_MIN_F64
+ * opcodes, which have no gfx12 encoding, and faults while compiling the
+ * pipeline; the same pick reaching it as OpSelect selects V_MAX_NUM_F64 /
+ * V_MIN_NUM_F64. */
+double dsel(bool c, double t, double f) { return mix(f, t, c); }
+
 /* ngte_mac mirror: camera-space MAC = (M*v)/4096 in DOUBLE, with the terrain
  * walk's axis permutation and per-sector camera deltas:
  *   s4 = originX - camx; s5 = camy - originY; s6 = camz - originZ;
@@ -222,7 +233,7 @@ precise dvec3 mac_of(dvec3 lpos, dvec3 sdel) {
  * sector guarantees m3 > 0); the near variant projects pre-clip corners that
  * can sit at or behind the eye, where it does. */
 precise vec2 proj_of(dvec3 m) {
-    double z = m.z > 1e-9lf ? m.z : 1e-9lf;
+    double z = dsel(m.z > 1e-9lf, m.z, 1e-9lf);
     precise double sx = g.dof_xy.x + m.x * g.dH.x / z;
     precise double sy = g.dof_xy.y + m.y * g.dH.x / z;
     return vec2(float(sx), float(sy));
@@ -287,7 +298,7 @@ vec2 hq_snap_screen(int node, dvec3 TL, dvec3 TR, dvec3 BL, dvec3 BR, dvec3 m)
  * NSAT(sv.sx)). */
 double nsat(float v, bool unr_ovf) {
     if (unr_ovf) return double(v);
-    return v < -1024.0 ? -1024.0lf : (v > 1023.0 ? 1023.0lf : double(v));
+    return dsel(v < -1024.0, -1024.0lf, dsel(v > 1023.0, 1023.0lf, double(v)));
 }
 
 /* ngte_dpcs_ch mirror (GTE-exact DPCS fog, one channel; pure int math). */
@@ -344,8 +355,8 @@ vec3 terrain_col(double mz, vec3 cfar, vec3 cnear, bool doFog, int fogRef,
  * NOLOD short-circuit) and for the koff near-band/otslots-zero verdict
  * (ALWAYS this canonical form, even under NOLOD). */
 bool near_canonical(double z0, double z1, double z2, double z3, uint w3_40, uint w3_80) {
-    double sz0 = z0 > 0.0lf ? z0 * 4.0lf : 0.0lf, sz1 = z1 > 0.0lf ? z1 * 4.0lf : 0.0lf;
-    double sz2 = z2 > 0.0lf ? z2 * 4.0lf : 0.0lf, sz3 = z3 > 0.0lf ? z3 * 4.0lf : 0.0lf;
+    double sz0 = dsel(z0 > 0.0lf, z0 * 4.0lf, 0.0lf), sz1 = dsel(z1 > 0.0lf, z1 * 4.0lf, 0.0lf);
+    double sz2 = dsel(z2 > 0.0lf, z2 * 4.0lf, 0.0lf), sz3 = dsel(z3 > 0.0lf, z3 * 4.0lf, 0.0lf);
     double sum = sz0 + sz1 + sz2 + sz3;
     if (sum <= 0.0lf) return false;                 /* fully behind camera */
     if (w3_80 != 0u) return false;                  /* hard-excluded from HQ */
@@ -387,10 +398,10 @@ double rim_uv_edge_dist_g(int base, int pn, double u, double v) {
         double ex = g.rim_pv[base + i].x - ax, ey = g.rim_pv[base + i].y - ay;
         double L2 = ex * ex + ey * ey;
         double t = (L2 > 1e-9lf) ? ((u - ax) * ex + (v - ay) * ey) / L2 : 0.0lf;
-        if (t < 0.0lf) t = 0.0lf; else if (t > 1.0lf) t = 1.0lf;
+        t = dsel(t < 0.0lf, 0.0lf, dsel(t > 1.0lf, 1.0lf, t));
         double dx = u - (ax + t * ex), dy = v - (ay + t * ey);
         double d = sqrt(dx * dx + dy * dy);
-        if (d < best) best = d;
+        best = dsel(d < best, d, best);
     }
     return best;
 }
@@ -421,8 +432,8 @@ bool rim_classified(vec2 s0, vec2 s1, vec2 s2, double z0, double z1, double z2) 
             precise double dz = vzk - 1.0lf / inv;
             precise double d = abs(dz * (nx * (sx[k] - ofx) + ny * (sy[k] - ofy)
                                          + nz * H) / H);
-            if (d < dmin) dmin = d;
-            if (d > dmax) dmax = d;
+            dmin = dsel(d < dmin, d, dmin);
+            dmax = dsel(d > dmax, d, dmax);
         }
         if (!okz) continue;
         if (dmin > 400.0lf) continue;                /* RIM_CAND_WINDOW */
@@ -435,10 +446,10 @@ bool rim_classified(vec2 s0, vec2 s1, vec2 s2, double z0, double z1, double z2) 
             precise dvec3 r = V[k] - O;
             fu[k] = r.x * U.x + r.y * U.y + r.z * U.z;
             fv[k] = r.x * W.x + r.y * W.y + r.z * W.z;
-            if (fu[k] < fulo) fulo = fu[k];
-            if (fu[k] > fuhi) fuhi = fu[k];
-            if (fv[k] < fvlo) fvlo = fv[k];
-            if (fv[k] > fvhi) fvhi = fv[k];
+            fulo = dsel(fu[k] < fulo, fu[k], fulo);
+            fuhi = dsel(fu[k] > fuhi, fu[k], fuhi);
+            fvlo = dsel(fv[k] < fvlo, fv[k], fvlo);
+            fvhi = dsel(fv[k] > fvhi, fv[k], fvhi);
         }
         if (fuhi < g.rim_bbox[pi].x - 600.0lf ||     /* RIM_CAND_MARGIN */
             fulo > g.rim_bbox[pi].y + 600.0lf ||
@@ -538,7 +549,7 @@ vec3 unrgb(uint u) {
 
 cvx cv_lerp_n(cvx a, cvx b, double zc) {
     precise double t = (zc - a.m.z) / (b.m.z - a.m.z);
-    if (t < 0.0lf) t = 0.0lf; else if (t > 1.0lf) t = 1.0lf;
+    t = dsel(t < 0.0lf, 0.0lf, dsel(t > 1.0lf, 1.0lf, t));
     precise double px = a.m.x + t * (b.m.x - a.m.x);
     precise double py = a.m.y + t * (b.m.y - a.m.y);
     precise float  pu = a.uv.x + float(t) * (b.uv.x - a.uv.x);
