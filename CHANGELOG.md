@@ -16,7 +16,11 @@ Markdown has none (<kbd>M</kbd>, &times;). A link whose whole text is one
 code span renders as <code><a>...</a></code>.
 -->
 
-## v0.4.2 - 2026-09-29 (Current)
+## v0.4.3 - 2026-10-29 (Current)
+
+- Fixed a crash at startup on AMD Radeon RX 9000-series graphics cards (RDNA4)
+
+## v0.4.2 - 2026-09-29
 
 - Spyro 1: Fixed Sparx, gems and other mobys near Spyro drawing behind him when they are in front of him
 
