@@ -7022,6 +7022,7 @@ static struct {
      * LP faces match (hps_match), the most tsimp_attach can borrow onto it;
      * bor_n scene sectors are covered, 0 when nothing can be borrowed. */
     uint16_t borHp[512], borLp[512];
+    int16_t borK[512];           /* the matched source sector (s_hps.sec), -1 for none */
     uint32_t bor_n;
 } s_tsv;
 
@@ -7111,6 +7112,7 @@ static int tsv_match_scene(CPUState* cpu, const uint32_t* addr, uint32_t cnt, ts
         if (k >= 0) { matched[k] = 1; nMatched++; }
         s_tsv.borHp[q] = (uint16_t)(k >= 0 ? s_hps.sec[k].nHpF : 0);
         s_tsv.borLp[q] = (uint16_t)(k >= 0 ? s_hps.sec[k].nLpF : 0);
+        s_tsv.borK[q] = (int16_t)(k >= 0 ? k : -1);
     }
     s_tsv.bor_n = cnt;
     return nMatched > 0 && nMatched == nLp;
@@ -11222,7 +11224,7 @@ static void tgpu_level_edge(int prev_level, int level) {
 
 static void tj_level_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t n, uint32_t lqTable,
                              uint32_t hqTable, int texTblMode, uint64_t sig);
-static uint32_t tj_sector_addv(uint32_t q);
+static uint32_t tj_sector_addv(uint32_t q, int k);
 static uint32_t tj_sector_recs(uint32_t q);
 
 static int tgpu_ring_on(void);
@@ -11384,26 +11386,74 @@ static void tgpu_content_face_cells(CPUState* cpu, const tsface_t* F, uint32_t h
     }
 }
 
+/** @brief Adds one HP face's flat, HQ 2x2 and anim-cell figures to a sector's, in the draw classes the bake gives them.
+ *
+ * The face's 6 flat vertices take the class of its material (tgpu_arena_of,
+ * as tgpu_bake_hp_flat), each HQ 2x2 quadrant's 6 the class of that
+ * quadrant's tile (tgpu_hq_quadrant, as tgpu_bake_hq2). The face adds its
+ * anim-cell records (tgpu_content_face_cells), except in a colour-only
+ * sector, whose HQ variants go to its near chunks alone, and sets texanim
+ * when an animated tile re-bakes it (tgpu_face_texanim). The cell verdicts
+ * read the bank s_hq_bank names, which the caller sets for the face's set
+ * as the bake does.
+ * @param cpu The guest CPU state.
+ * @param F The decoded face.
+ * @param hqTable The HQ record table the face's set reads.
+ * @param mem The sector's lists: bit 0 vertex, bit 1 colour.
+ * @param texanim 1 when the face's tiles may animate (a scene sector's own face).
+ * @param out The sector's figures. */
+static void tgpu_content_hp_face(CPUState* cpu, const tsface_t* F, uint32_t hqTable, uint8_t mem,
+                                 int texanim, tgpu_sec_cls* out) {
+    const int fc = tgpu_arena_of(&F->mat);
+    out->full[fc] += 6u;
+    out->flat[fc] += 6u;
+    const uint32_t hqBase = hqTable + (uint32_t)F->hq_idx * game_layout.terrain.hq_stride;
+    for (int h = 0; h < 4; h++) {
+        tmat m; float u[4], v[4];
+        tgpu_hq_quadrant(cpu, hqBase, F->abe, h, &m, u, v);
+        out->full[tgpu_arena_of(&m)] += 6u;
+    }
+    out->texanim |= texanim && tgpu_face_texanim(F);
+    if (!(mem & 2u) || (mem & 1u)) tgpu_content_face_cells(cpu, F, hqTable, mem & 1u, out->ca);
+}
+
+/** @brief Adds the HP faces a scene sector may borrow from its matched HP source sector to its figures.
+ *
+ * Every face of the source sector that tsimp_attach may borrow
+ * (hps_face_ok) is counted, the most it borrows onto the sector, with the
+ * materials tsimp_retexture gives it from the source table and the source
+ * cell verdicts (s_hq_bank 1), as the bake's borrowed set reads them.
+ * @param cpu The guest CPU state.
+ * @param k The source sector's index in s_hps.sec.
+ * @param mem The sector's lists: bit 0 vertex, bit 1 colour.
+ * @param out The sector's figures. */
+static void tgpu_content_borrowed(CPUState* cpu, int k, uint8_t mem, tgpu_sec_cls* out) {
+    const tscache_t* K = &s_hps.sec[k];
+    s_hq_bank = 1;
+    for (int f = 0; K->hpF && f < K->nHpF; f++) {
+        if (!hps_face_ok(&K->hpF[f], K->nHpV)) continue;
+        tsface_t B = K->hpF[f];
+        tsimp_retexture(cpu, &B, 0);
+        tgpu_content_hp_face(cpu, &B, TSRC_TEX_BASE, mem, 0, out);
+    }
+    s_hq_bank = 0;
+}
+
 /** @brief Reads one sector's content figures, splitting its plain vertex bound over the draw classes from its decoded faces.
  *
  * The header words +0x10 and +0x14 give the LP and HP face counts (bits
  * 16-23), colour counts (bits 8-15) and vertex counts (bits 0-7), which
  * size a position-ring entry (tgpu_ring_ent's layout). A scene sector whose LP faces
- * match an HP source sector (s_tsv.borHp, borLp) adds that source sector's
+ * match an HP source sector (s_tsv.borHp, borLp, borK) adds that source sector's
  * faces, the most tsimp_attach borrows onto it. The sector's HP and LP
- * faces are decoded with tsc_decode_faces, the decode the bake reads. An
- * HP face's 6 flat vertices take the class of its material (tgpu_arena_of,
- * as tgpu_bake_hp_flat), and each HQ 2x2 quadrant's 6 the class of that
- * quadrant's tile (tgpu_hq_quadrant, as tgpu_bake_hq2); an LP face's 6
- * take its blend class when it is semi-transparent, else the LP class (as
- * tgpu_bake_lp_face). An imported sector reads its tiles from the source
- * table (tsv_is_virtual). The borrowable faces and the marked-edge split's
- * vertices (tj_sector_addv), which carry no decoded material here, go to
- * the opaque and LP classes. Each HP face also adds its anim-cell records
- * (tgpu_content_face_cells), except in a colour-only sector, whose HQ
- * variants go to its near chunks alone, and sets texanim when an animated
- * tile re-bakes it (tgpu_face_texanim; an imported sector carries no
- * animation).
+ * faces are decoded with tsc_decode_faces, the decode the bake reads, and
+ * each HP face, own (tgpu_content_hp_face) or borrowable
+ * (tgpu_content_borrowed), adds its figures in its draw classes; an LP
+ * face's 6 take its blend class when it is semi-transparent, else the LP
+ * class (as tgpu_bake_lp_face). An imported sector reads its tiles and
+ * cell verdicts from the source table (tsv_is_virtual) and carries no
+ * animation. The borrowable LP faces go to the LP class, and the
+ * marked-edge split's vertices to the classes tj_sector_addv names.
  * @param cpu The guest CPU state.
  * @param s The sector record's address.
  * @param q The sector's index in the walk's table.
@@ -11426,7 +11476,6 @@ static void tgpu_content_classes(CPUState* cpu, uint32_t s, uint32_t q, uint32_t
     const uint32_t nLpC = (g3 >> 8) & 0xFFu, nHpC = (g4 >> 8) & 0xFFu;
     const int bor = q < s_tsv.bor_n && q < guestCnt;
     const uint64_t borHp = bor ? s_tsv.borHp[q] : 0u, borLp = bor ? s_tsv.borLp[q] : 0u;
-    const uint64_t addv = tj_sector_addv(q);
     out->hpf = (uint64_t)nHpF + borHp; out->lpf = (uint64_t)nLpF + borLp;
     out->hpc = nHpC; out->lpc = nLpC;
     out->ring_ent = virt ? 0u : (1u + 3u * ((g3 & 0xFFu) + (g4 & 0xFFu)) + OPTC_PREV_REC_WORDS - 1u)
@@ -11434,27 +11483,20 @@ static void tgpu_content_classes(CPUState* cpu, uint32_t s, uint32_t q, uint32_t
     const uint32_t lpFaces = s + 0x1C + ((g3 & 0xFFu) + nLpC) * 4u;
     const uint32_t hpFaces = s + 0x1C + ((g4 >> 24) & 0xFFu) * 4u + ((g4 & 0xFFu) + nHpC * 2u) * 4u;
     tsc_decode_faces(&src, hpFaces, nHpF, 16, lqTable, hqTable, texTblMode, 0, F);
-    for (int f = 0; f < nHpF; f++) {
-        const int fc = tgpu_arena_of(&F[f].mat);
-        out->full[fc] += 6u;
-        out->flat[fc] += 6u;
-        const uint32_t hqBase = hqTable + (uint32_t)F[f].hq_idx * game_layout.terrain.hq_stride;
-        for (int h = 0; h < 4; h++) {
-            tmat m; float u[4], v[4];
-            tgpu_hq_quadrant(cpu, hqBase, F[f].abe, h, &m, u, v);
-            out->full[tgpu_arena_of(&m)] += 6u;
-        }
-        out->texanim |= !virt && tgpu_face_texanim(&F[f]);
-        if (!(mem & 2u) || (mem & 1u)) tgpu_content_face_cells(cpu, &F[f], hqTable, mem & 1u, out->ca);
-    }
+    s_hq_bank = virt;
+    for (int f = 0; f < nHpF; f++) tgpu_content_hp_face(cpu, &F[f], hqTable, mem, !virt, out);
+    s_hq_bank = 0;
+    if (borHp && s_tsv.borK[q] >= 0) tgpu_content_borrowed(cpu, s_tsv.borK[q], mem, out);
     tsc_decode_faces(&src, lpFaces, nLpF, 8, lqTable, hqTable, texTblMode, 0, F);
     for (int f = 0; f < nLpF; f++) {
         const int lc = F[f].mat.blend ? tgpu_arena_of(&F[f].mat) : (int)OPTC_ARENA_LP;
         out->full[lc] += 6u;
         out->flat[lc] += 6u;
     }
-    out->full[OPTC_ARENA_OPAQUE] += 30u * borHp + addv;
-    out->flat[OPTC_ARENA_OPAQUE] += 6u * borHp + addv;
+    for (int k = 0; k < OPTC_CLASS_COUNT; k++) {
+        out->full[k] += tj_sector_addv(q, k);
+        out->flat[k] += tj_sector_addv(q, k);
+    }
     out->full[OPTC_ARENA_LP] += 6u * borLp;
     out->flat[OPTC_ARENA_LP] += 6u * borLp;
 }
@@ -12770,7 +12812,8 @@ static struct {
     tj_edge* tab;                 /* the level's edges, open addressing; freed after a build */
     uint32_t cap, used;
     tj_sec sec[TJ_SEC_SLOTS];     /* face marks by sector address */
-    uint32_t addv[1024];          /* per table index: the plain vertices the split adds */
+    uint32_t addv[1024][OPTC_CLASS_COUNT];   /* per table index and draw class: the plain
+                                              * vertices the split adds */
     uint32_t recs[1024];          /* per table index: the split records a bake writes */
     uint64_t key;                 /* the table signature, HQ table and texture mapping built for */
     uint32_t gen;                 /* bumps at every build; a slot baked at another gen re-bakes */
@@ -12908,20 +12951,45 @@ static void tj_mark_set(const tscache_t* SC, const tj_fset* S) {
     s_hq_bank = 0;
 }
 
-/** @brief Returns a face's mark byte from the table and counts the triangles and split records the split adds to its bakes.
+/** @brief Adds the triangles the split adds to a quad's HQ 2x2 sub-quads to each sub-quad's draw class.
  *
- * The flat variant gains one triangle per edge node; a quad that may draw
- * the 2x2 subdivide gains two per quarter-marked edge, one in each sub-quad
- * along it, each such sub-quad writing a split record beside the flat
- * variant's.
+ * A quarter-marked parent edge gives its quarter point to the two sub-quads
+ * along it (k_tgpu_sq_side), one added triangle each, baked in the class of
+ * the sub-quad's tile (tgpu_hq_quadrant and tgpu_arena_of, as tgpu_bake_hq2).
+ * @param cpu The guest CPU state.
+ * @param S The set; its HQ table addresses the face's HQ record.
+ * @param F The face, a quad.
+ * @param m The face's mark byte.
+ * @param tris Accumulates the added triangles per draw class. */
+static void tj_hq2_adds(CPUState* cpu, const tj_fset* S, const tsface_t* F, uint8_t m,
+                        uint32_t tris[OPTC_CLASS_COUNT]) {
+    const uint32_t hqBase = S->hq + (uint32_t)F->hq_idx * game_layout.terrain.hq_stride;
+    for (int q = 0; q < 4; q++) {
+        uint32_t n = 0;
+        for (int e = 0; e < 4; e++) n += k_tgpu_sq_side[q][e] && tj_face_edge_n(m, e) == 3;
+        if (!n) continue;
+        tmat mt; float u[4], v[4];
+        tgpu_hq_quadrant(cpu, hqBase, F->abe, q, &mt, u, v);
+        tris[tgpu_arena_of(&mt)] += n;
+    }
+}
+
+/** @brief Returns a face's mark byte from the table and counts the triangles and split records the split adds to its bakes, per draw class.
+ *
+ * The flat variant gains one triangle per edge node, in the class of the
+ * face's material (tgpu_arena_of, as tgpu_bake_hp_face); a quad that may
+ * draw the 2x2 subdivide gains two per quarter-marked edge, one in each
+ * sub-quad along it in that sub-quad's class (tj_hq2_adds), each such
+ * sub-quad writing a split record beside the flat variant's.
+ * @param cpu The guest CPU state.
  * @param SC The sector whose frame the set is in.
  * @param S The set.
  * @param F The face.
- * @param tris Accumulates the added triangles.
+ * @param tris Accumulates the added triangles per draw class.
  * @param recs Accumulates the split records.
  * @return The mark byte. */
-static uint8_t tj_face_marks(const tscache_t* SC, const tj_fset* S, const tsface_t* F,
-                             uint32_t* tris, uint32_t* recs) {
+static uint8_t tj_face_marks(CPUState* cpu, const tscache_t* SC, const tj_fset* S, const tsface_t* F,
+                             uint32_t tris[OPTC_CLASS_COUNT], uint32_t* recs) {
     const int c[4] = { F->i0, F->i1, F->i2, F->i3 }, n = F->quad ? 4 : 3;
     const int hq2 = F->quad && tgpu_hq_elig(F, S->hq);
     uint8_t m = 0;
@@ -12934,8 +13002,8 @@ static uint8_t tj_face_marks(const tscache_t* SC, const tj_fset* S, const tsface
         add += (uint32_t)mk;
         q4 += hq2 && mk == 3;
     }
-    add += 2u * q4;
-    *tris += add;
+    tris[tgpu_arena_of(&F->mat)] += add;
+    if (q4) tj_hq2_adds(cpu, S, F, m, tris);
     *recs += (m != 0) + (q4 ? (q4 == 1 ? 2u : 4u) : 0u);
     return m;
 }
@@ -12948,11 +13016,12 @@ static tj_sec* tj_sec_slot(uint32_t s) {
         if (s_tj.sec[j].s == s || s_tj.sec[j].s == 0) return &s_tj.sec[j];
 }
 
-/** @brief Stores the mark bytes of a sector's faces, own then borrowed, and its share of the split's added vertices and records.
+/** @brief Stores the mark bytes of a sector's faces, own then borrowed, and its share of the split's added vertices, per draw class, and records.
+ * @param cpu The guest CPU state.
  * @param SC The sector.
  * @param hqTable The scene's HQ table.
  * @param q The sector's index in the walk's table. */
-static void tj_store_sector(const tscache_t* SC, uint32_t hqTable, uint32_t q) {
+static void tj_store_sector(CPUState* cpu, const tscache_t* SC, uint32_t hqTable, uint32_t q) {
     tj_fset S[2];
     const int ns = tj_face_sets(SC, hqTable, S);
     const int nAll = (ns > 0 ? S[0].nF : 0) + (ns > 1 ? S[1].nF : 0);
@@ -12961,20 +13030,23 @@ static void tj_store_sector(const tscache_t* SC, uint32_t hqTable, uint32_t q) {
     uint8_t* m = (uint8_t*)calloc((size_t)nAll, 1);
     if (!m) return;
     *E = (tj_sec){ .s = SC->s, .nOwn = (ns > 0 && SC->hpV && SC->hpF) ? S[0].nF : 0, .nAll = nAll, .m = m };
-    uint32_t tris = 0, recs = 0;
+    uint32_t tris[OPTC_CLASS_COUNT] = { 0 }, recs = 0;
     int at = 0;
     for (int i = 0; i < ns; i++) {
         s_hq_bank = S[i].bank;
         for (int f = 0; f < S[i].nF; f++, at++) {
             if (tj_face_oob(&S[i], &S[i].F[f])) continue;
-            m[at] = tj_face_marks(SC, &S[i], &S[i].F[f], &tris, &recs);
+            m[at] = tj_face_marks(cpu, SC, &S[i], &S[i].F[f], tris, &recs);
             s_tj.st.split_faces += m[at] != 0;
         }
         s_hq_bank = 0;
     }
-    s_tj.st.add_flat += tris;
+    for (int k = 0; k < OPTC_CLASS_COUNT; k++) {
+        s_tj.st.add_flat += tris[k];
+        if (q < 1024u) s_tj.addv[q][k] = 3u * tris[k];
+    }
     s_tj.st.recs += recs;
-    if (q < 1024u) { s_tj.addv[q] = 3u * tris; s_tj.recs[q] = recs; }
+    if (q < 1024u) s_tj.recs[q] = recs;
     s_tj.st.sectors++;
 }
 
@@ -13276,7 +13348,7 @@ static void tj_level_build(CPUState* cpu, const tj_lvl* L) {
     }
     for (uint32_t q = 0; q < L->n; q++) {
         const tscache_t* SC = tj_sector(cpu, L, q);
-        if (SC) tj_store_sector(SC, L->hqTable, q);
+        if (SC) tj_store_sector(cpu, SC, L->hqTable, q);
     }
     tj_weld_build(cpu, L);
     tj_edge_stats();
@@ -13362,10 +13434,11 @@ static uint8_t tj_marks_at(const uint8_t* m, int f) { return m ? m[f] : 0; }
  * @return The generation; it changes at every build. */
 static uint32_t tj_gen(void) { return s_tj.gen; }
 
-/** @brief Returns the plain vertices the split adds to the sector at one index of the walk's table.
+/** @brief Returns the plain vertices the split adds to one draw class of the sector at one index of the walk's table.
  * @param q The index.
+ * @param k The draw class, OPTC_ARENA_OPAQUE .. OPTC_ARENA_LP.
  * @return The vertex count, 0 past the 1024 tracked entries. */
-static uint32_t tj_sector_addv(uint32_t q) { return q < 1024u ? s_tj.addv[q] : 0u; }
+static uint32_t tj_sector_addv(uint32_t q, int k) { return q < 1024u ? s_tj.addv[q][k] : 0u; }
 
 /** @brief Returns the split records a bake of the sector at one index of the walk's table writes.
  * @param q The index.
