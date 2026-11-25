@@ -391,3 +391,8 @@ gulps-overlook-fight|2073|2||2073|--skip-to-level gulps_overlook
 # row above is that row's twin.
 robotica-farms-spark-wrap@tcforce|1959|2||1959|--skip-to-level robotica_farms OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
 scorch-far-dune-admit@tcforce|2471|2||2473|--skip-to-level scorch --aspect 4:3 OPENPETE_FREECAM_POSE=96403,61401,11991,2746,159 OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
+
+# glimmer-skip-scene-split: two game renders reach the native scene in one
+# VBL at the boot logo (VBL 0, key 573) and on the --skip-to-level route
+# (VBL 730, key 1304: the Demo Mode book).
+glimmer-skip-scene-split|573|2||573,1304|--skip-to-level glimmer

@@ -467,3 +467,8 @@ bentleys-outpost-skip-entry|2073|2||2073|--skip-to-level bentleys_outpost
 # first-touch bake budget off, as the @tcforce rows there. A row named after a
 # row above is that row's twin.
 enchanted-towers-intro-dialogue@tcforce|1898|50||1901,1902,1903,1904,1905|OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
+
+# sunny-villa-skip-scene-split: two game renders reach the native scene in
+# one VBL at the boot logo (VBL 0, key 573) and on the --skip-to-level route
+# (VBL 996, key 1570, ticks 491 to 493).
+sunny-villa-skip-scene-split|573|2||573,1570|--skip-to-level sunny_villa
