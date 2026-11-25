@@ -997,14 +997,16 @@ void cam_bracket_run(uint8_t* cam, const openpete_interp_snapshot_t* prev2,
                      const openpete_interp_snapshot_t* curr,
                      const cut_cam_desc_t* desc, uint32_t view_off,
                      cam_bracket_t* out) {
-    cam_bracket_t r = { 0, 0, 0, 0, 0.0, NULL, { 0.0, 0.0, 0.0 } };
+    cam_bracket_t r = { 0, 0, 0, 0, 0.0, NULL, { 0.0, 0.0, 0.0 }, 0.0 };
     s_cam_snap = 0;
     s_held_ns = 0;
     const uint8_t* pcam = snap_region(prev, desc->cam_region);
     const uint8_t* ccam = snap_region(curr, desc->cam_region);
     if (!cam || !pcam || !ccam) { if (out) *out = r; return; }
 
-    r.cut = cut_camera_reason(prev2, prev, curr, desc, NULL) != NULL;
+    cut_cam_metrics_t m;
+    r.cut = cut_camera_reason(prev2, prev, curr, desc, &m) != NULL;
+    r.rot = m.rot;
     const double period = cut_period_ns(prev, curr);
     /* A cut the ring is still replaying long after the fact has no open
      * interval: it shows the head, as it did before the hold existed. */

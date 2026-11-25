@@ -558,6 +558,32 @@ static void cam_dbg_present(const uint8_t* cam, const rx_camera_t* rc, int paire
     cam_dbg_line("RX-curr", curr->data + curr->region_offsets[cdbg_region]);
 }
 
+/** @brief Steer the moby occlusion cull from one present's camera bracket: suspend it across a cut, feed the camera pan otherwise.
+ *
+ * The occlusion cache holds each record's rect as the last present that drew
+ * it projected it. Across a cut that present showed the other side's camera
+ * (a held cut draws tick N-1's, the presents after it tick N's), so a cached
+ * rect lies at the wrong screen position and depth for up to its two-VBL
+ * life: culling is suspended for 12 presents, and every record is decoded and
+ * its rect rewritten at the new camera before a cached rect decides again. A
+ * stale pair replays a cut the presents since have already drawn at the new
+ * camera, so it suspends nothing. Every cut zeroes the pan allowance, since
+ * its rotation is no pan. A bracketed present outside a cut sets the
+ * allowance (moby_native_set_occl_pan) to the pair's per-tick rotation in
+ * radians times 400 px, the canonical projection distance H (about 288) plus
+ * margin; the consumer scales it by the view's H scale. Without it a cached
+ * rect lying offscreen keeps culling its moby for the tick a camera turn
+ * brings it on screen. An unbracketed present leaves the allowance unchanged.
+ * @param br The present's camera bracket. */
+static void rx_occl_steer(const cam_bracket_t* br) {
+    if (br->cut) {
+        if (!br->stale) openpete_native_occl_suspend(12);
+        moby_native_set_occl_pan(0.0f);
+    } else if (br->bracketed) {
+        moby_native_set_occl_pan((float)(br->rot * (2.0 * M_PI / 4096.0) * 400.0));
+    }
+}
+
 /** @brief Whether a sub-tick present before alpha 1 shows tick N-1's particle and moby sets: OPENPETE_LATE_SWITCH, default on, read once.
  *
  * 0 shows tick N's set at every alpha, for a same-binary A/B.
@@ -594,15 +620,7 @@ static void game_reextract_body(void* cpu_v) {
     const int cam_cut   = rc.br.cut;
     const int hold      = rc.br.hold;
     const double alpha  = rc.br.alpha;
-    /* The moby occlusion cache holds each record's rect as the last present
-     * that drew it projected it. Across a cut that present showed the other
-     * side's camera (a held cut draws tick N-1's, the presents after it tick
-     * N's), so a cached rect lies at the wrong screen position and depth for
-     * up to its two-VBL life. Culling is suspended over the cut: every
-     * record is decoded and its rect rewritten at the new camera before a
-     * cached rect decides again. A stale pair replays a cut the presents
-     * since have already drawn at the new camera, so it suspends nothing. */
-    if (cam_cut && !rc.br.stale) openpete_native_occl_suspend(12);
+    rx_occl_steer(&rc.br);
     /* The late switch: before alpha 1 the present shows tick N-1's set of
      * particle and moby records (paired records lerp, records gone or reused
      * at tick N hold their N-1 state, records new at tick N are absent), and

@@ -403,6 +403,10 @@ typedef struct cam_bracket {
     const uint8_t* tickcam;    /* curr's camera bytes, for a feeder that re-bases
                                 * records composed against the tick's camera */
     double   fpos[3];          /* the un-rounded interpolated position */
+    double   rot;              /* prev to curr camera rotation, the cut rule's
+                                * largest per-row angle (4096 to a full turn);
+                                * measured on every pair with both camera rows,
+                                * cut or not, else 0 */
 } cam_bracket_t;
 
 /** @brief Interpolate a snapshot pair's camera into `cam` and report what the present shows.
@@ -417,7 +421,8 @@ typedef struct cam_bracket {
  * with alpha pinned to 0, where the lerp is the previous state byte for
  * byte; on a cut with no open interval, or when `cam` or either snapshot's
  * camera row is missing, nothing is written and the caller presents the
- * live tick-N camera. Guest memory is never written.
+ * live tick-N camera. Guest memory is never written. `rot` is filled
+ * whenever both snapshots carry the camera row, including on a cut.
  * @param cam The staged camera copy.
  * @param prev2 The snapshot before prev, or NULL; the cut rule reads the
  *        step it ends.
