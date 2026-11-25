@@ -905,9 +905,10 @@ padding:1px 5px;background:#1f2226;color:var(--mut);border:1px solid
 var(--line);cursor:pointer}.vt button[aria-pressed=true]{color:var(--fg);
 border-color:var(--acc)}.vt button.st-diverge,.vt button.st-changed{
 color:#ffb38a}.vt button.st-absent{text-decoration:line-through}
-.vt[data-lack]{border-left:2px dashed #ffb38a;padding-left:4px}
-.vt[data-lack]::before{content:"no " attr(data-lack) " here; showing:";
-display:block;color:#ffb38a}#vall{font-size:13px}#vall button{font-size:13px}
+.vt{border-left:2px solid transparent;padding-left:4px;position:relative}
+.vt[data-lack]{border-left-style:dashed;border-left-color:#ffb38a}
+.vt[data-lack]::after{content:"no " attr(data-lack) " here";position:absolute;
+right:0;top:0;color:#ffb38a;white-space:nowrap}#vall{font-size:13px}#vall button{font-size:13px}
 """
 
 JS = """
