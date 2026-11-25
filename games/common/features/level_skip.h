@@ -3,7 +3,7 @@
  * machine that induces the title screen's demo-timeout transition toward a
  * target, holds the demo flag clear until the level is playable, and
  * releases the
- * windowed present fast-forward on the playable edge or a fail-safe
+ * windowed present fast-forward on the presentable edge or a fail-safe
  * deadline.
  *
  * A game supplies a level_skip_game_t: the three guest-state steps only it
@@ -44,6 +44,11 @@ typedef struct level_skip_game {
     /* The level skip's own playable edge, tested in the picked phase; the
      * hold ends on it. */
     int  (*playable)(CPUState* cpu);
+    /* The present release edge with no watch watching, tested in the picked
+     * phase; NULL: the playable edge. A game sets it when its level entry
+     * runs presented sequences before the playable edge (a fade-in, a
+     * first-visit speech that waits for a button). Reads guest RAM only. */
+    int  (*presentable)(CPUState* cpu);
     /* The other skips' release watches, the first watching one deciding. */
     const level_skip_watch_t* watches;
     size_t                    n_watches;
@@ -98,8 +103,9 @@ void level_skip_ffwd_arm(const char* until);
  * Armed, it calls the game's induce; seeded, its picked test, then its
  * restore on the pick; picked, its hold. The release check then runs while
  * a present fast-forward or a watch is armed: on the first watching watch's
- * release, or with none watching on the picked phase's playable edge, it
- * logs "level playable"; past openpete_skip_failsafe_vbls() from the first
+ * release, or with none watching on the picked phase's presentable edge
+ * (the playable edge when the game supplies none), it logs "level
+ * playable"; past openpete_skip_failsafe_vbls() from the first
  * check it logs the fail-safe line. Either clears the fast-forward and
  * finishes every watching watch. Last, the hold ends on the playable edge or
  * when the game's hold reports the level left, with the line "demo-mode hold

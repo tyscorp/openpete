@@ -69,6 +69,8 @@
 #define S3_CARD_SUBSTATES    ((1u << 6) | (1u << 10) | (1u << 11) | \
                               (1u << 16) | (1u << 18))
 #define S3_GS_GAMEPLAY       0u
+#define S3_GS_SPEECH         1u
+#define S3_GS_FADE_IN        3u
 #define S3_GS_LOADING_IMG    5u
 #define S3_GS_TITLE          11u
 #define S3_LOAD_RESIDENT     0xFFFFFFFFu
@@ -126,6 +128,21 @@ int spyro3_level_resolve(const char* arg) {
 int spyro3_skip_gameplay_live(CPUState* cpu) {
     return cpu->read_word(S3_LOAD_STAGE) == S3_LOAD_RESIDENT &&
            cpu->read_word(S3_GAME_STATE) == S3_GS_GAMEPLAY;
+}
+
+/** @brief Reports whether the picked level's entry sequence has begun: resident, and fading in, in a speech or in gameplay.
+ *
+ * The present release edge of --skip-to-level. Every level's entry runs
+ * game.state 5 (loading image), 3 (fade-in from black), then 0, or 1 for a
+ * level that opens on a first-visit speech, whose camera move and text box
+ * play before it waits for a button. Releasing on the fade-in's first tick
+ * presents the sequence a level transition shows after its loading image.
+ * @param cpu The guest CPU state.
+ * @return 1 when loadStage is -1 and game.state is 0, 1 or 3, else 0. */
+static int skip_presentable(CPUState* cpu) {
+    if (cpu->read_word(S3_LOAD_STAGE) != S3_LOAD_RESIDENT) return 0;
+    const uint32_t gs = cpu->read_word(S3_GAME_STATE);
+    return gs == S3_GS_GAMEPLAY || gs == S3_GS_SPEECH || gs == S3_GS_FADE_IN;
 }
 
 /* The demo level and area list bytes the induction overwrote, put back on
@@ -219,9 +236,10 @@ static int skip_hold(CPUState* cpu) {
 }
 
 /* An armed --skip-to-area watch decides first, then a --skip-to-cutscene
- * watch; with neither, the first live tick after the pick. The fail-safe
- * deadline re-sets on each game.state 6 (cutscene) entry, since a cutscene
- * chain holds the game out of gameplay for longer than one deadline. */
+ * watch; with neither, the first fade-in, speech or live tick after the
+ * pick. The fail-safe deadline re-sets on each game.state 6 (cutscene)
+ * entry, since a cutscene chain holds the game out of gameplay for longer
+ * than one deadline. */
 static const level_skip_watch_t k_watches[] = {
     { spyro3_area_watching, spyro3_area_released, spyro3_area_finish },
     { spyro3_cutscene_watching, spyro3_cutscene_released, spyro3_cutscene_finish },
@@ -233,6 +251,7 @@ const level_skip_game_t spyro3_level_skip = {
     .restore         = skip_restore,
     .hold            = skip_hold,
     .playable        = spyro3_skip_gameplay_live,
+    .presentable     = skip_presentable,
     .watches         = k_watches,
     .n_watches       = sizeof k_watches / sizeof k_watches[0],
     .rearm_word      = S3_GAME_STATE,

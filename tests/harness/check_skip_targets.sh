@@ -31,6 +31,8 @@
 #             log:A>>B      a line containing A precedes the first line
 #                           containing B, and B occurs
 #             !log:TEXT     no log line contains TEXT
+#           The token vbl<=N requires the release line's vbl= value to be
+#           at most N.
 #           The token mode:windowed runs the row windowed instead (below).
 #
 # Windowed rows (mode:windowed): the run opens a window on a virtual X
@@ -41,7 +43,9 @@
 # when the log has no OVERLAY_CARRY_MAX line (the 2D carry set overflowed at
 # the first present after the hold), has a "held presents=" line (the hold
 # held at least one present), and the first "[carry" probe line with a
-# mismatch field after the release line reads mismatch=0. A missing
+# mismatch field after the release line reads mismatch=0. The token
+# carry_f>=N moves that probe line to the first one after the release whose
+# f= (openpete_frame) is at least N. A missing
 # "held presents=" line or probe line after the release is VACUOUS: the hold
 # or the probe never engaged. A missing xvfb-run fails the row.
 #
@@ -118,18 +122,21 @@ run() {
     echo $? >"$OUT/$tag.rc"
 }
 
-# windowed_verdict LOG: prints "PASS <held line> | <probe line>" when LOG
+# windowed_verdict LOG EXPECT: prints "PASS <held line> | <probe line>" when LOG
 # meets the windowed-row criteria (header), else "FAIL <reason>" or
 # "VACUOUS <reason>".
 windowed_verdict() {
-    local log="$1" rl held carry
+    local log="$1" expect="$2" rl held carry tok minf=0
+    for tok in $expect; do [[ "$tok" == 'carry_f>='* ]] && minf="${tok#'carry_f>='}"; done
     if grep -q 'OVERLAY_CARRY_MAX' "$log"; then
         echo "FAIL OVERLAY_CARRY_MAX line: $(grep -m1 'OVERLAY_CARRY_MAX' "$log")"; return
     fi
     held="$(grep -m1 'held presents=' "$log")"
     [[ -n "$held" ]] || { echo "VACUOUS no 'held presents=' line (no present was held)"; return; }
     rl="$(grep -n -m1 '\[skip-to-level\] level playable' "$log" | cut -d: -f1)"
-    carry="$(tail -n +"$((rl + 1))" "$log" | grep -m1 '\[carry f=.* mismatch=')"
+    carry="$(tail -n +"$((rl + 1))" "$log" | grep '\[carry f=.* mismatch=' |
+             awk -v m="$minf" '{f = $2; sub(/^f=/, "", f); sub(/]$/, "", f)}
+                               f + 0 >= m + 0 {print; exit}')"
     [[ -n "$carry" ]] || { echo "VACUOUS no [carry probe line after the release line"; return; }
     [[ "$carry" == *' mismatch=0 '* ]] || { echo "FAIL first [carry line after release: $carry"; return; }
     echo "PASS $held | $carry"
@@ -153,7 +160,7 @@ log_token() {
 
 # classify TAG EXPECT: prints "PASS <line>" or "FAIL <reason>".
 classify() {
-    local tag="$1" expect="$2" log="$OUT/$1.log" rc line tok
+    local tag="$1" expect="$2" log="$OUT/$1.log" rc line tok rv
     [[ -f "$log" && -f "$OUT/$tag.rc" ]] || { echo "FAIL no output"; return; }
     rc="$(cat "$OUT/$tag.rc")"
     if grep -q '\[skip-to-level\] fail-safe release' "$log"; then
@@ -163,7 +170,11 @@ classify() {
     [[ -n "$line" ]] || { echo "FAIL no release line (exit $rc)"; return; }
     for tok in $expect; do
         case "$tok" in
-            mode:windowed) ;;
+            mode:windowed|'carry_f>='*) ;;
+            'vbl<='*)
+                rv="${line#* at vbl=}"; rv="${rv%% *}"
+                [[ "$rv" =~ ^[0-9]+$ ]] && (( rv <= ${tok#'vbl<='} )) ||
+                    { echo "FAIL release vbl=$rv above ${tok#'vbl<='}: $line"; return; };;
             '!log:'*|log:*)
                 log_token "$log" "$tok" || { echo "FAIL log token '$tok' unmet: $line"; return; };;
             *)
@@ -171,7 +182,7 @@ classify() {
         esac
     done
     if windowed "$expect"; then
-        local wv; wv="$(windowed_verdict "$log")"
+        local wv; wv="$(windowed_verdict "$log" "$expect")"
         [[ "$wv" == PASS* ]] || { echo "$wv"; return; }
         line="$line | ${wv#PASS }"
     fi

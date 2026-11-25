@@ -95,7 +95,24 @@ the_dancing_bear               | --skip-to-cutscene the_dancing_bear            
 # tests/harness/check_skip_targets.sh). The skip holds presents back while
 # the level loads; the first present after the release must not carry the
 # load and demo screens' 2D over the level: no OVERLAY_CARRY_MAX line, a
-# "held presents=" line, and the first probe line after the release reads
-# mismatch=0.
+# "held presents=" line, and the probe line reads mismatch=0. The release
+# comes on the fade-in's first tick, whose presents hold no 2D (carry_n=0,
+# scene_n=0); carry_f>=1030 takes the probe line at the first present
+# after the fade-in (f=1030, VBL 1604), where the level's 2D and the scene
+# are both live. The entry rows below take it there too.
 # name                         | args                         | frames | expect
-s3-haunted-tomb-first-present  | --skip-to-level haunted_tomb | 2200   | mode:windowed
+s3-haunted-tomb-first-present  | --skip-to-level haunted_tomb | 2200   | mode:windowed carry_f>=1030
+
+# Windowed --skip-to-level entry rows (mode:windowed). Every level enters
+# through game.state 5 (loading image), 3 (fade-in from black, VBL 1570 to
+# 1603 here), then 0, or 1 in the ten levels that open on a first-visit
+# speech, whose camera move into the speaker runs from VBL 1604 before the
+# speech waits for a button. The release must come at the fade-in's first
+# tick, so the fade-in and the camera move are presented: vbl<=1570. A
+# release that waits for game.state 0 never comes in a speech level before
+# the fail-safe (VBL 4574) and fails the row. icy_peak opens in gameplay
+# (release at 1604 on game.state 0, 1570 on the fade-in).
+# name                         | args                          | frames | expect
+s3-frozen-altars-speech-entry  | --skip-to-level frozen_altars | 1800   | mode:windowed vbl<=1570 carry_f>=1030
+s3-crawdad-farm-speech-entry   | --skip-to-level crawdad_farm  | 1800   | mode:windowed vbl<=1570 carry_f>=1030
+s3-icy-peak-entry              | --skip-to-level icy_peak      | 1800   | mode:windowed vbl<=1604 carry_f>=1030

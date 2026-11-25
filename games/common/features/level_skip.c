@@ -87,13 +87,14 @@ static void deadline_tick(const level_skip_game_t* g, CPUState* cpu,
         s_ffwd_deadline = frame_counter + openpete_skip_failsafe_vbls();
 }
 
-/** @brief Release the skip on its playable edge or on the fail-safe deadline.
+/** @brief Release the skip on its release edge or on the fail-safe deadline.
  *
  * Runs while a present fast-forward or a watch is armed. The first watching
  * watch's release predicate decides; with none watching, the picked phase's
- * playable edge. The release line names the engagement values the watch
- * reads back. Either release clears openpete_skip_present_until_level,
- * zeroes the deadline and finishes every watching watch. The watches run
+ * presentable edge, or its playable edge when the game supplies none. The
+ * release line names the engagement values the watch reads back. Either
+ * release clears openpete_skip_present_until_level, zeroes the deadline and
+ * finishes every watching watch. The watches run
  * headless too, where there is no fast-forward, so a harness reads the same
  * lines.
  * @param g The game.
@@ -105,8 +106,9 @@ static void release_tick(const level_skip_game_t* g, CPUState* cpu,
     if (!openpete_skip_present_until_level && !w) return;
     deadline_tick(g, cpu, frame_counter);
     char eng[128] = "";
+    int (*const edge)(CPUState*) = g->presentable ? g->presentable : g->playable;
     const int playable = w ? w->released(cpu, eng, sizeof eng)
-                           : s_phase == SKIP_PICKED && g->playable(cpu);
+                           : s_phase == SKIP_PICKED && edge(cpu);
     if (playable) {
         fprintf(stderr, "[skip-to-level] level playable - presents resume "
                         "at vbl=%u key=%u%s\n", log_vbl(), openpete_feed_key_now(), eng);
