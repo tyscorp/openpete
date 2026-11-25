@@ -1,0 +1,3 @@
+# Camera pan scan for the moby occlusion audit (check_moby_occlusion.sh pan rows):
+# 2400 idle VBLs, then six rounds of R1 240, Left 240, L1+Up 240, Right+Up 120.
+--skip-to-level sunrise_spring --load-delay 66

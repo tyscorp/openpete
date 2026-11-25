@@ -1654,7 +1654,9 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # extension changes, or when an extended screenshot differs from the leg
     # with the test off; vacuous without bracketed sub-tick presents, census
     # lines or, where the row asks, a culled record. Spyro 1 has no simple
-    # pass, so its rows read the animated kind alone.
+    # pass, so its rows read the animated kind alone. Spyro 2 and 3 add pan
+    # rows: a camera-pan bk2 replayed windowed under Xvfb three times with
+    # the occlusion audit on, failing on a wrong cull the camera turn caused.
     foreach(_occl_game spyro-1 spyro-2 spyro-3)
         string(REPLACE "-" "" _occl_tag "${_occl_game}")
         add_test(NAME moby_occlusion_${_occl_tag}
@@ -1662,7 +1664,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                          --game ${_occl_game} --build-dir=${CMAKE_BINARY_DIR})
         set_tests_properties(moby_occlusion_${_occl_tag} PROPERTIES
             LABELS "presentation;moby"
-            TIMEOUT 1800
+            TIMEOUT 2700
             SKIP_RETURN_CODE 64
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()

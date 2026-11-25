@@ -1,0 +1,10 @@
+# Moby occlusion pan rows (tests/harness/check_moby_occlusion.sh): a bk2 that
+# turns the camera, replayed windowed under Xvfb with the occlusion audit on.
+# Rows: <name> | <bk2> | <frame limit, VBL> | <checks>
+# checks, space-separated:
+#   runs=N      replay the bk2 N times (a windowed run's present timing, and
+#               with it the age of each cached rect, differs run to run)
+#   pan_max=N   at most N PAN-class wrong culls summed over the runs: a cached
+#               rect the camera turn carried past its own-motion inflation
+#               while the cull still judged it hidden
+sunrise_spring_pan | games/spyro-3/bk2/sunrise-spring-camera-pan.bk2 | 8500 | runs=3 pan_max=0
