@@ -14,7 +14,7 @@ directories, and shows them as images. Three views:
              channel delta and the bounding box from diff_images in
              tests/harness/presentation-corpus-diff.py, sorted by pixel count
              descending; filtered by a pixel floor, by leg and by corpus row;
-             each row opens a reference | candidate | heat panel and carries a
+             each row carries a reference | candidate | heat strip and a
              checkbox that adds its tile name to the promote list. With og
              naming a directory of PsyCross captures
              (<row>[__lodext]__canon__<vbl>-og.png), the panel adds the -og
@@ -45,17 +45,24 @@ captured after it) share it, buttons in it switch the variant shown (keys: l
 switches every row's LOD, i every row's leg), and it names the variants whose
 blessed digests are identical. The candidate row names each variant's status
 (diverge, match, absent) and shows the first divergent variant; the history row
-names each listed variant's kind and the variants left unchanged. --once lists
+names each listed variant's kind and the variants left unchanged. In both, a
+full-width table row under the variant's row holds its image strip, the
+figures sharing the width. A served page holds a placeholder for each strip,
+fetched from /lazy/<token> when it scrolls near the viewport: the strip's
+store reads, archive extraction, pixel diff and og score run then. A pixel
+diff is cached by digest pair beside its heat image; the candidate view's
+pixel floor and order and the history view's order read that cache, and the
+candidate view computes a missing diff when it lists the row. --once lists
 every tile in FILE.rows.tsv as before.
 
 The page writes one output, the promote list: one tile name per line in
 <promote-dir>/promote-<game>-<tier>.txt, which
 tests/harness/presentation-corpus-promote.sh takes as its tile arguments. It
-also fills two caches in golden-ref-thumbs/, the sibling of the store in the
-directory holding golden-ref.state: thumbnails keyed by verdict digest and heat
-images keyed by the digest pair. A store blob whose pixels do not hash to its
-name is discarded on read, which is the store's own contract
-(presentation-blessed.py store_get).
+also fills caches in golden-ref-thumbs/, the sibling of the store in the
+directory holding golden-ref.state: thumbnails keyed by verdict digest, and
+heat images and pixel-diff results keyed by the digest pair. A store blob
+whose pixels do not hash to its name is discarded on read, which is the
+store's own contract (presentation-blessed.py store_get).
 
 The server binds 127.0.0.1 and serves only files a rendered view registered.
 Its only child processes are read-only git: the `git cat-file --batch` and
@@ -69,10 +76,11 @@ Usage:
         [--cand DIR] [--og DIR] [--a REV] [--b REV] [--q S] [--leg L] [--floor N]
         [--row S]
 --once renders one view to a static HTML file with file:// images (thumbnails
-generated eagerly) and writes FILE.rows.tsv, the listed rows, for a headless
+and image strips generated eagerly, images marked loading=lazy) and writes FILE.rows.tsv, the listed rows, for a headless
 check.
 """
 import argparse
+import collections
 import html
 import importlib.util
 import io
@@ -94,6 +102,9 @@ sys.dont_write_bytecode = True
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 HOST = "127.0.0.1"
 THUMB_W = 192
+# Pending row fragments a served page registered; the oldest are dropped
+# past this count, and a page that old reloads to list them again.
+LAZY_CAP = 50000
 
 
 def _load(name, rel):
@@ -254,6 +265,22 @@ class Ctx:
         self.static_dir = static_dir
         self.files = {}
         self.by_path = {}
+        self.lazies = collections.OrderedDict()
+        self.lazy_n = 0
+
+    def lazy(self, fn):
+        """A row's deferred fragment. Static, fn() runs now and its HTML is
+        inlined. Served, fn is registered under a token and the page gets a
+        placeholder the page script fetches from /lazy/<token> when it
+        scrolls into view."""
+        if self.static_dir is not None:
+            return fn()
+        tok = "%x" % self.lazy_n
+        self.lazy_n += 1
+        self.lazies[tok] = fn
+        while len(self.lazies) > LAZY_CAP:
+            self.lazies.popitem(last=False)
+        return "<div class=lazy data-lazy='/lazy/%s'>loading</div>" % tok
 
     def file(self, path):
         """URL of a file on disk."""
@@ -361,9 +388,29 @@ def heat_path(a, b):
     return os.path.join(thumbs_dir(), "heat", "%s_%s.png" % (a[:16], b[:16]))
 
 
+def cached_diff(a_dig, b_dig):
+    """The cached pixel_diff result of a digest pair, or None. A digest names
+    decoded pixels, so a pair's result never goes stale; a result naming a
+    heat image counts only while that image exists."""
+    try:
+        with open(heat_path(a_dig, b_dig)[:-4] + ".json") as f:
+            res = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if res.get("heat") and not os.path.isfile(res["heat"]):
+        return None
+    if res.get("bbox") is not None:
+        res["bbox"] = tuple(res["bbox"])
+    return res
+
+
 def pixel_diff(ref_src, cand_src, a_dig, b_dig):
-    """diff_images over two sources, the heat written into the cache. Returns
-    dict(pixels, maxch, bbox, size, heat)."""
+    """diff_images over two sources, the heat written into the cache and the
+    result into cached_diff's JSON. Returns dict(pixels, maxch, bbox, heat)
+    or dict(size)."""
+    got = cached_diff(a_dig, b_dig)
+    if got is not None:
+        return got
     heat = heat_path(a_dig, b_dig)
     if isinstance(ref_src, io.BytesIO):
         ref_src.seek(0)
@@ -371,9 +418,17 @@ def pixel_diff(ref_src, cand_src, a_dig, b_dig):
         cand_src.seek(0)
     res = cdiff.diff_images(ref_src, cand_src, heat)
     if res[0] == "size":
-        return {"size": "%dx%d->%dx%d" % (res[1] + res[2])}
-    return {"pixels": res[1], "maxch": res[2], "bbox": res[3],
-            "heat": heat if res[1] else None}
+        out = {"size": "%dx%d->%dx%d" % (res[1] + res[2])}
+    else:
+        out = {"pixels": res[1], "maxch": res[2], "bbox": res[3],
+               "heat": heat if res[1] else None}
+    path = heat[:-4] + ".json"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp%d" % os.getpid()
+    with open(tmp, "w") as f:
+        json.dump(out, f)
+    os.replace(tmp, path)
+    return out
 
 
 def og_score(ref_src, cand_path, og_path, a_dig, b_dig):
@@ -435,9 +490,10 @@ def og_tile(ogdir, tile):
     return None, None
 
 
-def candidate_rows(p, ctx):
+def candidate_rows(p):
     """Divergent rows of a candidate directory against its manifest, each
-    with its diff and panel sources. Returns (rows, summary, error)."""
+    with its pixel diff (cached_diff, else computed here) and the paths
+    candidate_panel reads. Returns (rows, summary, error)."""
     cand = p["cand"] or default_candidate(p["game"], p["tier"])
     cand = os.path.join(ROOT, cand) if not os.path.isabs(cand) else cand
     p["cand"] = cand
@@ -471,32 +527,25 @@ def candidate_rows(p, ctx):
             continue
         ent = dict(row, gkey=keys[t], **tile_meta(t))
         ent["cand_digest"] = got[0] if got else None
-        ent["cand_src"] = ctx.file(path)
-        ogp = None
+        ent["cand_path"], ent["tdir"] = path, tdir
         if ogdir:
-            ogp, ogv = og_tile(ogdir, t)
-            if ogp:
-                ent["og_src"], ent["og_vbl"] = ctx.file(ogp), ogv
+            ent["og_path"], ent["og_vbl"] = og_tile(ogdir, t)
         if got is None:
             ent["note"] = "undecodable candidate tile"
             rows.append(ent)
             continue
+        cached = cached_diff(row["digest"], got[0])
+        if cached is not None:
+            ent.update(cached)
+            rows.append(ent)
+            continue
         if arch is None:
             arch = pb.Archive()
-        src, where = pb.resolve_reference(row, tdir, arch)
+        src, _ = pb.resolve_reference(row, tdir, arch)
         if src is None:
-            ent["note"] = "hex mismatch %s->%s; reference in neither store " \
-                "nor archive (golden-at %s %s %s)" % (
-                    row["digest"][:12], got[0][:12], row["revision"][:12],
-                    p["game"], t)
+            ent["note"] = unresolved_note(row, got[0], p["game"], t)
         else:
-            ent["where"] = where
-            ent["ref_src"] = ctx.src(src, row["digest"] + ".png")
             ent.update(pixel_diff(src, path, row["digest"], got[0]))
-            if ent.get("heat"):
-                ent["heat_src"] = ctx.file(ent["heat"])
-            if ogp and ent.get("pixels"):
-                ent["og"] = og_score(src, path, ogp, row["digest"], got[0])
         rows.append(ent)
     if arch is not None:
         arch.close()
@@ -506,6 +555,50 @@ def candidate_rows(p, ctx):
     rows.sort(key=lambda e: (0 if "pixels" in e else 1,
                              -e.get("pixels", 0), e["tile"]))
     return filter_divergent(rows, p), summary, None
+
+
+def unresolved_note(row, cand_digest, game, tile):
+    """The note of a divergent row whose reference neither the store nor the
+    archive holds."""
+    return "hex mismatch %s->%s; reference in neither store nor archive " \
+        "(golden-at %s %s %s)" % (row["digest"][:12], cand_digest[:12],
+                                  row["revision"][:12], game, tile)
+
+
+def panel(figs):
+    """The image strip of a row: its figures share the row width evenly, at
+    least three columns so a lone image keeps a third of the width."""
+    figs = [f for f in figs if f]
+    if not figs:
+        return ""
+    return "<div class=panel style='--n:%d'>%s</div>" % (max(3, len(figs)),
+                                                          "".join(figs))
+
+
+def candidate_panel(e, game, ctx):
+    """The lazy fragment of a divergent candidate row: reference, candidate,
+    heat and -og figures, the og score in the -og caption. Resolves the
+    reference and reads the diff from its cache."""
+    arch = pb.Archive()
+    try:
+        src, where = pb.resolve_reference(e, e["tdir"], arch)
+    finally:
+        arch.close()
+    if src is None:
+        return "<p class=mut>%s</p>" % E(unresolved_note(
+            e, e["cand_digest"], game, e["tile"]))
+    d = pixel_diff(src, e["cand_path"], e["digest"], e["cand_digest"])
+    ref = ctx.src(src, e["digest"] + ".png")
+    og = ""
+    if e.get("og_path"):
+        o = og_score(src, e["cand_path"], e["og_path"], e["digest"],
+                     e["cand_digest"]) if d.get("pixels") else None
+        og = figure(ctx.file(e["og_path"]), "-og (VBL %s) %s" % (
+            e["og_vbl"], og_text(o)))
+    return panel([figure(ref, "reference (%s)" % where),
+                  figure(ctx.file(e["cand_path"]), "candidate"),
+                  figure(ctx.file(d["heat"]) if d.get("heat") else None,
+                         "heat x8"), og])
 
 
 def filter_divergent(rows, p):
@@ -645,8 +738,10 @@ def locate(row, tdir, rr, rev, game, verify):
         "%s %s --materialize" % (pb.price(1), rev, game, row["tile"])
 
 
-def history_rows(p, ctx):
-    """Changed, added and removed rows between revisions a and b. Returns
+def history_rows(p):
+    """Changed, added and removed rows between revisions a and b, ordered by
+    kind, then by the pixel count of a changed row whose diff is cached
+    (pixel_diff runs in the row's lazy fragment), then by tile. Returns
     (rows, notes, error)."""
     rr = RevReader()
     try:
@@ -690,10 +785,13 @@ def history_rows(p, ctx):
                         "added" if rb else "removed")
                     ent = dict(tile_meta(t), tile=t, kind=kind, game=game,
                                tier=tier, manifest=mpath,
-                               gkey=(mpath,) + keys[t],
+                               gkey=(mpath,) + keys[t], ra=ra, rb=rb,
+                               tdir=tdir,
                                a_digest=ra["digest"] if ra else None,
                                b_digest=rb["digest"] if rb else None)
-                    history_images(ent, ra, rb, tdir, rr, p, ctx)
+                    if kind == "changed":
+                        ent.update(cached_diff(ra["digest"], rb["digest"])
+                                   or {})
                     rows.append(ent)
         for e in rows:
             e["unchanged"] = unchanged.get(e["gkey"], set())
@@ -705,29 +803,36 @@ def history_rows(p, ctx):
         rr.close()
 
 
-def history_images(ent, ra, rb, tdir, rr, p, ctx):
-    """Fill a history row's image sources and, for a changed row with both
-    sides resolved, its pixel diff."""
-    verify = ent["kind"] == "changed"
-    srcs = {}
-    for side, row, rev in (("a", ra, p["a"]), ("b", rb, p["b"])):
-        if row is None:
-            continue
-        where, val = locate(row, tdir, rr, rev, ent["game"], verify)
-        ent[side + "_where"] = where
-        if where == "materialize":
-            ent[side + "_materialize"] = val
-            continue
-        srcs[side] = val
-        if verify:
-            ent[side + "_src"] = ctx.src(val, row["digest"] + ".png")
-        elif where == "store":
-            ent[side + "_thumb"] = ctx.thumb(row["digest"])
-    if "a" in srcs and "b" in srcs and verify:
-        ent.update(pixel_diff(srcs["a"], srcs["b"], ra["digest"],
-                              rb["digest"]))
-        if ent.get("heat"):
-            ent["heat_src"] = ctx.file(ent["heat"])
+def history_panel(e, p, ctx):
+    """The lazy fragment of a history row: the a and b images where the
+    store, the archive or a tracked tile holds them (a changed row's store
+    blobs verified), the materialize command of a side neither holds, and
+    for a changed row with both sides its diff line and heat figure."""
+    rr = RevReader()
+    try:
+        (cfa, sa), (cfb, sb) = rr.resolve(p["a"]), rr.resolve(p["b"])
+        rr.tracked_cf.update({sa: cfa, sb: cfb})
+        verify = e["kind"] == "changed"
+        srcs, figs, notes = {}, [], []
+        for side, row, rev in (("a", e["ra"], p["a"]), ("b", e["rb"], p["b"])):
+            if row is None:
+                continue
+            where, val = locate(row, e["tdir"], rr, rev, e["game"], verify)
+            if where == "materialize":
+                notes.append("<div>%s: materialize %s</div>" % (side, E(val)))
+                continue
+            srcs[side] = val
+            figs.append(figure(ctx.src(val, row["digest"] + ".png"),
+                               "%s %s (%s)" % (side, rev, where)))
+    finally:
+        rr.close()
+    d = {}
+    if verify and len(srcs) == 2:
+        d = pixel_diff(srcs["a"], srcs["b"], e["a_digest"], e["b_digest"])
+        if d.get("heat"):
+            figs.append(figure(ctx.file(d["heat"]), "heat x8"))
+    line = "<div class=mut>%s</div>" % E(diff_text(d)) if d else ""
+    return "".join(notes) + line + panel(figs)
 
 
 # ---- promote list -------------------------------------------------------------------
@@ -785,11 +890,13 @@ word-break:break-all}.card img{width:192px;display:block;background:#000}
 justify-content:center;background:#222;color:var(--mut)}
 table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid
 var(--line);padding:4px 6px;text-align:left;font-size:12px;
-vertical-align:top}.panel{display:grid;gap:8px;
-grid-template-columns:repeat(3,minmax(0,1fr))}@media(max-width:700px){.panel{
-grid-template-columns:1fr}}
-.panel figure{margin:0}.panel img{max-width:100%;image-rendering:pixelated}
+vertical-align:top}tr.pr>td{padding:2px 0 14px}.panel{display:grid;gap:8px;
+grid-template-columns:repeat(var(--n,3),minmax(0,1fr))}
+@media(max-width:700px){.panel{grid-template-columns:1fr}}
+.panel figure{margin:0}.panel img{width:100%;height:auto;display:block;
+image-rendering:pixelated;background:#000}
 .panel figcaption{color:var(--mut);font-size:11px}.mut{color:var(--mut)}
+.lazy{min-height:24vw;color:var(--mut);font-size:11px}
 code{word-break:break-all}
 .vt{margin:4px 0;font-size:11px}.vt button{font-size:11px;margin:0 3px 3px 0;
 padding:1px 5px;background:#1f2226;color:var(--mut);border:1px solid
@@ -817,6 +924,14 @@ document.addEventListener('keydown',e=>{if(e.ctrlKey||e.metaKey||e.altKey||
 flip(0,'o','e');else if(e.key==='i')flip(2,'c','i')})
 function pick(s,f){if(s.value){s.form.elements[f].value=s.value;
 s.form.submit()}}
+const lazyIO=new IntersectionObserver(es=>{for(const x of es){
+if(!x.isIntersecting)continue;const d=x.target;lazyIO.unobserve(d);
+fetch(d.dataset.lazy).then(r=>{if(!r.ok)throw new Error(r.status);
+return r.text()}).then(t=>{d.innerHTML=t;d.classList.remove('lazy')})
+.catch(e=>{d.textContent='load failed ('+e.message+'); reload the page'})}},
+{rootMargin:'600px 0px'});
+document.addEventListener('DOMContentLoaded',()=>document.querySelectorAll(
+'[data-lazy]').forEach(d=>lazyIO.observe(d)))
 """
 
 
@@ -994,6 +1109,13 @@ def render_current(p, ctx, static):
         ("row", r["tile"], r["digest"]) for r in rows]
 
 
+def panel_tr(gid, v, sel, ncols, inner):
+    """The full-width table row under a variant's row holding its image
+    strip, shown and hidden with it."""
+    return "<tr class=pr%s><td colspan=%d>%s</td></tr>" % (
+        gv_attr(gid, v, sel), ncols, inner)
+
+
 def candidate_variant_tr(gid, v, sel, bar, ent, ctx):
     """The row of a group variant the listing does not hold: its blessed
     thumbnail and status."""
@@ -1011,7 +1133,7 @@ def candidate_variant_tr(gid, v, sel, bar, ent, ctx):
 def render_candidate(p, ctx, static, pdir):
     """The candidate-review view: one table row per sample group, showing
     one variant; the group's other variants carry their status."""
-    rows, summ, err = candidate_rows(p, ctx)
+    rows, summ, err = candidate_rows(p)
     form = "" if static else (
         "<form action=/candidate>%s <input name=cand size=48 value='%s' "
         "placeholder='candidate dir'> <input name=og size=32 value='%s' "
@@ -1059,19 +1181,12 @@ def render_candidate(p, ctx, static, pdir):
                 "data-tile='%s'%s>" % (
                     E(p["game"]), E(p["tier"]), E(p["cand"]), E(e["tile"]),
                     " checked" if e["tile"] in chosen else ""))
-            panel = ""
-            if e.get("ref_src"):
-                panel = "<details%s><summary>panel</summary><div " \
-                    "class=panel>%s%s%s%s</div></details>" % (
-                        " open" if n == 0 else "",
-                        figure(e["ref_src"], "reference (%s)" % e["where"]),
-                        figure(e["cand_src"], "candidate"),
-                        figure(e.get("heat_src"), "heat x8"),
-                        figure(e.get("og_src"), "-og (VBL %s) %s" % (
-                            e.get("og_vbl"), og_text(e.get("og")))))
-            trs.append("<tr%s><td>%s</td><td>%s%s%s</td>%s<td>%s</td></tr>"
-                       % (gv_attr(gid, v, sel), cb, bar, E(e["tile"]), panel,
+            trs.append("<tr%s><td>%s</td><td>%s%s</td>%s<td>%s</td></tr>"
+                       % (gv_attr(gid, v, sel), cb, bar, E(e["tile"]),
                           meta_cells(e), E(diff_text(e))))
+            if not e.get("note"):
+                trs.append(panel_tr(gid, v, sel, 7, ctx.lazy(
+                    lambda e=e: candidate_panel(e, p["game"], ctx))))
     body = form + head + "<table><tr><th>promote</th><th>tile</th><th>row" \
         "</th><th>VBL</th><th>leg</th><th>LOD</th><th>diff</th></tr>%s" \
         "</table>" % "".join(trs)
@@ -1082,7 +1197,7 @@ def render_candidate(p, ctx, static, pdir):
 def render_history(p, ctx, static):
     """The history-compare view: one table row per sample group, showing
     one listed variant."""
-    rows, notes, err = history_rows(p, ctx)
+    rows, notes, err = history_rows(p)
     form = ""
     if not static:
         games = [p["game"]] if p["game"] else list(pb.GAMES)
@@ -1119,31 +1234,14 @@ def render_history(p, ctx, static):
             ["unchanged: " + ", ".join(unch)] if unch else ())
         for v in present:
             e = g[v]
-            cell = []
-            for side in ("a", "b"):
-                if e.get(side + "_materialize"):
-                    cell.append("<div>%s: materialize %s</div>" % (
-                        side, E(e[side + "_materialize"])))
-            if e["kind"] == "changed" and (e.get("a_src") or e.get("b_src")):
-                cell.append("<details%s><summary>panel</summary><div "
-                            "class=panel>%s%s%s</div></details>" % (
-                                " open" if n == 0 else "",
-                                figure(e.get("a_src"), "a %s (%s)" % (
-                                    p["a"], e.get("a_where"))),
-                                figure(e.get("b_src"), "b %s (%s)" % (
-                                    p["b"], e.get("b_where"))),
-                                figure(e.get("heat_src"), "heat x8")))
-            for side in ("a", "b"):
-                if e.get(side + "_thumb"):
-                    cell.append("<img loading=lazy width=96 src='%s'>"
-                                % E(e[side + "_thumb"]))
-            trs.append("<tr%s><td>%s</td><td>%s</td><td>%s%s%s</td>%s"
-                       "<td>%s</td></tr>" % (
-                           gv_attr(gid, v, sel), E(e["kind"]),
-                           E(e["game"] + "/" + e["tier"]), bar, E(e["tile"]),
-                           "".join(cell), meta_cells(e), E(diff_text(e))))
+            trs.append("<tr%s><td>%s</td><td>%s</td><td>%s%s</td>%s</tr>" % (
+                gv_attr(gid, v, sel), E(e["kind"]),
+                E(e["game"] + "/" + e["tier"]), bar, E(e["tile"]),
+                meta_cells(e)))
+            trs.append(panel_tr(gid, v, sel, 7, ctx.lazy(
+                lambda e=e: history_panel(e, p, ctx))))
     body = form + head + "<table><tr><th>kind</th><th>tier</th><th>tile</th>" \
-        "<th>row</th><th>VBL</th><th>leg</th><th>LOD</th><th>diff</th></tr>" \
+        "<th>row</th><th>VBL</th><th>leg</th><th>LOD</th></tr>" \
         "%s</table>" % "".join(trs)
     return page("history compare", body, static), [
         (e["kind"], e["tile"], "%s %s->%s" % (e["manifest"], e["a_digest"],
@@ -1229,6 +1327,11 @@ class Handler(BaseHTTPRequestHandler):
             p = make_thumb(d) if pb.DIGEST_RE.match(d) else None
             return self.send_file(p) if p else self.send(404, "text/plain",
                                                          b"not in store")
+        if path.startswith("/lazy/"):
+            fn = self.ctx.lazies.get(path[6:])
+            if fn is None:
+                return self.send(404, "text/plain", b"expired; reload the page")
+            return self.send(200, "text/html; charset=utf-8", fn().encode())
         view = path[1:]
         if view not in ("current", "candidate", "history"):
             return self.send(404, "text/plain", b"no such view")
