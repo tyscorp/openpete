@@ -9,7 +9,7 @@
 #
 # Legs (--leg selects one; the default set is level-edges, squeeze-bk2,
 # consolidate, store, failed-edge, steady-pose, custom-level, rewind-hold,
-# runahead-bk2):
+# runahead-bk2, estimate-bound):
 #   level-edges   the attract demo (boot to title, --frame-limit
 #                 DEMO_LIMIT) at the content-estimate sizing: claims_sum=0,
 #                 failed_edges=0, and svc_fulfilled equal to the level
@@ -110,6 +110,15 @@
 #                 unseen must report 0 past those on a speculation that left
 #                 gameplay (ra_unseen_presented; ra_unseen_left, a draw the
 #                 departure made the last, is reported).
+#   estimate-bound
+#                 OPENPETE_TC_BOUND_CENSUS=1 on one level per game whose
+#                 table bakes split faces in a blend class (Spyro 1
+#                 crystal_flight: ALPHA; Spyro 2 idol_springs and Spyro 3
+#                 sunrise_spring: ADD, A_ADD, CA_OPAQUE), BOUND_LIMIT VBLs:
+#                 every `[tc-bound]` line's content estimate is at least the
+#                 exact dry bake on every arena, the CN family summed
+#                 (tests/harness/tercache_bound_census.py); no line, or no
+#                 line with a nonzero bake, is VACUOUS.
 #
 # --exe PATH drives another binary with the same legs (a build without
 # growth reports claims>0 on the squeeze legs, which is the separation).
@@ -126,7 +135,7 @@ source scripts/lib/game.sh
 
 export OPENPETE_VIBRATION=0
 
-LEG=""; EXE=""; OUT=""; SQUEEZE=32768; DEMO_LIMIT=40000; STEADY_LIMIT=2400; STEADY_REQ=7
+LEG=""; EXE=""; OUT=""; SQUEEZE=32768; DEMO_LIMIT=40000; STEADY_LIMIT=2400; STEADY_REQ=7; BOUND_LIMIT=1756
 prev=""
 for a in "$@"; do
     case "$prev" in
@@ -144,12 +153,12 @@ pg_resolve "$GAME"
 [[ -n "$OUT" ]] || OUT="${TMPDIR:-/tmp}/tercache-growth/$GAME"
 mkdir -p "$OUT"
 
-# Per-game rows: the level a spawn leg loads, and the bk2 the squeeze-bk2
-# leg replays.
+# Per-game rows: the level a spawn leg loads, the bk2 the squeeze-bk2
+# leg replays, and the level the estimate-bound leg loads.
 case "$GAME" in
-    spyro-1) SPAWN=artisans; BK2=dark-passage-level-transition; STORE_AREA=artisans;;
-    spyro-2) SPAWN=summer_forest; BK2=""; STORE_AREA=idol_springs;;
-    spyro-3) SPAWN=sunrise_spring; BK2=""; STORE_AREA=seashell_shore;;
+    spyro-1) SPAWN=artisans; BK2=dark-passage-level-transition; STORE_AREA=artisans; BOUND_AREA=crystal_flight;;
+    spyro-2) SPAWN=summer_forest; BK2=""; STORE_AREA=idol_springs; BOUND_AREA=idol_springs;;
+    spyro-3) SPAWN=sunrise_spring; BK2=""; STORE_AREA=seashell_shore; BOUND_AREA=sunrise_spring;;
 esac
 
 # One run: deletes its log first and asserts the exit row after it.
@@ -179,7 +188,7 @@ field() {  # tag name
 
 fail=0
 ran=0
-want() { [[ "$LEG" == "$1" || ( -z "$LEG" && " level-edges squeeze-bk2 consolidate store failed-edge steady-pose custom-level rewind-hold runahead-bk2 " == *" $1 "* ) ]]; }
+want() { [[ "$LEG" == "$1" || ( -z "$LEG" && " level-edges squeeze-bk2 consolidate store failed-edge steady-pose custom-level rewind-hold runahead-bk2 estimate-bound " == *" $1 "* ) ]]; }
 # check tag expr...: each expr is name<op>value over the row's fields.
 check() {
     local tag="$1"; shift
@@ -380,6 +389,17 @@ if want runahead-bk2; then
         [[ "${unseen_pres:-0}" == 0 ]] ||
             { echo "[tercache-growth] leg=runahead-bk2 FAIL (ra_unseen_presented=0, read $unseen_pres)"; fail=1; }
     fi
+fi
+
+# The arena estimate against an exact dry bake of the level's tables.
+if want estimate-bound; then
+    ran=1
+    run_leg estimate-bound "$BOUND_LIMIT" OPENPETE_TC_BOUND_CENSUS=1 -- \
+        --skip-to-level "$BOUND_AREA" --lod original
+    check estimate-bound
+    python3 tests/harness/tercache_bound_census.py "$OUT/estimate-bound.log" |
+        sed 's/^/[tercache-growth] leg=estimate-bound /'
+    [[ "${PIPESTATUS[0]}" == 0 ]] || fail=1
 fi
 
 # The M4 fixture: lofty_castle's WAD (level 52) as a replace-mode custom

@@ -7514,6 +7514,15 @@ static void tsc_sig_read(CPUState* cpu, uint32_t s, uint32_t g[5]) {
     for (uint32_t k = 0; k < 5u; k++) g[k] = rd(cpu, s + 0x04u + k * 4u);
 }
 
+/** @brief Frees a decode entry's vertex, face, previous-bank, re-tag and borrowed-face arrays; the entry itself stays.
+ * @param C The entry. */
+static void tsc_entry_free_banks(tscache_t* C) {
+    free(C->lpV); free(C->lpF); free(C->hpV); free(C->hpF);
+    free(C->lpVprev); free(C->hpVprev); free(C->lpVf); free(C->hpVf);
+    tsc_rt_free(C->rt);
+    tsimp_free(C->imp);
+}
+
 /** @brief Returns the decode-cache entry holding a sector address, whatever its signature.
  *
  * The cache holds at most one entry per address: tsc_get places a sector
@@ -7784,10 +7793,7 @@ static tscache_t* tsc_get(CPUState* cpu, uint32_t s,
         s_tsc_miss++;
         if (tsc_audit_on()) { s_tsca.redecodeSig += C && !sigOk; s_tsca.redecodeVh += sigOk; }
         if (!C) C = tsc_victim(tsc_home(s));
-        free(C->lpV); free(C->lpF); free(C->hpV); free(C->hpF);
-        free(C->lpVprev); free(C->hpVprev); free(C->lpVf); free(C->hpVf);
-        tsc_rt_free(C->rt);
-        tsimp_free(C->imp);
+        tsc_entry_free_banks(C);
         memset(C, 0, sizeof(*C));
         C->s = s; memcpy(C->sig, g, sizeof(g));
         C->vhash = vh ? vh : tsc_vhash(cpu, s, g);
@@ -13413,6 +13419,8 @@ static const uint8_t* tj_pass_marks(const tscache_t* SC, int pass, int nf) {
     return (pass == 1 ? E->nOwn : E->nAll - E->nOwn) == nf ? E->m + base : NULL;
 }
 
+static _Thread_local int s_tgpu_dry_nomarks;   /* bound census: bake without the marked-edge split */
+
 /** @brief Returns a sector bake's face marks for one of its HP sets (tj_pass_marks), NULL in a preview bake.
  *
  * A preview's store holds no split records, so its bakes draw unsplit.
@@ -13421,7 +13429,7 @@ static const uint8_t* tj_pass_marks(const tscache_t* SC, int pass, int nf) {
  * @param nf The set's face count.
  * @return The set's first face's mark byte, or NULL. */
 static const uint8_t* tgpu_tj_marks(const tscache_t* SC, int pass, int nf) {
-    return s_tpv_sink ? NULL : tj_pass_marks(SC, pass, nf);
+    return (s_tpv_sink || s_tgpu_dry_nomarks) ? NULL : tj_pass_marks(SC, pass, nf);
 }
 
 /** @brief Returns the mark byte of face f of a pass's marks, 0 without marks.
@@ -15614,6 +15622,8 @@ static int tgpu_bake_hdfold(void) { return !s_tpv_sink && openpete_native_hdfold
  * @return The generation, 0-7. */
 static uint32_t tgpu_bake_gen(int slot) { return s_tpv_sink ? 0u : ((uint32_t)s_tgpu[slot].gen & 7u); }
 
+static _Thread_local uint32_t* s_tgpu_dry;   /* bound census dry bake: per-arena tally, else NULL */
+
 /** @brief Hands a finished bake to its destination: the preview's sink on its thread, else the cache slot's chunks.
  * @param slot The decode slot.
  * @param sec_index The level sector index (the face dump's key).
@@ -15621,6 +15631,10 @@ static uint32_t tgpu_bake_gen(int slot) { return s_tpv_sink ? 0u : ((uint32_t)s_
  * @param buf The bake buffers, indexed by arena.
  * @return 1 when the bake landed, else 0. */
 static int tgpu_bake_deliver(int slot, int sec_index, const tscache_t* SC, tgpu_buf* buf) {
+    if (s_tgpu_dry) {   /* bound census: count, upload nothing */
+        for (int a = 0; a < OPTC_ARENA_COUNT; a++) s_tgpu_dry[a] += (uint32_t)buf[a].n;
+        return 1;
+    }
     if (s_tpv_sink) return tpv_take(s_tpv_sink, buf) == 0;
     const int audit = taud_deliver(buf);
     if (audit) return audit > 0;
@@ -15636,7 +15650,7 @@ static int tgpu_bake_deliver(int slot, int sec_index, const tscache_t* SC, tgpu_
 /** @brief Records a bake's colour-table misses on its cache slot; a preview bake has no slot.
  * @param slot The decode slot. */
 static void tgpu_bake_note_misses(int slot) {
-    if (!s_tpv_sink && !s_taud_sink) s_tgpu[slot].tabMiss = (uint8_t)s_coltab_miss;
+    if (!s_tpv_sink && !s_taud_sink && !s_tgpu_dry) s_tgpu[slot].tabMiss = (uint8_t)s_coltab_miss;
 }
 
 /** @brief Builds and uploads all of one sector's chunks.
@@ -16544,6 +16558,153 @@ static void tgpu_fmt_arenas(char* out, int cap, const uint32_t* num, const uint3
         at += n;
     }
     out[at] = 0;
+}
+
+/** Per-arena tallies and sector counts of one bound census (tgpu_bound_census). */
+typedef struct {
+    uint32_t exact[OPTC_ARENA_COUNT];     /* the dry bake's vertices (records on a cell arena) */
+    uint32_t nosplit[OPTC_ARENA_COUNT];   /* the same bake without the marked-edge split */
+    uint32_t hpf, lpf;                    /* HP and LP faces, borrowed faces included */
+    uint32_t nsec, animsec, fails;        /* sectors baked, poly-anim among them, failed bakes */
+} tgpu_bound_tally;
+
+/** @brief Returns why the bound census runs on this walk, 0 when it does not.
+ *
+ * Bit 0: the table signature changed under the level id. Bit 1: the first
+ * walk under the level id whose game state reads 0 (gameplay). A level id
+ * change resets both.
+ * @param lvl The level id.
+ * @param gs The game state word.
+ * @param sig The table signature.
+ * @return The reason bits. */
+static int tgpu_bound_census_due(int lvl, uint32_t gs, uint64_t sig) {
+    static _Thread_local int s_lvl = -2, s_gp;
+    static _Thread_local uint64_t s_sig;
+    if (lvl != s_lvl) { s_lvl = lvl; s_sig = 0; s_gp = 0; }
+    int why = 0;
+    if (!s_gp && gs == 0u) { s_gp = 1; why = 2; }
+    if (sig != s_sig) { s_sig = sig; why |= 1; }
+    return why;
+}
+
+/** @brief Fills the one-copy content bound per arena from a table's content figures.
+ *
+ * plain_v and anim_v on the plain and anim arenas, 2 x (plain_v + anim_v)
+ * on the near arenas, cell_r on CN_OPAQUE for the whole CN family, ca_r on
+ * the CA arenas; the other CN arenas read 0.
+ * @param c The content figures (tgpu_content).
+ * @param est Receives the bound per arena. */
+static void tgpu_content_arena_bound(const openpete_tercache_content* c, uint32_t est[OPTC_ARENA_COUNT]) {
+    memset(est, 0, sizeof(uint32_t) * OPTC_ARENA_COUNT);
+    for (int k = 0; k < OPTC_CLASS_COUNT; k++) {
+        est[k] = (uint32_t)c->plain_v[k];
+        est[OPTC_ARENA_ANIM_BASE + k] = (uint32_t)c->anim_v[k];
+        est[OPTC_ARENA_NEAR_BASE + k] = (uint32_t)(2u * (c->plain_v[k] + c->anim_v[k]));
+    }
+    est[OPTC_ARENA_CN_OPAQUE] = (uint32_t)c->cell_r;
+    for (int k = 0; k < OPTC_CLASS_COUNT - 1; k++) est[OPTC_ARENA_CELL_ANIM_BASE + k] = (uint32_t)c->ca_r[k];
+}
+
+/** @brief Decodes one sector into a private entry and dry-bakes it with and without its split marks into a census tally.
+ *
+ * The entry is decoded as tsc_get decodes a miss and takes the colour
+ * env-anim membership the last canonical roll stamped; tgpu_build_sector
+ * bakes it with near variants asked for, its chunks counted by
+ * tgpu_bake_deliver into s_tgpu_dry and never uploaded. The decode cache,
+ * the cache slots and the arenas are not touched.
+ * @param cpu The guest CPU state.
+ * @param s The sector's guest address, nonzero.
+ * @param q The sector's table index.
+ * @param sectorPtr The walk's sector table.
+ * @param sectorCnt The walk's sector count.
+ * @param lqTable The scene LQ table.
+ * @param hqTable The scene HQ table.
+ * @param texTblMode The walk's texture-table mode.
+ * @param T The tally the bake adds to.
+ * @return 0, or -1 when the entry cannot be allocated. */
+static int tgpu_bound_census_sector(CPUState* cpu, uint32_t s, int q, uint32_t sectorPtr, uint32_t sectorCnt,
+                                    uint32_t lqTable, uint32_t hqTable, int texTblMode, tgpu_bound_tally* T) {
+    tscache_t* C = (tscache_t*)calloc(1, sizeof(tscache_t));
+    if (!C) return -1;
+    uint32_t g[5];
+    tsc_sig_read(cpu, s, g);
+    C->s = s; memcpy(C->sig, g, sizeof(g));
+    tsc_decode_entry(cpu, C, s, g, lqTable, hqTable, texTblMode, 0);
+    tsc_scene_tags(cpu, C, sectorPtr, sectorCnt);
+    tsc_vert_aabb(C);
+    tsc_derive(cpu, C, texTblMode, 0, sectorPtr, sectorCnt);
+    canim_t* A = canim_slot(s);
+    if (A && A->s == s && A->rollPres == s_canim_canon_pres) { C->canim = A; C->canimPres = s_vanim_pres; }
+    T->hpf += (uint32_t)C->nHpF + (C->imp ? (uint32_t)C->imp->nF : 0u);
+    T->lpf += (uint32_t)C->nLpF + (C->imp ? (uint32_t)C->imp->nLpF : 0u);
+    T->animsec += tgpu_sector_anim(C) != 0;
+    T->nsec++;
+    s_ring_bake = tgpu_ring_sector(C);
+    s_tgpu_dry = T->exact;
+    T->fails += tgpu_build_sector(cpu, 0, C, hqTable, q, 1) != 0;
+    s_tgpu_dry = T->nosplit; s_tgpu_dry_nomarks = 1;
+    (void)tgpu_build_sector(cpu, 0, C, hqTable, q, 1);
+    s_tgpu_dry = NULL; s_tgpu_dry_nomarks = 0;
+    s_ring_bake = 0;
+    tsc_entry_free_banks(C);
+    free(C);
+    return 0;
+}
+
+/** @brief Prints the content bound and an exact dry bake of every sector of the walk's table per arena, under OPENPETE_TC_BOUND_CENSUS.
+ *
+ * Runs after tgpu_table_watch (marks rebuilt), when tgpu_bound_census_due
+ * names a reason. One `[tc-bound]` line: est is tgpu_content_arena_bound,
+ * exact and nosplit the tgpu_bound_census_sector tallies, addv the split's
+ * added vertices (tj_sector_addv) over the table. The arena estimate bounds
+ * the bake when est >= exact on every arena, the CN family summed against
+ * CN_OPAQUE's figure. Costs one private decode and two bakes per sector of
+ * the table, on the builder thread.
+ * @param cpu The guest CPU state.
+ * @param sectorPtr The walk's sector table (extended).
+ * @param sectorCnt The walk's sector count (extended).
+ * @param guestCnt The scene's own sector count.
+ * @param lqTable The scene LQ table.
+ * @param hqTable The scene HQ table.
+ * @param texTblMode The walk's texture-table mode. */
+static void tgpu_bound_census(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt, uint32_t guestCnt,
+                              uint32_t lqTable, uint32_t hqTable, int texTblMode) {
+    static _Thread_local int on = -1;
+    ENV_FLAG_LATCH(on, "OPENPETE_TC_BOUND_CENSUS");
+    if (!on || sectorCnt == 0u || sectorCnt > 1024u) return;
+    const int lvl = (int)(int32_t)rd(cpu, game_layout.level_id);
+    const uint32_t gsa = game_layout.credits.gamestate ? game_layout.credits.gamestate
+                                                       : game_layout.game_state;
+    const uint32_t gs = gsa ? rd(cpu, gsa) : 0xFFFFFFFFu;
+    uint32_t addr[1024];
+    for (uint32_t q = 0; q < sectorCnt; q++) addr[q] = rd(cpu, sectorPtr + q * 4u);
+    const uint64_t sig = openpete_fnv1a64(addr, sizeof(uint32_t) * sectorCnt)
+                       ^ ((uint64_t)sectorPtr << 32) ^ sectorCnt;
+    const int why = tgpu_bound_census_due(lvl, gs, sig);
+    if (!why) return;
+    openpete_tercache_content c;
+    tgpu_content(cpu, sectorPtr, sectorCnt, guestCnt, lqTable, hqTable, texTblMode, &c);
+    uint32_t est[OPTC_ARENA_COUNT];
+    tgpu_content_arena_bound(&c, est);
+    uint64_t addv = 0;
+    for (uint32_t q = 0; q < sectorCnt; q++)
+        for (int k = 0; k < OPTC_CLASS_COUNT; k++) addv += tj_sector_addv(q, k);
+    tgpu_bound_tally T;
+    memset(&T, 0, sizeof T);
+    const long keycell_save = s_tgpu_keycell_faces;
+    const op_time_t t0 = op_now();   /* clock-guard: wall (bake census) */
+    for (uint32_t q = 0; q < sectorCnt; q++)
+        if (addr[q] && tgpu_bound_census_sector(cpu, addr[q], (int)q, sectorPtr, sectorCnt,
+                                                lqTable, hqTable, texTblMode, &T) != 0) break;
+    s_tgpu_keycell_faces = keycell_save;
+    char ex[512], es[512], e0[512];
+    tgpu_fmt_arenas(ex, (int)sizeof ex, T.exact, NULL);
+    tgpu_fmt_arenas(e0, (int)sizeof e0, T.nosplit, NULL);
+    tgpu_fmt_arenas(es, (int)sizeof es, est, NULL);
+    fprintf(stderr, "[tc-bound] f=%u level=%d gs=%u why=%d sig=%016llx sectors=%u animsec=%u hpf=%u lpf=%u "
+            "addv=%llu fails=%u ms=%.2f exact=%s est=%s nosplit=%s\n",
+            openpete_feed_key_now(), lvl, gs, why, (unsigned long long)sig, T.nsec, T.animsec, T.hpf, T.lpf,
+            (unsigned long long)addv, T.fails, (double)(op_now() - t0) / 1e6, ex, es, e0);   /* clock-guard: wall (bake census) */
 }
 
 /** @brief Prints one [ter-gpu] line of the retained terrain cache's arena census to stderr.
@@ -20967,6 +21128,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) OP_REQUIRES(sim) {
      * between the two bakes. */
     tgpu_table_watch(cpu, sectorPtr, sectorCnt, guestCnt, walk_lvl, edge, edge_prev,
                      lqTable, hqTable, texTblMode);
+    tgpu_bound_census(cpu, sectorPtr, sectorCnt, guestCnt, lqTable, hqTable, texTblMode);
     /* Visible-sector index set: canonical 4:3 verdict (D_800771C8) at native
      * aspect; occlusion-group candidate set in widescreen (terrain_vislist). */
     static uint16_t visidx[1024];
