@@ -1,6 +1,7 @@
 # mutable globals whose demand cascades, each row with its annotator chain
 # key-columns: 3
 # written-by: annotator
-# head: 6025e1e6395505c1a241a829d1d21ff98a8826b7
+# head: 3706833926d7de712f26dba9e3de60305ec3f91d
 file	function	name	kind	form	note
 core/host/memcard.c	-	s_mg	static	-	role=sim; reason=memcard.c s_mg: the card merge scratch image and counters join the slot images s_card and s_disk, which have no form; sim ownership reaches 62 psyq thunk functions and the atexit summary; ORPHAN mc_merge_summary (non-call reference); chain s_mg <- ?
+core/renderer/native_render.c	-	s_game_scene_opens	static	-	role=sim; reason=s_game_scene_opens: counted by the game feed's scene open, read by the -og capture pairing; the chain ends at on_overlay_precapture, a non-call reference; ORPHAN on_overlay_precapture (non-call reference); chain release_batch <- ? <- feed_one_claim <- ? <- scene_begin_for_feed <- ? <- openpete_native_scene_begin_frame <- ? <- s_game_scene_opens <- ?

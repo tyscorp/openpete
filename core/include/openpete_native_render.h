@@ -2673,6 +2673,15 @@ int openpete_native_scene_yield_owes_present(int pending);
  * DrawOTag.
  * @return The scene id. */
 unsigned openpete_native_otag_scene(void);
+/** @brief Return the count of scenes the game's render has opened since boot.
+ *
+ * Counts each game feed that opens a new scene (a sub-tick re-extract opens
+ * none). A scene's id is the ordinal of the capture that presents it, so a
+ * render that opens a scene before the previous one reached a capture takes
+ * that scene's id: a DrawOTag tagged with the id before such an open
+ * submitted the superseded scene, not the one the capture presents.
+ * @return The count. */
+unsigned openpete_native_game_scene_opens(void);
 /** @brief Return the id of the scene the next canonical capture presents.
  *
  * The ordinal of that capture, one more than the captures taken so far.

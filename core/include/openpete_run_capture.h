@@ -19,7 +19,9 @@ extern "C" {
  *
  * Called by the DrawOTag thunk after its PsyCross walk. Stamps the native
  * scene id of that OT (openpete_native_otag_scene), the identity by which
- * the -og leg pairs a PsyCross present with a native scene. */
+ * the -og leg pairs a PsyCross present with a native scene, and the game
+ * scene opens so far (openpete_native_game_scene_opens), by which the leg
+ * refuses an OT whose scene a later render superseded. */
 void openpete_capture_note_psyx_walk(void);
 
 /** @brief Write the capture legs read from PsyCross at a canonical present, before the native present step.

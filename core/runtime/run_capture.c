@@ -45,12 +45,19 @@ static struct {
     /* The native compose serial (openpete_native_compose_serial) before the
      * keyed present composed, so og_vram_check knows its compose ran. */
     unsigned og_key_serial[OPENPETE_MAX_SCREENSHOT_FRAMES];
+    /* The game scene opens (openpete_native_game_scene_opens) at the keyed
+     * present, before its capture. */
+    unsigned og_key_opens[OPENPETE_MAX_SCREENSHOT_FRAMES];
     /* The native scene id of the last OT PsyCross rasterized, which the
      * present FBO holds until the next present (openpete_capture_note_psyx_walk);
      * the canonical presents counted by og_leg; -og legs written per rule. */
     unsigned psyx_scene;
     unsigned canon_presents;
     unsigned og_rule_n[OG_RULE_COUNT];
+    /* The game scene opens when PsyCross rasterized that OT, and the targets
+     * whose keyed present held an OT of a superseded scene (og_fed_after). */
+    unsigned psyx_opens;
+    unsigned og_superseded;
     bool vk_fired[OPENPETE_MAX_SCREENSHOT_FRAMES];   /* -vk leg */
     bool vk_armed[OPENPETE_MAX_SCREENSHOT_FRAMES];
     bool int_fired[OPENPETE_MAX_SCREENSHOT_FRAMES];  /* intermediate leg */
@@ -151,6 +158,21 @@ static void og_write(const openpete_options_t *opts, int si, const char *rule)
                s_cap.canon_presents - s_cap.og_key_present[si]);
 }
 
+/** @brief Return the game scenes opened after PsyCross rasterized the OT it holds and before a target's keyed capture.
+ *
+ * Scene ids are capture ordinals, so a render that opens a scene before the
+ * previous one reached a capture gives the new scene the old one's id. An OT
+ * walked before such an open drew the superseded scene under the id of the
+ * scene the keyed capture presents. 0 when the walk followed every open
+ * before the keyed capture.
+ * @param si Target index, its keyed present reached.
+ * @return The opens. */
+static unsigned og_fed_after(int si)
+{
+    return s_cap.og_key_opens[si] > s_cap.psyx_opens
+         ? s_cap.og_key_opens[si] - s_cap.psyx_opens : 0u;
+}
+
 /** @brief Finish a target's -og leg under a rule and count the rule.
  *
  * Writes the file unless the rule keeps the image written provisionally at
@@ -165,16 +187,19 @@ static void og_finish(const openpete_options_t *opts, int si, int rule, bool wri
     s_cap.og_rule_n[rule]++;
     if (write) og_write(opts, si, k_og_rule_name[rule]);
     OPL_INFO_F("screenshot",
-               "og-pair target=%d rule=%s (otag=%u vram=%u alongside=%u unpaired=%u fixed=%u)",
-               opts->screenshot_frames[si], k_og_rule_name[rule],
+               "og-pair target=%d rule=%s fed_after=%u (otag=%u vram=%u alongside=%u "
+               "unpaired=%u fixed=%u superseded=%u)",
+               opts->screenshot_frames[si], k_og_rule_name[rule], og_fed_after(si),
                s_cap.og_rule_n[OG_RULE_OTAG], s_cap.og_rule_n[OG_RULE_VRAM],
                s_cap.og_rule_n[OG_RULE_ALONGSIDE],
-               s_cap.og_rule_n[OG_RULE_UNPAIRED], s_cap.og_rule_n[OG_RULE_FIXED]);
+               s_cap.og_rule_n[OG_RULE_UNPAIRED], s_cap.og_rule_n[OG_RULE_FIXED],
+               s_cap.og_superseded);
 }
 
 void openpete_capture_note_psyx_walk(void)
 {
     s_cap.psyx_scene = openpete_native_otag_scene();
+    s_cap.psyx_opens = openpete_native_game_scene_opens();
 }
 
 /** @brief Advance one reached target's -og leg by the native scene identity of the OT PsyCross holds.
@@ -184,7 +209,9 @@ void openpete_capture_note_psyx_walk(void)
  * no OT of its own, so the keyed present's PsyCross image is written. The
  * leg fires on the first present whose PsyCross scene rasterized that
  * scene's OT: the keyed present when the game submitted the OT before its
- * VSync, the next one when it submits after. Until then the keyed present's
+ * VSync, the next one when it submits after. An OT tagged with the scene's
+ * id but walked before a render that superseded it (og_fed_after) drew the
+ * superseded scene and does not pair. Until then the keyed present's
  * image stands provisionally at the path: og_vram_check keeps it when the
  * native present re-displayed that image, and a later OT of a newer scene
  * finalizes it unpaired.
@@ -200,10 +227,13 @@ static void og_pair_step(const openpete_options_t *opts, int si)
         }
         s_cap.og_scene[si] = openpete_native_scene_presenting();
         s_cap.og_key_serial[si] = openpete_native_compose_serial(NULL);
-        if (s_cap.psyx_scene < s_cap.og_scene[si])
+        s_cap.og_key_opens[si] = openpete_native_game_scene_opens();
+        const bool superseded = s_cap.psyx_scene == s_cap.og_scene[si] && og_fed_after(si);
+        if (superseded) s_cap.og_superseded++;
+        if (s_cap.psyx_scene < s_cap.og_scene[si] || superseded)
             og_write(opts, si, "provisional");
     }
-    if (s_cap.psyx_scene == s_cap.og_scene[si])
+    if (s_cap.psyx_scene == s_cap.og_scene[si] && !og_fed_after(si))
         og_finish(opts, si, OG_RULE_OTAG, true);
     else if (s_cap.psyx_scene > s_cap.og_scene[si])
         og_finish(opts, si, OG_RULE_UNPAIRED, false);

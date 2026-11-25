@@ -1660,6 +1660,8 @@ static struct { int x, y, w, h, disp_x, disp_y; unsigned frame; int unpresented;
  * last DrawOTag submitted (openpete_native_note_draw_otag). */
 static unsigned s_capture_seq;
 static unsigned s_otag_scene;
+/* Scenes the game's render opened (openpete_native_game_scene_opens). */
+static unsigned s_game_scene_opens;
 /* Feed engagement over the run: canonical captures taken, the captures whose
  * scene the game's render fed since the previous capture, and the triangles
  * those fed scenes held. Reported at shutdown as the `native-feed:` line,
@@ -1938,6 +1940,7 @@ void openpete_native_scene_begin_frame(unsigned frame) {
          * belongs to an image no present showed. A capture of this render
          * made before its first feed may have superseded it already. */
         if (game_feed) {
+            s_game_scene_opens++;
             if (s_game_scene_pending) scene_supersede_pending(frame);
             s_game_scene_pending = 1;
             s_scene_superseded_frame = 0xFFFFFFFFu;
@@ -2825,6 +2828,7 @@ void openpete_native_note_draw_otag(void) {
     if (fed_tris) note_drawn_area(s_scene_frame);
 }
 unsigned openpete_native_otag_scene(void) { return s_otag_scene; }
+unsigned openpete_native_game_scene_opens(void) { return s_game_scene_opens; }
 unsigned openpete_native_scene_presenting(void) { return s_capture_seq + 1u; }
 int openpete_native_drawn_env(uint8_t env[4]) {
     if (!s_drawenv_drawn_valid) return 0;
