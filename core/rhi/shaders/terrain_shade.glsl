@@ -142,7 +142,13 @@ vec4 ter_decode555(uint p)
                 1.0 - 0.5 * float((p >> 15) & 1u));
 }
 
-/* Debug tints (globals gflags bit 29, mode in bits 26-28): 0 and 1 the
+/* The debug tint word, specialization constant 9 (rhi_terrain_gpu_tint,
+ * OPENPETE_TERRAIN_GPU_TINT; terrain.vert declares the same constant): bit
+ * 29 on, mode in bits 26-28. 0 in every shipped configuration, so the driver
+ * drops ter_debug_shade's and ter_attr's work from the stage. */
+layout(constant_id = 9) const int TER_TINT = 0;
+
+/* Debug tints (TER_TINT bit 29, mode in bits 26-28): 0 and 1 the
  * CLUT-ladder verdict, 2, 4 and 5 the raw vertex colour (4 and 5 substitute
  * the baked near or far colour in the vertex stage), 3 a UV visualiser, 6
  * the exact ladder t0k readout. These modes replace the colour before the
@@ -154,8 +160,8 @@ vec4 ter_decode555(uint p)
 bool ter_debug_shade(out vec4 c)
 {
     c = vec4(0.0);
-    if ((g.fog.y & (1 << 29)) == 0) return false;
-    int mode = (g.fog.y >> 26) & 7;
+    if ((TER_TINT & (1 << 29)) == 0) return false;
+    const int mode = (TER_TINT >> 26) & 7;
     if (mode == 7) return false;
     if (mode == 6) {                        /* exact ladder t0k readout */
         if ((vMat.y & (1u << 16)) == 0u) {  /* ladder never ran here */
@@ -192,7 +198,7 @@ bool ter_debug_shade(out vec4 c)
 bool ter_attr(out vec4 c)
 {
     c = vec4(0.0);
-    if ((g.fog.y & (1 << 29)) == 0 || ((g.fog.y >> 26) & 7) != 7) return false;
+    if ((TER_TINT & (1 << 29)) == 0 || ((TER_TINT >> 26) & 7) != 7) return false;
     uint pass = ter_pc.mat_pass > 0 ? 3u : uint(ter_pc.pass_sel) & 3u;
     uint w = ((vRim >> 8) & 0x3FFFFFu) | (pass << 22);
     c = vec4(float(w & 255u), float((w >> 8) & 255u), float((w >> 16) & 255u), 255.0) / 255.0;

@@ -20805,29 +20805,6 @@ static void tgpu_budget_end(void) OP_REQUIRES(sim) {
     s_bud_mode = TGPU_BUD_OFF;
 }
 
-/** @brief Return the retained globals' debug-tint gflags bits that OPENPETE_TERRAIN_GPU_TINT selects.
- *
- * Unset or "0": none. Otherwise bit 29 (tint on) and the mode, value & 7, in
- * bits 26-28 (terrain_shade.glsl ter_debug_shade: ladder verdict, raw
- * colour, UV, t0k; mode 7 the per-pixel face attribution word, ter_attr);
- * value & 8 sets bit 25, under which mode 7 carries the face's
- * verdict-class bits in place of its identity (terrain.vert). Diagnostic;
- * unregistered; the variable is read once and the bits latched.
- * @return The gflags bits. */
-static uint32_t tn_gpu_tint_flags(void) {
-    static int64_t s_bits = -1;
-    if (s_bits < 0) {
-        const char* e = getenv("OPENPETE_TERRAIN_GPU_TINT");
-        if (!e || !*e || *e == '0') {
-            s_bits = 0;
-        } else {
-            const int v = atoi(e);
-            s_bits = (int64_t)((1u << 29) | ((uint32_t)(v & 7) << 26) | ((v & 8) ? (1u << 25) : 0u));
-        }
-    }
-    return (uint32_t)s_bits;
-}
-
 /** @brief Appends this build's camera, and the vertices of every sector decoded since the last call, to the OPENPETE_TERRAIN_FP32_EMU file.
  *
  * One `C` line per build: the feed key, the camera (camx camy camz, world/16
@@ -21331,7 +21308,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) OP_REQUIRES(sim) {
         tcg.hp_drop_corner_min = game_layout.terrain.hp_drop_corner_min;
         tcg.ot_terms     = tc_ot_terms();
         tcg.gflags = tc_global_flags(s_nearhq && hqTable, lod_handoff);
-        tcg.gflags |= tn_gpu_tint_flags();
+        tcg.gflags |= (uint32_t)rhi_terrain_gpu_tint();
         /* Portal inner-rim frames for the vertex-stage cull (zeroed rim_n
          * from the memset when frames are absent - retained tris then carry
          * no rim verdict). */

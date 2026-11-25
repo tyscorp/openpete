@@ -4494,7 +4494,6 @@ games/common/renderer/terrain.c	tn_fill_face_drop	s_thin	local	-	owed: declared 
 games/common/renderer/terrain.c	tn_fp32emu_dump	s_fp	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	tn_fp32emu_dump	s_gen	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	tn_fp32emu_dump	s_on	local	-	owed: declared with no form and no row before the new-global refusal
-games/common/renderer/terrain.c	tn_gpu_tint_flags	s_bits	local	once	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	tn_lp_handoff_far_drop	s_lpkeep	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	tn_lp_handoff_far_drop	s_lpkeepdbg	local	-	owed: declared with no form and no row before the new-global refusal
 games/common/renderer/terrain.c	tn_rim_verdict	logged	local	-	

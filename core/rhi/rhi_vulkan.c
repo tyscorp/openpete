@@ -8785,8 +8785,8 @@ static void census_add_base(const rhi_device *dev, const rhi_pipeline *p)
 /* One stage's specialization info: an entry and a packed value for each
  * constant the stage declares, and nothing for the rest. */
 typedef struct {
-    VkSpecializationMapEntry e[9];
-    VkBool32                 d[9];
+    VkSpecializationMapEntry e[10];
+    VkBool32                 d[10];
     VkSpecializationInfo     info;
 } stage_spec;
 
@@ -8860,25 +8860,52 @@ int32_t rhi_terrain_source_tint(void)
     return v;
 }
 
+int32_t rhi_terrain_gpu_tint(void)
+{
+    static _Atomic int32_t s_tint = -1;    /* any compile thread reads it */
+    int32_t v = s_tint;
+    if (v < 0) {
+        const char *e = getenv("OPENPETE_TERRAIN_GPU_TINT");
+        v = 0;
+        if (e && *e && *e != '0') {
+            const int m = atoi(e);
+            v = (int32_t)((1u << 29) | ((uint32_t)(m & 7) << 26) | ((m & 8) ? (1u << 25) : 0u));
+        }
+        int32_t unset = -1;
+        if (atomic_compare_exchange_strong(&s_tint, &unset, v) && v != 0)
+            RHI_LOG("OPENPETE_TERRAIN_GPU_TINT: retained terrain debug tint mode %d%s\n",
+                    (int)((v >> 26) & 7), (v & (1 << 25)) ? " (verdict classes)" : "");
+    }
+    return v;
+}
+
+/* The process-wide specialization constants, ids 6 up (OP_SRC_TINT,
+ * OP_KEY_TIER_ORDER, OP_KEY_BLEND_CENSUS, TER_TINT): each one value for
+ * every pipeline, read once per process. */
+static int32_t (*const k_proc_spec[])(void) = {
+    rhi_terrain_source_tint, key_tier_order, key_blend_census, rhi_terrain_gpu_tint,
+};
+enum { PROC_SPEC_FIRST = 6, SPEC_IDS = PROC_SPEC_FIRST + (int)(sizeof k_proc_spec / sizeof k_proc_spec[0]) };
+
 /** @brief Fill a stage's specialization info with only the constants it declares.
  *
- * Ids 0-5 take the variant's values, id 6 (OP_SRC_TINT)
- * rhi_terrain_source_tint(), id 7 (OP_KEY_TIER_ORDER) key_tier_order() and
- * id 8 (OP_KEY_BLEND_CENSUS) key_blend_census().
+ * Ids 0-5 take the variant's values, ids 6 up the k_proc_spec getters':
+ * 6 (OP_SRC_TINT) rhi_terrain_source_tint(), 7 (OP_KEY_TIER_ORDER)
+ * key_tier_order(), 8 (OP_KEY_BLEND_CENSUS) key_blend_census() and 9
+ * (TER_TINT) rhi_terrain_gpu_tint().
  * @param s Storage.
  * @param ids The stage's declared constant ids (bit i = constant_id i).
  * @param c The six variant constant values.
  * @return The info, or NULL when the stage declares none. */
 static const VkSpecializationInfo *stage_spec_fill(stage_spec *s, uint32_t ids, const uint32_t c[6])
 {
+    _Static_assert(SPEC_IDS <= (int)(sizeof s->e / sizeof s->e[0]), "stage_spec holds every id");
     uint32_t n = 0;
-    for (uint32_t i = 0; i < 9; i++) {
+    for (uint32_t i = 0; i < SPEC_IDS; i++) {
         if (!((ids >> i) & 1u)) continue;
         s->e[n] = (VkSpecializationMapEntry){ .constantID = i, .offset = n * (uint32_t)sizeof(VkBool32),
                                               .size = sizeof(VkBool32) };
-        s->d[n] = i < 6 ? c[i] : i == 6 ? (uint32_t)rhi_terrain_source_tint()
-                               : i == 7 ? (uint32_t)key_tier_order()
-                                        : (uint32_t)key_blend_census();
+        s->d[n] = i < PROC_SPEC_FIRST ? c[i] : (uint32_t)k_proc_spec[i - PROC_SPEC_FIRST]();
         n++;
     }
     s->info = (VkSpecializationInfo){ .mapEntryCount = n, .pMapEntries = s->e,
@@ -9115,9 +9142,8 @@ static void pipe_depth_stencil_fill(const rhi_device *dev, const rhi_pipeline_de
  * creation. Each stage receives only the specialization constants it
  * declares, with the values the variant view gives: 0 DEPTH_REVERSED (per
  * depth class), 1 AFFINE_UV, 2 NOTEX, 3 MOBY_TRUESCOPE, 4 SLOT_CONTEST,
- * 5 STP_SELECT, 6 OP_SRC_TINT, 7 OP_KEY_TIER_ORDER and 8
- * OP_KEY_BLEND_CENSUS from the process (rhi_terrain_source_tint,
- * key_tier_order, key_blend_census). The fragment stage gets the same values as the vertex
+ * 5 STP_SELECT, 6 OP_SRC_TINT, 7 OP_KEY_TIER_ORDER, 8
+ * OP_KEY_BLEND_CENSUS and 9 TER_TINT from the process (k_proc_spec). The fragment stage gets the same values as the vertex
  * stage: the terrain key-resolve fragments invert gl_FragCoord.z back to
  * view-Z, and the inversion follows the encoding the vertex stage selected.
  * The caller sets stages[0].module and stages[1].module.
@@ -10139,11 +10165,9 @@ static rhi_compile_job *job_make(const rhi_pipeline_desc *desc,
         return NULL;
     }
     /* Latch every knob a run reads here, never in a run: the census level,
-     * and the specialization constants stage_spec_fill passes (ids 6-8). */
+     * and the specialization constants stage_spec_fill passes (ids 6 up). */
     (void)rhi_pc_level();
-    (void)rhi_terrain_source_tint();
-    (void)key_tier_order();
-    (void)key_blend_census();
+    for (int i = 0; i < SPEC_IDS - PROC_SPEC_FIRST; i++) (void)k_proc_spec[i]();
     job->variant = variant;
     job->slot_contest = s_fs_slot_contest;
     job->generation = generation;

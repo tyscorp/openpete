@@ -374,6 +374,11 @@ layout(constant_id = 1) const bool AFFINE_UV = false;
  * ordering table, so a terrain key is stored in its bucket's tier order
  * (op_key_tier_key); the key pass's window depth bounds that store. */
 layout(constant_id = 4) const bool SLOT_CONTEST = false;
+/* Spec-constant 9, as terrain_shade.glsl: the debug tint word
+ * (rhi_terrain_gpu_tint, OPENPETE_TERRAIN_GPU_TINT): bit 29 on, mode in bits
+ * 26-28, bit 25 the mode-7 verdict-class word. 0 in every shipped
+ * configuration, so the driver drops each tint branch from the stage. */
+layout(constant_id = 9) const int TER_TINT = 0;
 
 /* Outputs, component-packed into eleven locations: the interpolated
  * values share locations 0 and 5 with each other's free components, the
@@ -2707,9 +2712,9 @@ void main()
         vMat.xy = uvec2((mat0 & 0x00FFFFFFu) | 0x80000000u, vMat.y + (512u << 16));
     /* Debug tints 0-6 repurpose vMat.y; mode 7 keeps it stock, since its
      * fragment runs the stock texel fetch and cut-out. */
-    if ((gf & (1 << 29)) != 0 && ((gf >> 26) & 7) != 7) {   /* ladder verdict */
+    if ((TER_TINT & (1 << 29)) != 0 && ((TER_TINT >> 26) & 7) != 7) {   /* ladder verdict */
         vMat.y |= (dbg_half << 30) | (dbg_delta << 25);
-        if (((uint(gf) >> 26) & 7u) == 6u)     /* mode 6: exact t0k readout */
+        if (((TER_TINT >> 26) & 7) == 6)       /* mode 6: exact t0k readout */
             vMat.y = dbg_t0k <= -99999
                    ? 0u
                    : (uint(clamp(dbg_t0k + 4096, 0, 8191)) << 18)
@@ -2914,8 +2919,8 @@ void main()
 
         bool doFog   = hpRaw ? hpFog : (!lp && !hqv && !fogOff);
         bool doGrade = lp && (sf & SF_LPGRADE) != 0u;
-        int  dbgmode = (gf >> 26) & 7;
-        bool dbgraw  = (gf & (1 << 29)) != 0 && (dbgmode == 4 || dbgmode == 5);
+        const int  dbgmode = (TER_TINT >> 26) & 7;
+        const bool dbgraw  = (TER_TINT & (1 << 29)) != 0 && (dbgmode == 4 || dbgmode == 5);
         cvx cin[3];
         for (int k = 0; k < 3; k++) {
             /* an HQ vertex bakes its true far colour; unfogged it draws near */
@@ -3157,11 +3162,11 @@ void main()
 
     /* Debug tint mode 7 (face attribution): bits 8-29 of vRim carry this
      * face's identity word (attr_word) for terrain_shade.glsl's ter_attr. */
-    if ((gf & (1 << 29)) != 0 && ((gf >> 26) & 7) == 7) {
-        if ((gf & (1 << 25)) == 0) {
+    if ((TER_TINT & (1 << 29)) != 0 && ((TER_TINT >> 26) & 7) == 7) {
+        if ((TER_TINT & (1 << 25)) == 0) {
             vRim = (vRim & 0xFFu) | (attr_word(slot, lp, hqv, is4, koff > 0.25 && ktab.n > 0) << 8);
         } else {
-            /* gflags bit 25: the face's verdict classes instead, one bit
+            /* tint bit 25: the face's verdict classes instead, one bit
              * each, for the precision A/B's per-class engagement. */
             uint cw = (is4 && !ist ? 1u : 0u) | (ist && !ist2 ? 2u : 0u) | (ist2 ? 4u : 0u)
                     | (waterFar ? 8u : 0u) | (hpRaw ? 16u : 0u) | (hpFog ? 32u : 0u)
@@ -3258,9 +3263,9 @@ void main()
 #endif
 #undef TJ_SHADE
     {   /* debug tint modes 4/5: show the baked near / far colour raw */
-        int dbgmode = (gf >> 26) & 7;
-        if ((gf & (1 << 29)) != 0 && dbgmode == 4) col = vec4(op_unorm8(inColNear.rgb), 1.0);
-        if ((gf & (1 << 29)) != 0 && dbgmode == 5) col = vec4(op_unorm8(inColFar.rgb), 1.0);
+        const int dbgmode = (TER_TINT >> 26) & 7;
+        if ((TER_TINT & (1 << 29)) != 0 && dbgmode == 4) col = vec4(op_unorm8(inColNear.rgb), 1.0);
+        if ((TER_TINT & (1 << 29)) != 0 && dbgmode == 5) col = vec4(op_unorm8(inColFar.rgb), 1.0);
     }
 #endif
 

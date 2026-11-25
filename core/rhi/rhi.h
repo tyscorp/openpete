@@ -650,6 +650,18 @@ uint32_t    rhi_device_max_descriptor_sets(const rhi_device *dev);
  * vertices while it is nonzero. Read once per process.
  * @return 0 to 1000. */
 int32_t     rhi_terrain_source_tint(void);
+/** @brief Return the retained terrain's debug tint word, 0 when OPENPETE_TERRAIN_GPU_TINT is unset or "0".
+ *
+ * Otherwise bit 29 (tint on), the mode, value & 7, in bits 26-28
+ * (terrain_shade.glsl ter_debug_shade: ladder verdict, raw colour, UV, t0k;
+ * mode 7 the per-pixel face attribution word, ter_attr), and bit 25 for
+ * value & 8, under which mode 7 carries the face's verdict-class bits in
+ * place of its identity (terrain.vert). The word is specialization constant
+ * 9 (TER_TINT) of every terrain stage, so a stage built with 0 carries no
+ * tint code; the retained globals' gflags carry the same bits. Diagnostic;
+ * read once per process.
+ * @return The tint word. */
+int32_t     rhi_terrain_gpu_tint(void);
 /** @brief Return whether fillModeNonSolid is enabled on this device.
  *
  * With it, pipelines may rasterize with VK_POLYGON_MODE_LINE (the wireframe
