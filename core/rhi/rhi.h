@@ -191,6 +191,18 @@ bool rhi_frame_active(const rhi_device *dev);
  * @param dev Device to begin the frame on.
  * @return true when a command buffer is recording. */
 bool rhi_begin_frame(rhi_device *dev);
+/** @brief Begin a frame that renders into targets only: no swapchain image is acquired and none is presented.
+ *
+ * For a compose read back from its own render target. The swapchain is not
+ * checked or rebuilt and the acquire back-off is not consulted. The slot
+ * fence is waited without bound headless and in capture mode, and up to
+ * RHI_BLOCKING_FENCE_TIMEOUT_NS otherwise, where rhi_begin_frame would poll
+ * it; an expired wait counts in fence_sheds and refuses. A device loss
+ * refuses. End the frame with rhi_end_frame, which submits it without a
+ * present; rhi_blit_to_swapchain does nothing in it.
+ * @param dev Device to begin the frame on.
+ * @return true when a command buffer is recording. */
+bool rhi_begin_frame_offline(rhi_device *dev);
 /** @brief Return whether the swapchain must be rebuilt before the next present.
  *
  * The rebuild touches the window and calls SDL, so a thread that is not the

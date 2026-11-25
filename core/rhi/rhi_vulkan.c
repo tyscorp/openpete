@@ -5123,19 +5123,20 @@ static void retired_reclaim(rhi_device *dev, bool all)
  * Headless and capture mode wait without bound: there is no display to
  * pace them, the readback depends on the slot having retired, and a shed
  * would lose a frame the capture owes. A dedicated present thread
- * (present_blocking) waits up to RHI_BLOCKING_FENCE_TIMEOUT_NS. A busy poll
- * or an expired bounded wait counts in fence_sheds. VK_ERROR_DEVICE_LOST
- * refuses in every mode.
+ * (present_blocking) and a caller passing @p bounded wait up to
+ * RHI_BLOCKING_FENCE_TIMEOUT_NS. A busy poll or an expired bounded wait
+ * counts in fence_sheds. VK_ERROR_DEVICE_LOST refuses in every mode.
  * @param dev Device whose current slot fence is checked.
+ * @param bounded true to wait up to the bound where the device would poll.
  * @return true when the slot's fence has signalled. */
-static bool slot_fence_retired(rhi_device *dev)
+static bool slot_fence_retired(rhi_device *dev, bool bounded)
 {
     Uint64 t0 = SDL_GetTicksNS();
     if (dev->headless || dev->capture_mode) {
         if (fence_result(vkWaitForFences(dev->device, 1, &dev->in_flight[dev->frame],
                                          VK_TRUE, UINT64_MAX), "fence wait") != VK_SUCCESS)
             return false;
-    } else if (dev->present_blocking) {
+    } else if (dev->present_blocking || bounded) {
         /* A dedicated present thread is paced by the display by design:
          * waiting here costs the sim nothing. Bounded so a dead compositor
          * still returns control, and the bound is honoured: proceeding past
@@ -5193,31 +5194,13 @@ static bool frame_image_step(rhi_device *dev, bool acquire)
     return dev->frame_acquired || (dev->capture_mode && !s_device_lost);
 }
 
-/** @brief Begin recording a frame: retire the slot's previous submission, optionally acquire a swapchain image, reset and begin the command buffer.
+/** @brief Open the current slot's command buffer for a frame whose slot fence has retired.
  *
- * The slot fence is retired by slot_fence_retired (waited headless and in
- * capture mode, bounded under a blocking presenter, polled inline). After a
- * device loss every call refuses. In capture mode a swapchain that cannot
- * be used yet (a pending rebuild, a resize settling, the rebuild back-off)
- * or a refused acquire does not refuse the frame: it begins without an
- * image, and rhi_end_frame submits it without a present, unless a failed
- * rebuild left the offscreen framebuffer destroyed, which refuses the frame.
- * @param dev Device to begin the frame on.
- * @param acquire Whether to acquire a swapchain image (windowed only).
- * @return true when a command buffer is recording. */
-static bool begin_frame_impl(rhi_device *dev, bool acquire)
+ * Resets the slot fence and command buffer, begins recording, advances the
+ * frame serial and resets the per-frame recording state.
+ * @param dev Device whose current slot opens. */
+static void frame_open(rhi_device *dev)
 {
-    seam_check("begin_frame");
-    if (s_device_lost) return false;
-    const bool sc_ok = ensure_swapchain(dev);
-    if (!sc_ok && !(dev->capture_mode && dev->off_fb)) return false;
-    if (!slot_fence_retired(dev)) return false;
-
-    /* This slot's previous submission has fully retired - its timestamp
-     * queries are ready for a block-free harvest. */
-    if (dev->gpu_timers) gpu_timers_harvest(dev);
-
-    if (!frame_image_step(dev, acquire && sc_ok)) return false;
     vkResetFences(dev->device, 1, &dev->in_flight[dev->frame]);
 
     VkCommandBuffer cb = dev->cmd[dev->frame];
@@ -5253,6 +5236,45 @@ static bool begin_frame_impl(rhi_device *dev, bool acquire)
         vkCmdResetQueryPool(cb, dev->gpu_qp[dev->frame], 0, RHI_GPU_ZONES_MAX * 2);
         dev->gpu_zone_sp = 0;   /* fresh nesting stack for this frame */
     }
+}
+
+/** @brief Begin recording a frame: retire the slot's previous submission, optionally acquire a swapchain image, reset and begin the command buffer.
+ *
+ * The slot fence is retired by slot_fence_retired (waited headless and in
+ * capture mode, bounded under a blocking presenter, polled inline). After a
+ * device loss every call refuses. In capture mode a swapchain that cannot
+ * be used yet (a pending rebuild, a resize settling, the rebuild back-off)
+ * or a refused acquire does not refuse the frame: it begins without an
+ * image, and rhi_end_frame submits it without a present, unless a failed
+ * rebuild left the offscreen framebuffer destroyed, which refuses the frame.
+ * @param dev Device to begin the frame on.
+ * @param acquire Whether to acquire a swapchain image (windowed only).
+ * @return true when a command buffer is recording. */
+static bool begin_frame_impl(rhi_device *dev, bool acquire)
+{
+    seam_check("begin_frame");
+    if (s_device_lost) return false;
+    const bool sc_ok = ensure_swapchain(dev);
+    if (!sc_ok && !(dev->capture_mode && dev->off_fb)) return false;
+    if (!slot_fence_retired(dev, false)) return false;
+
+    /* This slot's previous submission has fully retired - its timestamp
+     * queries are ready for a block-free harvest. */
+    if (dev->gpu_timers) gpu_timers_harvest(dev);
+
+    if (!frame_image_step(dev, acquire && sc_ok)) return false;
+    frame_open(dev);
+    return true;
+}
+
+bool rhi_begin_frame_offline(rhi_device *dev)
+{
+    seam_check("begin_frame_offline");
+    if (s_device_lost) return false;
+    if (!slot_fence_retired(dev, true)) return false;
+    if (dev->gpu_timers) gpu_timers_harvest(dev);
+    dev->frame_acquired = false;
+    frame_open(dev);
     return true;
 }
 

@@ -50,7 +50,7 @@ import re
 import sys
 
 RHI_ENTRY = re.compile(
-    r"\brhi_(begin_frame|begin_frame_staged|end_frame|end_frame_to_stage|"
+    r"\brhi_(begin_frame|begin_frame_staged|begin_frame_offline|end_frame|end_frame_to_stage|"
     r"present_stage(_acquire|_submit|_release)?|present_wait)\s*\(")
 RHI_ALLOW = {
     "core/rhi/rhi.h",              # declarations

@@ -24574,7 +24574,7 @@ static void freeze_render_into(freeze_target_t *t, float cap_wf, int sync, int *
     const float bb  = (float)((bg >> 16) & 0xFF) / 255.0f;
     float prev_wf = s_render_freeze_wf;
     s_render_freeze_wf = cap_wf;
-    if (rhi_begin_frame(s_nr.dev)) {
+    if (rhi_begin_frame_offline(s_nr.dev)) {
         upload_synced_textures();
         hd_flush_pending();
         openpete_native_hdfold_flush();
@@ -24585,9 +24585,6 @@ static void freeze_render_into(freeze_target_t *t, float cap_wf, int sync, int *
         rhi_begin_render_target(s_nr.dev, t->tex, br, bgc, bb, 1.0f);
         draw_scene_with_matview(true);
         rhi_end_render_target(s_nr.dev, t->tex);
-        rhi_begin_offscreen(s_nr.dev, br, bgc, bb, 1.0f);
-        rhi_end_offscreen(s_nr.dev);
-        rhi_blit_to_swapchain(s_nr.dev);
         rhi_end_frame(s_nr.dev);
         t->valid = true;
         t->wf = cap_wf;
@@ -25546,14 +25543,6 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf,
     /* The pre-pass is rasterized at the capture target, texel for pixel. */
     const od_serve_t od_sv = od_shot_serve(Wc, H, cap_wf);
 
-    /* Background = the gamestate draw-env clear (matching the 4:3 compose). */
-    int scene_n; uint32_t scene_bg, scene_fade;
-    (void)scene_present_buf(&scene_n, &scene_bg, &scene_fade, NULL, NULL, NULL);
-    uint32_t bg = ps_drawenv_clear() ? ps_drawenv_clear() : scene_bg;
-    const float br  = (float)((bg >>  0) & 0xFF) / 255.0f;
-    const float bgc = (float)((bg >>  8) & 0xFF) / 255.0f;
-    const float bb  = (float)((bg >> 16) & 0xFF) / 255.0f;
-
     /* The full-extent scene map divides clip-x by s_render_freeze_wf, so the 4:3
      * content lands centred and the Hor+ reveal fills the widened sides - the
      * same divide the depth pre-pass already applies (it reads the widen from
@@ -25566,7 +25555,7 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf,
     int menu_verts = 0;
     vramfb_prepare(cap_wf);   /* an empty compose shows the VRAM framebuffer */
     for (int attempt = 0; ; attempt++) {
-        if (!rhi_begin_frame(s_nr.dev)) { s_render_freeze_wf = prev_wf; return 1; }
+        if (!rhi_begin_frame_offline(s_nr.dev)) { s_render_freeze_wf = prev_wf; return 1; }
         upload_synced_textures();
         hd_flush_pending();
         openpete_native_hdfold_flush();
@@ -25583,9 +25572,6 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf,
         menu_verts = shot_chrome_draw(Wc, H);
         rhi_end_render_target(s_nr.dev, rt);
         capture_postfx_run(rt, Wc, H, cap_wf);
-        rhi_begin_offscreen(s_nr.dev, br, bgc, bb, 1.0f);
-        rhi_end_offscreen(s_nr.dev);
-        rhi_blit_to_swapchain(s_nr.dev);
         rhi_end_frame(s_nr.dev);
         if (attempt >= 8 || (s_hd_pending_n == 0 &&
                              openpete_native_hdfold_pending() == 0)) break;
@@ -26094,7 +26080,7 @@ static int rr_shot_frames(const openpete_render_res_plan_t *p, rhi_texture *rt, 
     bool drew = false;
     s_rr.in_dump = 1;
     for (int attempt = 0; attempt < 9; attempt++) {
-        if (!rhi_begin_frame(s_nr.dev)) { s_rr.in_dump = 0; return -1; }
+        if (!rhi_begin_frame_offline(s_nr.dev)) { s_rr.in_dump = 0; return -1; }
         upload_synced_textures();
         hd_flush_pending();
         openpete_native_hdfold_flush();
@@ -26110,9 +26096,6 @@ static int rr_shot_frames(const openpete_render_res_plan_t *p, rhi_texture *rt, 
         *menu_verts = shot_chrome_draw(Cw, Ch);
         rhi_end_render_target(s_nr.dev, rt);
         capture_postfx_run(rt, Cw, Ch, cap_wf);
-        rhi_begin_offscreen(s_nr.dev, 0.0f, 0.0f, 0.0f, 1.0f);
-        rhi_end_offscreen(s_nr.dev);
-        rhi_blit_to_swapchain(s_nr.dev);
         rhi_end_frame(s_nr.dev);
         s_render_freeze_wf = prev_wf;
         if (s_hd_pending_n == 0 && openpete_native_hdfold_pending() == 0) break;
@@ -26387,11 +26370,11 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
 
     /* Live-present -vk (pure-vk window runs): off_image still holds the frame
      * the user is seeing - the present just blitted it to the swapchain - so
-     * -vk is a ground-truth READBACK of the presented image, read BEFORE the
-     * recomposes below open new frames over it. The recompose is a
-     * reconstruction (canonical lagged scene, ref-sized RTT) and diverges from
-     * the window whenever a live-only path is in play (sub-tick interp scenes,
-     * SSAA, overlays). Not taken when:
+     * -vk is a ground-truth READBACK of the presented image; the recompose
+     * below renders into its own target and leaves off_image as presented.
+     * The recompose is a reconstruction (canonical lagged scene, ref-sized
+     * RTT) and diverges from the window whenever a live-only path is in play
+     * (sub-tick interp scenes, SSAA, overlays). Not taken when:
      *   - headless: openpete_native_render_frame early-returns, no present;
      *   - intermediate capture (s_scene_shot_nodelay): the caller re-extracted
      *     a sub-tick scene precisely to have it RECOMPOSED deterministically. */
@@ -26479,24 +26462,15 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
      * present's widen. */
     const od_serve_t od_sv = od_shot_serve(W, H, ws_factor_present());
 
-    /* Background = the gamestate draw-env clear (matching the live native render);
-     * scene_bg then corner as fallbacks. See draw_native_scene for the rationale. */
-    int scene_n; uint32_t scene_bg, scene_fade;
-    (void)scene_present_buf(&scene_n, &scene_bg, &scene_fade, NULL, NULL, NULL);
-    uint32_t bg = ps_drawenv_clear() ? ps_drawenv_clear() : scene_bg;
-    const float br  = (float)((bg >>  0) & 0xFF) / 255.0f;
-    const float bgc = (float)((bg >>  8) & 0xFF) / 255.0f;
-    const float bb  = (float)((bg >> 16) & 0xFF) / 255.0f;
-
-    /* Render the native scene into the ref-sized RTT (full extent, no panels).
-     * The offscreen + present are kept valid with a plain bg clear so the window
-     * isn't disturbed mid-dump; the RTT (not the window) is the data source. */
+    /* Render the native scene into the ref-sized RTT (full extent, no panels)
+     * in a frame that acquires and presents no swapchain image: the window
+     * keeps showing, and off_image keeps holding, the last live present. */
     shot_chrome_setup(W, H);
     int menu_verts = 0;
     bool scene_drew = false;
     vramfb_prepare(1.0f);
     for (int attempt = 0; ; attempt++) {
-        if (!rhi_begin_frame(s_nr.dev)) return 1;
+        if (!rhi_begin_frame_offline(s_nr.dev)) return 1;
         upload_synced_textures();  /* pending VRAM/ref uploads ride this frame */
         hd_flush_pending();        /* HD replacement textures queued at draw time */
         openpete_native_hdfold_flush();
@@ -26535,9 +26509,6 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
          * scene shaders), then COMPOSITE, under the 4:3 full-extent mapping
          * the compose drew with. */
         capture_postfx_run(dump_rt, W, H, 1.0f);
-        rhi_begin_offscreen(s_nr.dev, br, bgc, bb, 1.0f);
-        rhi_end_offscreen(s_nr.dev);
-        rhi_blit_to_swapchain(s_nr.dev);
         rhi_end_frame(s_nr.dev);
         /* Self-heal a first sighting: an HD/mod texture seen for the first
          * time mid-draw only QUEUES its upload and draws nothing for those
