@@ -41,8 +41,10 @@ directories, and shows them as images. Three views:
 
 Each view shows one row per corpus sample: the variants of a row's VBL
 (original and extended LOD, the canonical tile and the intermediate tile
-captured after it) share it, buttons in it switch the variant shown (keys: l
-switches every row's LOD, i every row's leg), and it names the variants whose
+captured after it) share it, buttons in it switch the variant shown on every row holding it
+(linked: the same switch heads the page, keys l and i flip the LOD and the
+leg, the URL fragment #v=<variant> keeps the choice, and a row without the
+chosen variant keeps its own and says so), and it names the variants whose
 blessed digests are identical. The candidate row names each variant's status
 (diverge, match, absent) and shows the first divergent variant; the history row
 names each listed variant's kind and the variants left unchanged. In both, a
@@ -903,6 +905,9 @@ padding:1px 5px;background:#1f2226;color:var(--mut);border:1px solid
 var(--line);cursor:pointer}.vt button[aria-pressed=true]{color:var(--fg);
 border-color:var(--acc)}.vt button.st-diverge,.vt button.st-changed{
 color:#ffb38a}.vt button.st-absent{text-decoration:line-through}
+.vt[data-lack]{border-left:2px dashed #ffb38a;padding-left:4px}
+.vt[data-lack]::before{content:"no " attr(data-lack) " here; showing:";
+display:block;color:#ffb38a}#vall{font-size:13px}#vall button{font-size:13px}
 """
 
 JS = """
@@ -915,10 +920,21 @@ alert('promote list not written: '+e)})}
 function sv(g,v){document.querySelectorAll('[data-gv^="'+g+'|"]').forEach(
 e=>{e.hidden=e.dataset.gv!==g+'|'+v});document.querySelectorAll(
 '[data-gb="'+g+'"]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.v===v))}
-function flip(i,a,b){const cur={};document.querySelectorAll(
-'[data-gb][aria-pressed=true]').forEach(x=>{cur[x.dataset.gb]=x.dataset.v});
-for(const g in cur){const v=cur[g],t=v.slice(0,i)+(v[i]===a?b:a)+v.slice(i+1);
-if(document.querySelector('[data-gb="'+g+'"][data-v="'+t+'"]'))sv(g,t)}}
+const VL={'o-c':'orig canon','o-i':'orig inter','e-c':'ext canon',
+'e-i':'ext inter'};let curV=null;
+function setAll(v){if(!VL[v])return;curV=v;const gs=new Set();
+document.querySelectorAll('[data-gv]').forEach(e=>gs.add(
+e.dataset.gv.split('|')[0]));for(const g of gs){const has=
+document.querySelector('[data-gv="'+g+'|'+v+'"]');if(has)sv(g,v);
+document.querySelectorAll('.vt[data-vg="'+g+'"]').forEach(b=>{if(has)
+b.removeAttribute('data-lack');else b.dataset.lack=VL[v]})}
+document.querySelectorAll('[data-all]').forEach(b=>b.setAttribute(
+'aria-pressed',b.dataset.all===v));const h='#v='+v;
+history.replaceState(null,'',location.pathname+location.search+h);
+document.querySelectorAll('form').forEach(f=>{f.action=
+f.action.split('#')[0]+h})}
+function flip(i,a,b){const v=curV||'o-c';
+setAll(v.slice(0,i)+(v[i]===a?b:a)+v.slice(i+1))}
 document.addEventListener('keydown',e=>{if(e.ctrlKey||e.metaKey||e.altKey||
 /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName))return;if(e.key==='l')
 flip(0,'o','e');else if(e.key==='i')flip(2,'c','i')})
@@ -930,8 +946,9 @@ fetch(d.dataset.lazy).then(r=>{if(!r.ok)throw new Error(r.status);
 return r.text()}).then(t=>{d.innerHTML=t;d.classList.remove('lazy')})
 .catch(e=>{d.textContent='load failed ('+e.message+'); reload the page'})}},
 {rootMargin:'600px 0px'});
-document.addEventListener('DOMContentLoaded',()=>document.querySelectorAll(
-'[data-lazy]').forEach(d=>lazyIO.observe(d)))
+document.addEventListener('DOMContentLoaded',()=>{const m=
+/^#v=([oe]-[ci])$/.exec(location.hash);if(m)setAll(m[1]);
+document.querySelectorAll('[data-lazy]').forEach(d=>lazyIO.observe(d))})
 """
 
 
@@ -1022,9 +1039,15 @@ def diff_text(e):
 
 
 KEY_HINT = "<p class=mut>Variants of one sample (original or extended LOD, " \
-    "canonical or intermediate leg) share a row; its buttons switch the " \
-    "variant shown. Keys: l switches every row's LOD, i every row's leg. " \
-    "= marks a variant pixel-identical in blessed.tsv to the one named.</p>"
+    "canonical or intermediate leg) share a row. The variant buttons are " \
+    "linked: choosing one, on any row or in the bar below, switches every " \
+    "row holding it; a row without it keeps its variant and says so. Keys: " \
+    "l switches the LOD, i the leg. The choice is kept in the URL (#v=). " \
+    "= marks a variant pixel-identical in blessed.tsv to the one named.</p>" \
+    "<div class=vt id=vall>all rows: %s</div>" % "".join(
+        "<button type=button data-all='%s' aria-pressed=false "
+        "onclick=\"setAll('%s')\">%s</button>" % (v, v, lab)
+        for v, lab in VARIANTS)
 
 
 def variant_bar(gid, present, sel, digests, status=None, extra=()):
@@ -1051,13 +1074,13 @@ def variant_bar(gid, present, sel, digests, status=None, extra=()):
                 if v in same else ""
             cls = " class=st-%s" % status[v] if status else ""
             btns.append("<button type=button%s data-gb='%s' data-v='%s' "
-                        "aria-pressed=%s title='%s' onclick=\"sv('%s','%s')\">"
+                        "aria-pressed=%s title='%s' onclick=\"setAll('%s')\">"
                         "%s%s</button>" % (
                             cls, gid, v, "true" if v == sel else "false",
-                            E(title), gid, v, E(VLABEL[v]),
+                            E(title), v, E(VLABEL[v]),
                             " =" if v in same else ""))
-    return "<div class=vt>%s%s</div>" % (
-        "".join(btns), "<div class=mut>%s</div>" % E("; ".join(notes))
+    return "<div class=vt data-vg='%s'>%s%s</div>" % (
+        gid, "".join(btns), "<div class=mut>%s</div>" % E("; ".join(notes))
         if notes else "")
 
 
