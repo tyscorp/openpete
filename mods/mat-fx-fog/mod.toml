@@ -1,0 +1,24 @@
+# mat-fx-fog - material distance-fade fixture (tests/harness/check_material_fog.sh).
+#
+# One channel-wide moby row. params.x picks what the material writes: 0
+# base, 1 op_psx_modulate(texel, op_color()), 2 the flat colour params.yzw,
+# 3 op_color(). The engine fades the result, so modes 0 and 1 must draw
+# what the engine draws without the mod, and under OPENPETE_HFOG_FLAT_RGB
+# (every faded moby corner carries one colour before the fade) mode 2 must
+# draw the engine's fade of that colour. The harness rewrites params per
+# leg. Never enable it to play.
+
+[mod]
+id      = "mat-fx-fog"
+name    = "Material Fixture: Fog"
+version = "0.1.0"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
+api     = 13
+state    = "none"
+runahead = "pure"
+sim_mutative = false
+
+[[material]]
+frag    = "shaders/fog.frag"
+channel = "moby"
+params  = [0.0, 0.78431, 0.23529, 0.47059]

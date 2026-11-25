@@ -301,6 +301,17 @@ per-pixel surface verdicts that decide which surface exists at a pixel; a
 shader that owned `main()` would replace those verdicts and break
 whenever the engine changed them.
 
+### Distance fade
+
+On a heavy-fog level under extended LOD the engine fades each world moby
+into the fog: toward the level's fog colour, or toward black on an
+additive or subtractive draw, by a weight that grows with view depth. The
+engine applies that fade to the colour `op_material` returns, after it
+returns. A material does nothing about fog: `op_color()` and `base`
+arrive without the fade, and a material that returns `base` draws exactly
+what the engine draws with no material. Terrain, and every draw the engine does
+not fade, sees no change.
+
 Moby drop-shadows are drawn on their own path (flat fans, depth test off,
 per-pixel occlusion decided in the fragment stage). A material on that
 path includes `openpete_psx_decal.glsl` instead; the function and body

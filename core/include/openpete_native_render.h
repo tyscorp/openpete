@@ -2155,6 +2155,19 @@ void openpete_native_scene_set_hq_fog(uint32_t a, uint32_t b);
  * carrying the fog-reference bias. */
 #define OPENPETE_HQFOG_B30 (1u << 30)
 
+/** @brief Set the vertex fade target word stamped on subsequently added triangles.
+ *
+ * An emitter that blends a triangle's vertex colours toward a fog target on
+ * a depth curve states the target here, so the stage of a mod material on
+ * the triangle applies the same fade to the material's result
+ * (include/openpete_psx_material.glsl). The stock stages never read it.
+ * Ambient like openpete_native_scene_set_hq_fog: reset to 0 when leaving the
+ * emit loop.
+ * @param w OPENPETE_FOG_TARGET_ON | the target 0x00BBGGRR, or 0 for no fade. */
+void openpete_native_scene_set_fog_target(uint32_t w);
+/* The fade bit of a vertex fade target word (openpete_native_scene_set_fog_target). */
+#define OPENPETE_FOG_TARGET_ON (1u << 31)
+
 /* ── Portal cover invariant (plane-cover rule) ────────────────────────
  * The portal feeder's opening planes, republished per feed in core terms so
  * the OPENPETE_PORTAL_COVER_CHECK sweep can verify the plane-cover rule
@@ -2289,8 +2302,8 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
 int openpete_native_scene_reserve(int n);
 /** @brief Store one triangle at a slot openpete_native_scene_reserve handed out, as openpete_native_scene_add_tri_grouped stores it with carry and group 0.
  *
- * The tag, heavy-fog words and host-added mark are arguments instead of the
- * sticky setters; every other sticky field is read as the last setter left
+ * The tag, heavy-fog words (texel fade a and b, then the vertex fade target
+ * word) and host-added mark are arguments instead of the sticky setters; every other sticky field is read as the last setter left
  * it. Counts nothing and logs nothing: a vertex without a true view-Z is
  * repaired and added to *pvz_missing for the commit. Safe on a work-pool
  * worker for distinct slots while no setter runs. The category must not be
@@ -2299,11 +2312,11 @@ int openpete_native_scene_reserve(int n);
  * @param tri The triangle.
  * @param category Scene layer.
  * @param tag Provenance tag.
- * @param hqfog The two heavy-fog words.
+ * @param hqfog The three heavy-fog words.
  * @param host_added Nonzero for host-added geometry.
  * @param pvz_missing Incremented per repaired vertex. */
 void openpete_native_scene_store_tri(int slot, const openpete_scene_tri* tri, int category, uint32_t tag,
-                                     const uint32_t hqfog[2], int host_added, unsigned* pvz_missing);
+                                     const uint32_t hqfog[3], int host_added, unsigned* pvz_missing);
 /** @brief The size of one stored scene triangle, of which openpete_scene_tri is the prefix: the span an instrument compares per triangle.
  * @return The size in bytes. */
 size_t openpete_native_scene_tri_bytes(void);

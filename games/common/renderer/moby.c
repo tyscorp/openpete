@@ -13224,20 +13224,35 @@ static void moby_cut_colour(openpete_scene_tri* t, const mn_cut* cs, const uint3
  * @param t The scene triangle, vertex colours set; colours rewritten.
  * @param w The walk triangle it was built from.
  * @param cs Its cut source, or NULL.
- * @param target The colour the cue blends toward, 0x00BBGGRR. */
-static void moby_tri_fog_cue(openpete_scene_tri* t, const ntri_t* w, const mn_cut* cs, uint32_t target) {
+ * @param target The colour the cue blends toward, 0x00BBGGRR.
+ * @param flat A colour every corner takes before the cue, 0x00BBGGRR, or -1
+ *        for the corners' own (moby_hfog_flat). */
+static void moby_tri_fog_cue(openpete_scene_tri* t, const ntri_t* w, const mn_cut* cs, uint32_t target,
+                             int64_t flat) {
     if (cs) {
         uint32_t f[3];
         for (int j = 0; j < 3; j++)
-            f[j] = terrain_fog_cue(cs->rgb[j] & 0xFFFFFFu, target, (double)cs->tvz[j] / 16.0);
+            f[j] = terrain_fog_cue(flat >= 0 ? (uint32_t)flat : cs->rgb[j] & 0xFFFFFFu, target,
+                                   (double)cs->tvz[j] / 16.0);
         moby_cut_colour(t, cs, f);
         return;
     }
     for (int k = 0; k < 3; k++) {
         const uint32_t c = t->v[k].rgba;
         t->v[k].rgba = (c & 0xFF000000u) |
-            terrain_fog_cue(c & 0xFFFFFFu, target, (double)w->v[k].tvz / 16.0);
+            terrain_fog_cue(flat >= 0 ? (uint32_t)flat : c & 0xFFFFFFu, target, (double)w->v[k].tvz / 16.0);
+        if (flat >= 0) t->v[k].rgbq = 0u;
     }
+}
+
+/** @brief The colour OPENPETE_HFOG_FLAT_RGB gives every faded world moby corner before the fade, or -1 when unset.
+ *
+ * A harness variable, not a knob: with it the stock fade of a known colour
+ * is on screen (tests/harness/check_material_fog.sh). Read once per walk.
+ * @return The colour, 0x00BBGGRR, or -1. */
+static int64_t moby_hfog_flat(void) {
+    const char* e = getenv("OPENPETE_HFOG_FLAT_RGB");
+    return (e && *e) ? (int64_t)(strtoul(e, NULL, 0) & 0xFFFFFFu) : -1;
 }
 
 /** @brief Fades one scene triangle of a world moby toward a heavy-fog level's fog colour on the terrain's depth curve.
@@ -13254,21 +13269,28 @@ static void moby_tri_fog_cue(openpete_scene_tri* t, const ntri_t* w, const mn_cu
  * triangle at the ladder row of its mean view-Z under the original form
  * (terrain_fog_step_words; row floor(15 t), the row the terrain ladder
  * takes at that depth in each game). A near-cut part takes the row of its
- * source triangle, so every part of one cut triangle steps alike. Every
- * other triangle clears the fade words.
+ * source triangle, so every part of one cut triangle steps alike. Word 2
+ * states the vertex fade's target (OPENPETE_FOG_TARGET_ON with the colour
+ * the cue blends toward, terrain_fog_cue_target) while the cue is active, for
+ * the stage of a mod material, which fades the material's result. Every other
+ * triangle clears the three words.
  * @param t The scene triangle, vertex colours and blend set; colours rewritten.
  * @param w The walk triangle it was built from (its unshifted view-Z).
  * @param cs Its cut source (moby_wtri_cut), or NULL.
  * @param cat The triangle's scene category.
  * @param fog The fog colour, 0x00BBGGRR, or -1 when no fade applies.
- * @param hq Receives the two heavy-fog words the triangle is stored with. */
+ * @param flat The harness's flat corner colour (moby_hfog_flat), or -1.
+ * @param hq Receives the three heavy-fog words the triangle is stored with. */
 static void moby_tri_heavy_fog(openpete_scene_tri* t, const ntri_t* w, const mn_cut* cs, int cat,
-                               int64_t fog, uint32_t hq[2]) {
+                               int64_t fog, int64_t flat, uint32_t hq[3]) {
     const int world = cat == OPENPETE_SCENE_ACTOR || cat == OPENPETE_SCENE_ACTOR_FRONT;
-    hq[0] = hq[1] = 0u;
+    hq[0] = hq[1] = hq[2] = 0u;
     if (fog < 0 || !world) return;
     const int vanish = t->blend >= 2;
-    moby_tri_fog_cue(t, w, cs, vanish ? 0u : (uint32_t)fog);
+    const uint32_t target = vanish ? 0u : (uint32_t)fog;
+    moby_tri_fog_cue(t, w, cs, target, flat);
+    uint32_t cue_target;
+    if (terrain_fog_cue_target(target, &cue_target)) hq[2] = OPENPETE_FOG_TARGET_ON | cue_target;
     const int tex_fade = t->textured && !vanish;
     if (tex_fade && openpete_fog_mode() == OPENPETE_FOG_ORIGINAL) {
         float ts = 0.0f, tb = 0.0f;
@@ -13306,6 +13328,7 @@ enum { MEF_TIE = 1u, MEF_ORD = 2u, MEF_TORDER = 4u };
 typedef struct {
     uint32_t stbit;   /* moby_walk_state_bit */
     int64_t fog;      /* moby_heavy_fog_target */
+    int64_t flat;     /* moby_hfog_flat */
 } moby_emit_env_t;
 
 /* A run of walk faces with one moby pointer and what is resolved for it
@@ -13490,9 +13513,10 @@ static void moby_emit_serial(CPUState* cpu, const moby_emit_env_t* E, moby_rank_
          * geometry, and the scene's content and world-frame verdicts are the
          * game's own to make. */
         openpete_native_scene_set_host_added(R.host_added);
-        uint32_t hq[2];
-        moby_tri_heavy_fog(&t, &s_wtri[i], moby_wtri_cut(i), cat, E->fog, hq);
+        uint32_t hq[3];
+        moby_tri_heavy_fog(&t, &s_wtri[i], moby_wtri_cut(i), cat, E->fog, E->flat, hq);
         openpete_native_scene_set_hq_fog(hq[0], hq[1]);
+        openpete_native_scene_set_fog_target(hq[2]);
         ts = msp_mark(MSP_E_MAT, ts, MSP_STRIDE);
         openpete_native_scene_add_tri(&t, cat, 0);
         msp_mark(MSP_E_ADD, ts, MSP_STRIDE);
@@ -13532,8 +13556,8 @@ static void moby_emit_job(int item, int worker, void* arg) {
     for (int i = I->i0; i < I->i1; i++) {
         openpete_scene_tri t;
         const int cat = moby_emit_face(J->E, R, i, &shell, &t, &s_mef_flags[i], &s_mef_rank[i]);
-        uint32_t hq[2];
-        moby_tri_heavy_fog(&t, &s_wtri[i], moby_wtri_cut(i), cat, J->E->fog, hq);
+        uint32_t hq[3];
+        moby_tri_heavy_fog(&t, &s_wtri[i], moby_wtri_cut(i), cat, J->E->fog, J->E->flat, hq);
         openpete_native_scene_store_tri(J->base + i, &t, cat, OPENPETE_TAG_MOBY_SLOT(s_wtri_cls[i], R->slot), hq,
                                         R->host_added, &s_mew[worker].pvz_missing);
     }
@@ -13866,7 +13890,7 @@ static void push_scene_moby_tris(CPUState* cpu) {
     moby_tri_debug();
     moby_rank_ordinals_t rord;  /* this walk's ranked-moby ordinals */
     moby_rank_ordinals_begin(&rord);
-    const moby_emit_env_t env = { stbit, moby_heavy_fog_target() };
+    const moby_emit_env_t env = { stbit, moby_heavy_fog_target(), moby_hfog_flat() };
     { OP_PROF_ACCUM_SCOPE("moby.emit");
       const uint64_t t_em = mst_now();
       moby_emit(cpu, &env, &rord);
@@ -13874,6 +13898,7 @@ static void push_scene_moby_tris(CPUState* cpu) {
     const uint64_t t_post = mst_fine_now();
     moby_td_census(-1, 0, stbit);
     openpete_native_scene_set_hq_fog(0u, 0u);
+    openpete_native_scene_set_fog_target(0u);
     openpete_native_scene_set_tag(0);   /* leave the tagged emit loop clean */
     openpete_native_scene_set_host_added(0);
     moby_rank_ordinals_end(&rord);

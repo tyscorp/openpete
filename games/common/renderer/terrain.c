@@ -751,6 +751,28 @@ static uint32_t terrain_fog_blend(uint32_t nearC, uint32_t farC, double m3, int 
     }
     return out;
 }
+/** @brief Re-grades a depth-cue far colour by the active texture pack's fog shift.
+ *
+ * A full-coverage re-graded pack (texture_pack_fog_shift_set) needs the
+ * vertex fog target re-graded with it: the authored far colours are the
+ * stock ambience, and modulating dark pack texels toward them re-brightens
+ * the distance the pack darkened. Each channel becomes scale times far plus
+ * offset, rounded and clamped to 0..255. Without a shift the colour is
+ * returned unchanged.
+ * @param farC The far colour, 0x00BBGGRR.
+ * @return The far colour the cue blends toward, 0x00BBGGRR. */
+static uint32_t tn_fog_far_regrade(uint32_t farC) {
+    float fs[3], fo[3];
+    if (!texture_pack_fog_shift_get(fs, fo)) return farC;
+    uint32_t out = 0u;
+    for (int k = 0; k < 3; k++) {
+        int c = (int)(fs[k] * (float)((farC >> (8 * k)) & 0xFFu) + fo[k] + 0.5f);
+        c = c < 0 ? 0 : c > 255 ? 255 : c;
+        out |= (uint32_t)c << (8 * k);
+    }
+    return out;
+}
+
 /** @brief Blends a vertex's near and far colours by its depth-cue factor.
  *
  * Under fog mode off it returns the near colour. Under an active texture
@@ -770,26 +792,8 @@ static uint32_t terrain_fog_blend(uint32_t nearC, uint32_t farC, double m3, int 
  */
 static uint32_t terrain_fog_blend_inner(uint32_t nearC, uint32_t farC, double m3, int fogRef) {
     if (s_fog_mode == OPENPETE_FOG_OFF) return nearC;   /* no depth cue */
-    /* Pack fog shift (texture_pack_fog_shift_set): a full-coverage re-graded
-     * pack needs the DPCS vertex-fog TARGET re-graded with it - the authored
-     * FAR colours are the stock ambience, and modulating dark pack texels
-     * toward them re-brightens the distance the pack darkened. Near colours
-     * (lighting) stay stock; only the fog destination moves. 0x00BBGGRR. */
-    {
-        float fs[3], fo[3];
-        if (texture_pack_fog_shift_get(fs, fo)) {
-            int r = (int)(fs[0] * (float)(farC & 0xFF)         + fo[0] + 0.5f);
-            int g = (int)(fs[1] * (float)((farC >> 8) & 0xFF)  + fo[1] + 0.5f);
-            int b = (int)(fs[2] * (float)((farC >> 16) & 0xFF) + fo[2] + 0.5f);
-            if (r < 0) r = 0;
-            if (g < 0) g = 0;
-            if (b < 0) b = 0;
-            if (r > 255) r = 255;
-            if (g > 255) g = 255;
-            if (b > 255) b = 255;
-            farC = (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16);
-        }
-    }
+    /* Near colours (lighting) stay stock; only the fog destination moves. */
+    farC = tn_fog_far_regrade(farC);
     if (s_fogdpcs) {                      /* GTE-exact DPCS path (default) */
         int ir0 = fogRef - (int)(m3 * s_fogscale);
         if (ir0 >= 4096) return nearC;
@@ -7497,6 +7501,12 @@ int terrain_fog_saturated(double m3) {
 uint32_t terrain_fog_cue(uint32_t nearC, uint32_t farC, double m3) {
     if (s_fog_ref_last <= 0 || s_fogscale < 0.0) return nearC;
     return terrain_fog_blend(nearC, farC, m3, s_fog_ref_last);
+}
+
+int terrain_fog_cue_target(uint32_t farC, uint32_t* target) {
+    if (s_fog_ref_last <= 0 || s_fogscale < 0.0 || s_fog_mode == OPENPETE_FOG_OFF) return 0;
+    *target = tn_fog_far_regrade(farC);
+    return 1;
 }
 
 /** @brief Returns the first slot of a sector address's decode-cache probe window.

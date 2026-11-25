@@ -28,6 +28,15 @@
  * texture-pack replacement with its fog. Untextured draws arrive as the
  * interpolated vertex colour, so one op_material serves both paths.
  *
+ * Distance fade. On a heavy-fog level under extended LOD the engine fades
+ * each world moby triangle into the fog: toward the level's fog colour, or
+ * toward black on an additive or subtractive draw, by a weight that grows
+ * with view depth. The engine applies that fade to op_material()'s result,
+ * so a material does nothing about it: op_color() and base arrive without
+ * it, and a material returning base draws exactly what the engine draws.
+ * The retained-terrain half and every draw the engine does not fade see no
+ * change.
+ *
  * Fixed by the engine: blend equation, depth test and write, stencil,
  * painter slot, and the occlusion verdicts. A tint on an additive draw
  * therefore reads as added light, and mixing with base is usually the
@@ -152,6 +161,7 @@ vec4 op_pack_texel(vec2 page_uv)
  * without this material, and the value passed to op_material(). */
 vec4 op_pack_shade() { return ter_stock_shade(); }
 
+
 /* ---- the mod's half -------------------------------------------------- */
 vec4 op_material(vec4 base);
 
@@ -178,6 +188,8 @@ void main()
 
 #include "psx_key_contest.glsl"
 #include "psx_clut.glsl"
+#include "psx_texel.glsl"
+#include "psx_hq_fog.glsl"
 
 layout(set = 0, binding = 0) uniform usampler2D op_vram; /* R16_UINT 1024x512 */
 
@@ -238,6 +250,11 @@ layout(push_constant) uniform op_psx_material {
     vec2 hd_size;           /*   page (origin / size, page texel coords)      */
     vec4 hd_fog_a;          /* CLUT-ladder fog affine for the replacement:    */
     vec4 hd_fog_b;          /*   c' = c*a + b (identity when unfogged); .rgb  */
+    vec4 fade;              /* distance fade target (.rgb), .a 1 when the     */
+                            /*   draw takes the fade, 0 otherwise             */
+    vec2 fade_ramp;         /* the fade weight at true view-Z vz: vz * x + y  */
+    uint hq_a, hq_b;        /* the draw's texel fade words (psx_hq_fog.glsl)  */
+    vec2 lad;               /* the CLUT-ladder ramp the words read: ts, tb    */
 } op_pc;
 
 /* The vertex stage emits UV and colour multiplied by the perspective ratio
@@ -255,10 +272,46 @@ layout(location = 10) flat in float vSrcWalk;
 
 layout(location = 0) out vec4 op_out_color;
 
+/* ---- distance fade (see the header) -----------------------------------
+ * The fade blends a colour x toward the draw's target T by the fragment's
+ * weight w: op_fade_(x) = mix(x, T, w). The engine's own stages fade the
+ * vertex colour per corner and the texel by the fade words, then modulate;
+ * the material inputs are those stock values with the fade taken back out
+ * (op_unfade_), and main() fades the material's result, so a material that
+ * returns base reproduces the stock fragment. */
+
+/* The fade weight at this fragment: the engine's depth curve at the
+ * fragment's true view-Z, 0 where no fade applies. It stops 1/1024 short of
+ * 1, where the fade could not be taken back out: the stock per-corner fade
+ * can leave a pixel short of the target where the curve at the pixel is
+ * past it, and a fully faded colour then sits within a quarter of an 8-bit
+ * level of the target. */
+float op_fade_weight_()
+{
+    if (op_pc.fade.a == 0.0) return 0.0;
+    float vz = op_vz_from_depth(gl_FragCoord.z, OP_DEPTH_REVERSED) / vQ;
+    return clamp(vz * op_pc.fade_ramp.x + op_pc.fade_ramp.y, 0.0, 1.0 - 1.0 / 1024.0);
+}
+
+/* x faded toward the target. */
+vec3 op_fade_(vec3 x)
+{
+    return mix(x, op_pc.fade.rgb, op_fade_weight_());
+}
+
+/* The x whose fade is y: (y - w T) / (1 - w), unclamped, so op_fade_ of it
+ * returns y. */
+vec3 op_unfade_(vec3 y)
+{
+    float w = op_fade_weight_();
+    return w <= 0.0 ? y : (y - w * op_pc.fade.rgb) / (1.0 - w);
+}
+
 /* Perspective-correct texel coords within the texture page. */
 vec2 op_uv()    { return vUV / vQ; }
-/* Perspective-correct per-vertex modulate colour (R8G8B8A8 -> 0..1). */
-vec4 op_color() { return vColor / vQ; }
+/* Perspective-correct per-vertex modulate colour (R8G8B8A8 -> 0..1), without
+ * the distance fade. */
+vec4 op_color() { vec4 c = vColor / vQ; return vec4(op_unfade_(c.rgb), c.a); }
 
 uint op_vram_at(int x, int y) { return texelFetch(op_vram, ivec2(x, y), 0).r; }
 
@@ -275,26 +328,55 @@ vec4 op_psx_texel(ivec2 uv)
                                       uv.x, uv.y));
 }
 
-/* PSX texture modulation: texel * vertexColour / 128 (128 = unchanged). */
-vec3 op_psx_modulate(vec3 texel, vec3 vcol)
+/* The modulation of a texel the fade words already apply to, as the stock
+ * stage computes it from the faded vertex colour, with the fade taken out. */
+vec3 op_modulate_drawn_(vec3 texel, vec3 vcol)
 {
-    return clamp(texel * vcol * (255.0 / 128.0), 0.0, 1.0);
+    return op_unfade_(clamp(texel * op_fade_(vcol) * (255.0 / 128.0), 0.0, 1.0));
 }
 
-/* The stock result for this fragment from VRAM alone. An untextured draw
- * (bpp 0) is the vertex colour, with no texel fetch and no modulation. A
- * textured face on the moby fog band between two ticks blends in its second
- * fogged-CLUT row after the modulation (op_clut_fog_mix). */
+/* PSX texture modulation: texel * vertexColour / 128 (128 = unchanged), with
+ * the draw's texel fade (psx_hq_fog.glsl) applied to the texel as the stock
+ * stage applies it. */
+vec3 op_psx_modulate(vec3 texel, vec3 vcol)
+{
+    float vz = op_vz_from_depth(gl_FragCoord.z, OP_DEPTH_REVERSED);
+    return op_modulate_drawn_(op_hq_fog(texel, op_pc.hq_a, op_pc.hq_b, vz, op_pc.lad.x, op_pc.lad.y),
+                              vcol);
+}
+
+/* The stock result for this fragment from VRAM alone, as psx_scene.frag
+ * computes it, with the distance fade taken out. An untextured draw (bpp 0)
+ * is the vertex colour, with no texel fetch and no modulation. A textured
+ * face reads its texel through the per-pixel CLUT ladder when the fade words
+ * select it, takes the texel fade, and on the moby fog band between two
+ * ticks blends in its second fogged-CLUT row after the modulation
+ * (op_clut_fog_mix). */
 vec4 op_psx_shade()
 {
     vec4 col = op_color();
     if (op_pc.bpp == 0) return vec4(col.rgb, 1.0);
-    ivec2 uv = ivec2(op_uv());
-    vec4 c = op_psx_texel(uv);
-    vec3 rgb = op_clut_fog_mix(op_vram, op_psx_modulate(c.rgb, col.rgb), col,
-                               ivec2(op_pc.tpage_x, op_pc.tpage_y),
-                               ivec2(op_pc.clut_x, op_pc.clut_y), op_pc.bpp, uv.x, uv.y);
-    return vec4(rgb, c.a);
+    vec2 uvf = op_uv();
+    ivec2 ti = op_texel(uvf, op_texel_grad(uvf));
+    float vz = op_vz_from_depth(gl_FragCoord.z, OP_DEPTH_REVERSED);
+    bool lad = op_pc.bpp != 16 && op_hq_ladder_on(op_pc.hq_a, op_pc.hq_b);
+    float lpos = lad ? op_hq_ladder_pos(op_pc.hq_a, vz, op_pc.lad.x, op_pc.lad.y) : 0.0;
+    int lrow = int(floor(lpos));
+    ivec2 page = ivec2(op_pc.tpage_x, op_pc.tpage_y);
+    vec4 c = op_decode555(op_texel_word(op_vram, page, ivec2(op_pc.clut_x, (op_pc.clut_y + lrow) & 511),
+                                        op_pc.bpp, ti.x, ti.y));
+    if (c.a == 0.0) return c;
+    if (lad && lpos > float(lrow)) {
+        uint w1 = op_texel_word(op_vram, page, ivec2(op_pc.clut_x, (op_pc.clut_y + lrow + 1) & 511),
+                                op_pc.bpp, ti.x, ti.y);
+        if (w1 != 0u) c.rgb = mix(c.rgb, op_decode555(w1).rgb, lpos - float(lrow));
+    }
+    c.rgb = op_hq_fog(c.rgb, op_pc.hq_a, op_pc.hq_b, vz, op_pc.lad.x, op_pc.lad.y);
+    vec4 cf = vec4(op_fade_(col.rgb), col.a);
+    vec3 rgb = clamp(c.rgb * cf.rgb * (255.0 / 128.0), 0.0, 1.0);
+    rgb = op_clut_fog_mix(op_vram, rgb, cf, page, ivec2(op_pc.clut_x, op_pc.clut_y), op_pc.bpp,
+                          ti.x, ti.y);
+    return vec4(op_unfade_(rgb), c.a);
 }
 
 /* ---- HD texture-pack access ------------------------------------------ */
@@ -322,7 +404,7 @@ vec4 op_pack_shade()
     vec4 c = op_pack_texel(op_uv());
     if (c.a < 0.5) return vec4(0.0);
     c.rgb = clamp(c.rgb * op_pc.hd_fog_a.rgb + op_pc.hd_fog_b.rgb, 0.0, 1.0);
-    return vec4(op_psx_modulate(c.rgb, op_color().rgb), 1.0);
+    return vec4(op_modulate_drawn_(c.rgb, op_color().rgb), 1.0);
 }
 
 /* ---- the mod's half --------------------------------------------------
@@ -383,6 +465,7 @@ void main()
     }
     vec4 c = op_material(op_pack_shade());
     if (c.a == 0.0) discard;        /* PSX transparent-texel sentinel */
+    c.rgb = op_fade_(c.rgb);        /* the distance fade (see the header) */
     op_out_color = op_src_tint_scene(c, vSrcWalk);
 }
 

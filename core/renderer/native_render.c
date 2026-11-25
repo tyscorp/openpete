@@ -272,7 +272,11 @@ typedef struct {
  * 48, hence the explicit pad after the vec2 pair). hd == 1 means the draw's
  * replacement is bound at set 1 and hd_* describe it (file texel box in page
  * coords + CLUT-ladder fog affine); hd == 0 leaves op_pack_shade() on the
- * stock VRAM decode. */
+ * stock VRAM decode. fade and fade_ramp are the distance fade main() applies
+ * to the material's result (material_fade_fill): the target (rgb 0..1, a = 1
+ * when the run's triangles take the fade, 0 for none) and its depth ramp.
+ * hq_a, hq_b and lad are the run's texel fade words and the ladder ramp they
+ * read (tex_run_material), so base takes the stock texel fade. */
 typedef struct {
     int32_t tpage_x, tpage_y;
     int32_t clut_x, clut_y;
@@ -282,6 +286,10 @@ typedef struct {
     float   hd_uw, hd_vh;          /*   and size, page texel coords */
     float   _pad0, _pad1;
     float   fog_a[4], fog_b[4];
+    float   fade[4];
+    float   fade_ramp[2];
+    uint32_t hq_a, hq_b;
+    float   lad[2];
 } psx_material_hd;
 
 /* How many panels the window shows (VRAM + reference). */
@@ -386,6 +394,9 @@ typedef struct {
                      * tri's palette was shifted to (0 = unfogged base row) */
     uint32_t hqfog_a, hqfog_b; /* sticky set_hq_fog words (psx_hq_fog.glsl);
                                 * a run never spans two values */
+    uint32_t fog_target; /* sticky set_fog_target word: the vertex fade's target
+                          * (OPENPETE_FOG_TARGET_ON | 0x00BBGGRR), 0 = no fade;
+                          * read by mod material runs only (material_fade_fill) */
     uint32_t prim;  /* PSX address of the primitive this tri was decoded from
                      * (sticky set_prim value; 0 for everything that is not 2D).
                      * The ordering-table walk ranks a tri by finding this
@@ -808,6 +819,31 @@ static const nr_snap_table *ps_snap(void);
 static const openpete_occl_camera *ps_occl_cam(void);
 static unsigned ps_frame(void);
 static const nr_pack_fog *ps_pack_fog(void);
+
+/** @brief Set a material push block's distance fade from a vertex fade target word and the composed scene's fog ramp.
+ *
+ * A word with OPENPETE_FOG_TARGET_ON (a triangle whose emitter faded its
+ * vertex colours) gives fade = (target / 255, 1); any other gives fade.a = 0,
+ * which the material stage reads as no fade. A run or span is tag-pure and one draw
+ * group, so its head's word speaks for every triangle in it. The fade's
+ * weight at view-Z vz is the terrain walk's vertex depth cue, 1 - IR0 / 4096
+ * with IR0 = fogRef - (vz / 16) * fog scale; the published CLUT-ladder ramp
+ * is the same expression over 3840 (texture_pack_fog_ladder_set), so the
+ * fade ramp is that ramp times 3840 / 4096. A scene without a published
+ * ramp gives weight 0.
+ * @param mh The push block.
+ * @param w The head triangle's fog_target word. */
+static void material_fade_fill(psx_material_hd* mh, uint32_t w) {
+    const int on = (w & OPENPETE_FOG_TARGET_ON) != 0u;
+    for (int k = 0; k < 3; k++)
+        mh->fade[k] = on ? (float)((w >> (8 * k)) & 0xFFu) / 255.0f : 0.0f;
+    mh->fade[3] = on ? 1.0f : 0.0f;
+    const nr_pack_fog* pf = ps_pack_fog();
+    const int ramp = on && pf->lad_on;
+    mh->fade_ramp[0] = ramp ? pf->lad[0] * (3840.0f / 4096.0f) : 0.0f;
+    mh->fade_ramp[1] = ramp ? pf->lad[1] * (3840.0f / 4096.0f) : 0.0f;
+}
+
 static void     ps_apply_geometry(void);
 static int      hold_verdict(const int geom[8], uint32_t *fill);
 static void     hold_retain_canonical(void);
@@ -950,7 +986,7 @@ static void scene_kind_count(uint32_t tag, int add) {
  * would index VRAM out of bounds. */
 #define TP_FOG_DELTA_MAX 15
 static int s_cur_fog_delta;       /* sticky, stamped by add_tri */
-static uint32_t s_cur_hqfog[2];   /* sticky set_hq_fog words, stamped by add_tri */
+static uint32_t s_cur_hqfog[3];   /* sticky set_hq_fog words and set_fog_target word, stamped by add_tri */
 static int      s_tag_tint = -1;  /* OPENPETE_TAG_TINT: tint colours by tag */
 static int      s_tag_split_env = -1;   /* OPENPETE_TAG_SPLIT: force key join */
 static int      s_tag_split_ext = 0;    /* armed by registered selectors */
@@ -1021,6 +1057,7 @@ void openpete_native_scene_set_fog_delta(int delta) {
 void openpete_native_scene_set_hq_fog(uint32_t a, uint32_t b) {
     s_cur_hqfog[0] = a; s_cur_hqfog[1] = b;
 }
+void openpete_native_scene_set_fog_target(uint32_t w) { s_cur_hqfog[2] = w; }
 /* Armed by the mod material-selector registry; see tag_split_on. */
 void openpete_native_set_tag_split(int on) { s_tag_split_ext = on ? 1 : 0; }
 
@@ -2245,12 +2282,11 @@ static int scene_true_w_mask(void) {
  * @param carry The 2D-UI carry flag.
  * @param group Portal grouping id.
  * @param tag Provenance tag.
- * @param hq_a Heavy-fog word a.
- * @param hq_b Heavy-fog word b.
+ * @param hq The heavy-fog words: texel fade words a and b, then the vertex fade target word.
  * @param host_added Nonzero for host-added geometry.
  * @param pvz_missing Incremented per vertex whose pvz was not above 0. */
 static void scene_tri_fill(scene_tri_t* d, const openpete_scene_tri* tri, int category, int carry, int group,
-                           uint32_t tag, uint32_t hq_a, uint32_t hq_b, int host_added, unsigned* pvz_missing) {
+                           uint32_t tag, const uint32_t hq[3], int host_added, unsigned* pvz_missing) {
     memcpy(d, tri, sizeof *tri);
     /* One validation of the blend class for every pass that indexes a
      * table by it; a class outside the table draws opaque, as each
@@ -2262,8 +2298,9 @@ static void scene_tri_fill(scene_tri_t* d, const openpete_scene_tri* tri, int ca
     d->group = group;        /* portal grouping id (PORTAL_* only) */
     d->tag = tag;
     d->fog_delta = s_cur_fog_delta;  /* sticky (set_fog_delta) */
-    d->hqfog_a = hq_a;
-    d->hqfog_b = hq_b;
+    d->hqfog_a = hq[0];
+    d->hqfog_b = hq[1];
+    d->fog_target = hq[2];
     d->seq = s_cur_seq;              /* sticky (set_seq) */
     d->over_fade = 0;                /* set at the 2D rank */
     d->under_player = 0;             /* set at the 2D rank */
@@ -2350,7 +2387,7 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
     if (s_scene_n < (int)s_scene_v.cap || scene_room(s_scene_n + 1)) {
         unsigned missing = 0;
         scene_tri_fill(&s_scene[s_scene_n], tri, category, carry, group, s_cur_tag,
-                       s_cur_hqfog[0], s_cur_hqfog[1], s_cur_host_added, &missing);
+                       s_cur_hqfog, s_cur_host_added, &missing);
         scene_kind_count(s_cur_tag, 1);
         scene_pvz_missing_note(missing, category, s_cur_tag);
         /* Feed-time carry accumulation (see s_overlay_accum): a fresh 2D-UI /
@@ -2375,8 +2412,8 @@ int openpete_native_scene_reserve(int n) {
 }
 
 void openpete_native_scene_store_tri(int slot, const openpete_scene_tri* tri, int category, uint32_t tag,
-                                     const uint32_t hqfog[2], int host_added, unsigned* pvz_missing) {
-    scene_tri_fill(&s_scene[slot], tri, category, 0, 0, tag, hqfog[0], hqfog[1], host_added, pvz_missing);
+                                     const uint32_t hqfog[3], int host_added, unsigned* pvz_missing) {
+    scene_tri_fill(&s_scene[slot], tri, category, 0, 0, tag, hqfog, host_added, pvz_missing);
 }
 
 size_t openpete_native_scene_tri_bytes(void) { return sizeof(scene_tri_t); }
@@ -14121,7 +14158,9 @@ static int s_hud_under_idx[HUD_UNDER_MAX];
 #define TX_BUCKET_OVER_HUD     8
 /* The textured under-player HUD triangles' bucket of the textured block. */
 #define TX_BUCKET_UNDER_HUD    14
-static struct { int gi; uint32_t tag; int first, count; } s_utmat[UT_MAT_SPANS];
+/* One untextured material span: bucket, masked tag, vertex range and its
+ * first triangle's vertex fade target word (material_fade_fill). */
+static struct { int gi; uint32_t tag; int first, count; uint32_t fade; } s_utmat[UT_MAT_SPANS];
 static int s_utmat_n;
 #define s_utdef_idx ((int *)s_cz_utdef.data)
 
@@ -14195,18 +14234,18 @@ static int ut_emit_deferred(int gi, const scene_tri_t* scene, rhi_vertex* buf,
     if (dn <= 0) return n;
     s_utsort_scene = scene;
     qsort(s_utdef_idx, (size_t)dn, sizeof(int), utdef_cmp);
-    uint32_t cur = 0; int span_first = 0, open = 0;
+    uint32_t cur = 0, fade = 0; int span_first = 0, open = 0;
     for (int d = 0; d < dn; d++) {
         int t = s_utdef_idx[d];
         if (n + 3 > s_cz_verts) break;
         uint32_t mt = ut_mask_tag(scene[t].tag);
         if (!open) {
-            cur = mt; span_first = n; open = 1;
+            cur = mt; fade = scene[t].fog_target; span_first = n; open = 1;
         } else if (mt != cur) {
             if (s_utmat_n + 1 < UT_MAT_SPANS) {     /* keep one slot for the tail */
                 s_utmat[s_utmat_n++] = (__typeof__(s_utmat[0]))
-                    { gi, cur, span_first, n - span_first };
-                cur = mt; span_first = n;
+                    { gi, cur, span_first, n - span_first, fade };
+                cur = mt; fade = scene[t].fog_target; span_first = n;
             } else {
                 cur = 0;    /* absorbed: this span's tail draws stock */
             }
@@ -14216,7 +14255,7 @@ static int ut_emit_deferred(int gi, const scene_tri_t* scene, rhi_vertex* buf,
     }
     if (open && s_utmat_n < UT_MAT_SPANS)
         s_utmat[s_utmat_n++] = (__typeof__(s_utmat[0]))
-            { gi, cur, span_first, n - span_first };
+            { gi, cur, span_first, n - span_first, fade };
     return n;
 }
 
@@ -14763,6 +14802,7 @@ static void draw_ut_mat_spans(int gi, rhi_pipeline* stock, int want_mark,
                 nr_material_bind(&mg, 0, actor);
                 psx_material_hd zm;                     /* bpp 0 = untextured */
                 memset(&zm, 0, sizeof zm);
+                material_fade_fill(&zm, s_utmat[si].fade);
                 rhi_push_constants(s_nr.dev, &zm, sizeof zm);
             }
         }
@@ -15547,6 +15587,9 @@ static int draw_run_material(const tex_run* r, int ov_mark, int blend_class,
     mh.tpage_x = r->m.tpage_x; mh.tpage_y = r->m.tpage_y;
     mh.clut_x = r->m.clut_x; mh.clut_y = r->m.clut_y;
     mh.bpp = r->m.bpp;
+    mh.hq_a = r->m.hqfog_a; mh.hq_b = r->m.hqfog_b;
+    mh.lad[0] = r->m.lad_ts; mh.lad[1] = r->m.lad_tb;
+    material_fade_fill(&mh, s0->fog_target);
     /* Not for bpp-32 runs: mod-registered textures have no registry
      * identity. */
     if (want_replace && s0->bpp != 32) {

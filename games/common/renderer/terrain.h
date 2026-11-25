@@ -94,6 +94,12 @@ int terrain_fog_saturated(double m3);
  * @return The blended colour, 0x00BBGGRR. */
 uint32_t terrain_fog_cue(uint32_t nearC, uint32_t farC, double m3);
 
+/** @brief The colour terrain_fog_cue blends toward for a far colour: farC after the texture pack's fog shift.
+ * @param farC The fog target, 0x00BBGGRR.
+ * @param target Receives the colour the cue blends toward, 0x00BBGGRR.
+ * @return 1 when the cue is active; 0 when terrain_fog_cue returns its near colour at every depth (before the first walk, or under fog mode off), and nothing is written. */
+int terrain_fog_cue_target(uint32_t farC, uint32_t* target);
+
 /** @brief Packs the heavy-fog texel fade stepped at one ladder row, the original fog form's per-face step.
  *
  * The game steps its CLUT ladder per face; the step is t = row / 15,
