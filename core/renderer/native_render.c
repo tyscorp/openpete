@@ -23364,6 +23364,67 @@ static void thumb_cycle(void)
     rhi_gpu_zone_end(s_nr.dev);
 }
 
+/** @brief Return a screenshot buffer the PNG writer converted; runs on the writer thread.
+ * @param ctx The rhi_device.
+ * @param idx The buffer. */
+static void shot_release(void *ctx, int idx)
+{
+    rhi_shot_release((rhi_device *)ctx, idx);
+}
+
+/** @brief Hand every retired screenshot copy to the PNG writer, oldest first, until none is ready or the writer's queue is full.
+ *
+ * Runs on the display's owner. Each copy's tag is the request it serves
+ * (openpete_png_request_take). */
+static void shot_hand_ready(void)
+{
+    const void *px = NULL;
+    int w = 0, h = 0, i;
+    uint64_t tag = 0;
+    while ((i = rhi_shot_ready(s_nr.dev, &px, &w, &h, &tag)) >= 0) {
+        /* Held before the writer can see it: the writer may release it at once. */
+        rhi_shot_hold(s_nr.dev, i, 1);
+        if (openpete_png_request_submit((void *)(uintptr_t)tag, px, w, h, rhi_shot_bgra(),
+                                        shot_release, s_nr.dev, i) == 2) {
+            rhi_shot_hold(s_nr.dev, i, 0);
+            return;
+        }
+    }
+}
+
+/** @brief Serve the player screenshot requests on this present: hand retired copies to the writer and queue a copy of this present's offscreen.
+ *
+ * Called between the blit and end_frame on the display's owner, beside
+ * thumb_cycle. One request is served per present; while every screenshot
+ * buffer is in use a request waits for a later present. With nothing
+ * requested or in flight, the buffers beyond the first are freed. */
+static void shot_cycle(void)
+{
+    shot_hand_ready();
+    if (openpete_png_requests_pending() == 0) { rhi_shot_trim(s_nr.dev); return; }
+    if (rhi_shot_free(s_nr.dev) == 0) return;
+    void *job = openpete_png_request_take(openpete_feed_key_now());
+    if (job && rhi_shot_queue(s_nr.dev, (uint64_t)(uintptr_t)job) < 0)
+        openpete_png_request_cancel(job, "no screenshot buffer");
+}
+
+/** @brief Write every screenshot still queued at teardown and drop the requests no present served; after the last present.
+ *
+ * The device is waited idle when a copy is queued, so each queued copy is
+ * written. */
+static void shot_teardown(void)
+{
+    if (!s_nr.enabled || !s_nr.dev) return;
+    rhi_shot_drain(s_nr.dev);
+    for (int tries = 0; tries < 4 && rhi_shot_free(s_nr.dev) < RHI_SHOT_POOL; tries++) {
+        shot_hand_ready();
+        openpete_png_async_drain();   /* writes what was handed and returns the buffers */
+    }
+    void *job;
+    while ((job = openpete_png_request_take(0)) != NULL)
+        openpete_png_request_cancel(job, "no present after the request");
+}
+
 /* ---- eager scene ring: operations (types above, by s_scene) ---- */
 static void render_frame_common(uint64_t record_pts_us, bool have_ref);
 static void pt_dump_maybe(int rendered, unsigned frame, uint32_t stamp, uint32_t freeze, int kind,
@@ -24195,6 +24256,8 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
 
     /* Bug-report thumbnails: the offscreen as presented, downscaled. */
     thumb_cycle();
+    /* Player screenshots: the offscreen as presented. */
+    shot_cycle();
     NR_PROF_END();   /* render.tail */
 
     s_late_async = false;
@@ -26670,6 +26733,7 @@ int openpete_native_window_final_state(int *fullscreen, int *maximized, int *x, 
 
 void openpete_native_render_shutdown(void)
 {
+    shot_teardown();
     openpete_png_async_drain();   /* the player screenshots still queued */
     scene_box_summary();
     hide_hud_report();

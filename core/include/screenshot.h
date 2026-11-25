@@ -99,9 +99,70 @@ int  openpete_write_png_rgba(const char* path, const void* pixels, int w, int h)
 int  openpete_write_png_rgba_async(const char* path, unsigned char* pixels, int w, int h,
                                    const char* what, unsigned key, double readback_ms);
 
-/** @brief Report whether a queued or running asynchronous PNG write targets a path.
+/** @brief Return borrowed pixels to their owner; called once per borrowed write, on any thread.
+ * @param ctx The owner's context.
+ * @param idx The owner's index for the pixels. */
+typedef void (*openpete_png_release_fn)(void* ctx, int idx);
+
+/** @brief Request a PNG of an image not captured yet; the capturing thread takes the request later.
+ *
+ * The path counts as taken (openpete_png_async_pending) from this call
+ * until the file is committed or the request is cancelled. Requests are
+ * taken in order; 16 can wait at once.
+ * @param path Output path, copied.
+ * @param what Label for the log line ("player"); NULL reads as offscreen.
+ * @return 0 when queued; 1 on a NULL or empty path, an allocation failure,
+ *         or 16 requests already waiting (logged). */
+int  openpete_png_request(const char* path, const char* what);
+
+/** @brief Return how many requests wait for a capture; safe on any thread.
+ * @return The count. */
+int  openpete_png_requests_pending(void);
+
+/** @brief Take the oldest request for capture; its path stays taken.
+ *
+ * The caller passes the result to openpete_png_request_submit or
+ * openpete_png_request_cancel exactly once.
+ * @param key The feed key logged with the file.
+ * @return The request, or NULL when none waits. */
+void* openpete_png_request_take(unsigned key);
+
+/** @brief Hand a taken request its captured pixels; the writer encodes them and never the calling thread while a writer runs.
+ *
+ * The writer converts the pixels into its own R,G,B,A copy (red and blue
+ * swapped when @p bgra, alpha forced to 0xFF), calls @p release, then
+ * encodes and writes as openpete_write_png_rgba_async does, logging the
+ * span from the request to this call as the readback. A full writer queue
+ * takes nothing and returns 2: the caller keeps the request and the pixels
+ * and retries. The job runs inline only when no writer thread can be
+ * started.
+ * @param job A request from openpete_png_request_take.
+ * @param src w*h*4 bytes, rows packed, valid until @p release is called.
+ * @param w Width in pixels.
+ * @param h Height in pixels.
+ * @param bgra Nonzero when @p src is B,G,R,A.
+ * @param release Called with @p release_ctx and @p release_idx once @p src is no longer read; may be NULL.
+ * @param release_ctx Passed to @p release.
+ * @param release_idx Passed to @p release.
+ * @return 0 when queued or written; 1 on a NULL argument or a non-positive
+ *         dimension (@p release was called, the request freed); 2 when the
+ *         queue is full (nothing was taken). */
+int  openpete_png_request_submit(void* job, const void* src, int w, int h, int bgra,
+                                 openpete_png_release_fn release, void* release_ctx,
+                                 int release_idx);
+
+/** @brief Drop a taken request without writing it, logging why.
+ * @param job A request from openpete_png_request_take; NULL is ignored.
+ * @param why The reason logged. */
+void openpete_png_request_cancel(void* job, const char* why);
+
+/** @brief Report whether OPENPETE_SHOT_SYNC asks for screenshots encoded inline on the requesting thread.
+ * @return 1 when OPENPETE_SHOT_SYNC is set to a value other than 0, else 0. */
+int  openpete_png_async_inline(void);
+
+/** @brief Report whether a queued or running asynchronous PNG write, or a waiting request, holds a path.
  * @param path The path to test; NULL returns 0.
- * @return 1 when a write to @p path is queued or running, else 0. */
+ * @return 1 when a write to @p path is queued, running or requested, else 0. */
 int  openpete_png_async_pending(const char* path);
 
 /** @brief Write every queued asynchronous PNG and stop the writer thread.

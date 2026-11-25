@@ -111,6 +111,9 @@ ATOMICS = {
         "dev.pcache_fu_misses": ("outside", "pipeline-cache statistic"),
         "dev.pipes_by_cmp": ("outside", "pipeline registry statistic"),
         "j.done": ("outside", "compile job completion; the harness runs no compile worker"),
+        "dev.shot_pool.state": ("outside", "player screenshot buffer, handed between the display owner and the "
+                                           "PNG writer; the compose stand-in queues no screenshot and the "
+                                           "harness runs no writer"),
         "v": ("outside", "pipeline-cache entry state"),
     },
     "tests/sched/present/gen/ring_extract.c": {},

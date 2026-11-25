@@ -810,6 +810,21 @@ struct rhi_device {
         uint64_t        tag;
     } thumb_ring[RHI_FRAMES_IN_FLIGHT];
 
+    /* Player screenshot pool (rhi_shot_*): host-cached staging buffers the
+     * offscreen is copied into inside a present's own command buffer. A
+     * buffer is FREE, QUEUED (its copy rides the frame of serial `serial`)
+     * or HELD (handed out; any thread returns it with rhi_shot_release, the
+     * only cross-thread write, hence the atomic). Everything else is touched
+     * by the display's owner. */
+    struct {
+        rhi_buffer *staging;
+        _Atomic int state;         /* RHI_SHOT_FREE, RHI_SHOT_QUEUED, RHI_SHOT_HELD */
+        uint64_t    serial;        /* frame serial whose submission carries the copy */
+        bool        retired;       /* rhi_shot_drain waited the device idle */
+        int         w, h;
+        uint64_t    tag;           /* the caller's token for the copy */
+    } shot_pool[RHI_SHOT_POOL];
+
     /* GPU per-pass timestamp zones (OPENPETE_GPU_TIMERS=1): one timestamp
      * query pool per frame in flight, 2 queries per zone. Slot i's results are
      * harvested in rhi_begin_frame right after slot i's fence wait - the same
@@ -4587,6 +4602,7 @@ static void lto_destroy_ready(rhi_device *dev);
 
 static void described_free(rhi_device *dev);
 static void thumb_slot_free(rhi_device *dev, int i);
+static void shot_pool_destroy(rhi_device *dev, int first);
 
 /** @brief Wait the logical device idle, destroy every object created from it, then the device itself.
  *
@@ -4617,6 +4633,7 @@ static void device_objects_destroy(rhi_device *dev)
         }
         thumb_slot_free(dev, i);
     }
+    shot_pool_destroy(dev, 0);
     destroy_swapchain_resources(dev);
     swapchain_destroy(dev);
     if (dev->off_rp) vkDestroyRenderPass(dev->device, dev->off_rp, NULL);
@@ -7611,6 +7628,125 @@ bool rhi_cycle_thumb(rhi_device *dev, int queue, int max_w, int max_h, uint64_t 
     dev->thumb_ring[fi].tag = tag;
     return got;
 }
+
+enum { RHI_SHOT_FREE, RHI_SHOT_QUEUED, RHI_SHOT_HELD };
+
+int rhi_shot_queue(rhi_device *dev, uint64_t tag)
+{
+    if (!dev || !dev->frame_active) return -1;
+    const int w = (int)dev->off_extent.width, h = (int)dev->off_extent.height;
+    if (w <= 0 || h <= 0) return -1;
+    const size_t need = rt_readback_bytes(w, h);
+    /* The lowest free buffer, so single shots keep reusing buffer 0. */
+    int i = 0;
+    while (i < RHI_SHOT_POOL && atomic_load(&dev->shot_pool[i].state) != RHI_SHOT_FREE) i++;
+    if (i == RHI_SHOT_POOL) return -1;
+    rhi_buffer **st = &dev->shot_pool[i].staging;
+    if (!*st || (*st)->size < need) {
+        /* A FREE buffer has no copy in flight: its last copy retired before
+         * it was handed out and the holder released it. */
+        if (*st) rhi_destroy_buffer(dev, *st);
+        *st = create_host_buffer(dev, need, VK_BUFFER_USAGE_TRANSFER_DST_BIT, /*prefer_cached=*/true);
+        if (!*st) return -1;
+    }
+    /* The offscreen is in TRANSFER_SRC (its render pass's final layout,
+     * already read by the blit); another transfer read needs no barrier. */
+    VkCommandBuffer cb = dev->cmd[dev->frame];
+    VkBufferImageCopy region = {
+        .imageSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+        .imageExtent = { (uint32_t)w, (uint32_t)h, 1 },
+    };
+    vkCmdCopyImageToBuffer(cb, dev->off_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           (*st)->buffer, 1, &region);
+    VkBufferMemoryBarrier to_host = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = (*st)->buffer,
+        .offset = 0, .size = VK_WHOLE_SIZE,
+    };
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+                         0, 0, NULL, 1, &to_host, 0, NULL);
+    dev->shot_pool[i].serial = s_frame_serial;
+    dev->shot_pool[i].retired = false;
+    dev->shot_pool[i].w = w;
+    dev->shot_pool[i].h = h;
+    dev->shot_pool[i].tag = tag;
+    atomic_store(&dev->shot_pool[i].state, RHI_SHOT_QUEUED);
+    return i;
+}
+
+int rhi_shot_ready(rhi_device *dev, const void **px, int *w, int *h, uint64_t *tag)
+{
+    if (!dev) return -1;
+    /* A frame RHI_FRAMES_IN_FLIGHT serials back has had its fence waited
+     * (rhi_frame_serial), so its copy is in the buffer. Oldest first. */
+    int best = -1;
+    for (int i = 0; i < RHI_SHOT_POOL; i++) {
+        if (atomic_load(&dev->shot_pool[i].state) != RHI_SHOT_QUEUED) continue;
+        if (!dev->shot_pool[i].retired &&
+            dev->shot_pool[i].serial + RHI_FRAMES_IN_FLIGHT > s_frame_serial) continue;
+        if (best < 0 || dev->shot_pool[i].serial < dev->shot_pool[best].serial) best = i;
+    }
+    if (best < 0) return -1;
+    if (px) *px = dev->shot_pool[best].staging->mapped;
+    if (w) *w = dev->shot_pool[best].w;
+    if (h) *h = dev->shot_pool[best].h;
+    if (tag) *tag = dev->shot_pool[best].tag;
+    return best;
+}
+
+void rhi_shot_hold(rhi_device *dev, int i, int held)
+{
+    if (dev && i >= 0 && i < RHI_SHOT_POOL)
+        atomic_store(&dev->shot_pool[i].state, held ? RHI_SHOT_HELD : RHI_SHOT_QUEUED);
+}
+
+void rhi_shot_release(rhi_device *dev, int i)
+{
+    if (dev && i >= 0 && i < RHI_SHOT_POOL) atomic_store(&dev->shot_pool[i].state, RHI_SHOT_FREE);
+}
+
+int rhi_shot_free(rhi_device *dev)
+{
+    int n = 0;
+    for (int i = 0; dev && i < RHI_SHOT_POOL; i++)
+        n += atomic_load(&dev->shot_pool[i].state) == RHI_SHOT_FREE;
+    return n;
+}
+
+/** @brief Destroy the screenshot buffers from an index on; none of them may be in use.
+ * @param dev Device.
+ * @param first The first buffer destroyed. */
+static void shot_pool_destroy(rhi_device *dev, int first)
+{
+    for (int i = first; i < RHI_SHOT_POOL; i++)
+        if (dev->shot_pool[i].staging) {
+            rhi_destroy_buffer(dev, dev->shot_pool[i].staging);
+            dev->shot_pool[i].staging = NULL;
+        }
+}
+
+void rhi_shot_trim(rhi_device *dev)
+{
+    if (dev && rhi_shot_free(dev) == RHI_SHOT_POOL) shot_pool_destroy(dev, 1);
+}
+
+void rhi_shot_drain(rhi_device *dev)
+{
+    if (!dev) return;
+    int queued = 0;
+    for (int i = 0; i < RHI_SHOT_POOL; i++)
+        queued |= atomic_load(&dev->shot_pool[i].state) == RHI_SHOT_QUEUED;
+    if (!queued) return;
+    vkDeviceWaitIdle(dev->device);
+    for (int i = 0; i < RHI_SHOT_POOL; i++)
+        if (atomic_load(&dev->shot_pool[i].state) == RHI_SHOT_QUEUED) dev->shot_pool[i].retired = true;
+}
+
+int rhi_shot_bgra(void) { return RHI_RT_FORMAT == VK_FORMAT_B8G8R8A8_UNORM; }
 
 bool rhi_cycle_rt_readback(rhi_device *dev, rhi_texture *rt,
                            void *out, size_t out_bytes, int *out_w, int *out_h)

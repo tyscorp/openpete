@@ -48,17 +48,26 @@ int openpete_write_png_rgba(const char* path, const void* pixels, int w, int h) 
 
 /* Asynchronous PNG writer: one worker thread drains a FIFO of encode-and-write
  * jobs, so the thread that read the pixels back never waits on the encoder or
- * the file system. The queue, the busy flag and the thread handle are guarded
- * by s_aw.mx; a queued job's path stays reserved (openpete_png_async_pending)
- * until its file is committed. */
+ * the file system. A second FIFO holds requests whose image the display's
+ * owner has not captured yet (openpete_png_request). Both queues, the busy
+ * flag and the thread handle are guarded by s_aw.mx; a requested or queued
+ * job's path stays reserved (openpete_png_async_pending) until its file is
+ * committed. */
 #define PNG_ASYNC_SLOTS 8
+#define PNG_ASYNC_REQUESTS 16
 
 typedef struct png_job {
     char           path[1100];
     char           what[32];
     unsigned char* px;          /* owned; freed by the writer */
+    const unsigned char* src;   /* borrowed pixels, converted into px first; NULL when px is given */
+    int            bgra;        /* src is B,G,R,A */
+    openpete_png_release_fn release;   /* returns src to its owner */
+    void*          release_ctx;
+    int            release_idx;
     int            w, h;
     unsigned       key;         /* the feed key at the readback */
+    Uint64         t_req;       /* a request's instant (SDL_GetTicksNS), 0 for a direct write */
     double         readback_ms; /* the caller's readback span */
 } png_job_t;
 
@@ -72,7 +81,33 @@ static struct {
     png_job_t*     cur;         /* the job being written, NULL when none */
     int            quit;
     int            failed;      /* thread creation failed once: write inline */
+    png_job_t*     req[PNG_ASYNC_REQUESTS];   /* requested jobs no image is captured for yet, FIFO */
+    int            req_head, req_n;
 } s_aw;
+
+/** @brief Convert a borrowed B,G,R,A or R,G,B,A image into an owned R,G,B,A one with opaque alpha, then return the borrowed image.
+ *
+ * The conversion is the RHI readback swizzle: red and blue swapped for
+ * B,G,R,A, alpha forced to 0xFF.
+ * @param j The job; j->px receives the image, NULL when it cannot be allocated. */
+static void png_job_take_src(png_job_t* j) {
+    const size_t n = (size_t)j->w * (size_t)j->h;
+    j->px = (unsigned char*)malloc(n * 4u);
+    if (j->px) {
+        const unsigned char* src = j->src;
+        unsigned char* dst = j->px;
+        const int swap = j->bgra;
+        for (size_t i = 0; i < n; i++) {
+            const unsigned char c0 = src[i * 4 + 0], c1 = src[i * 4 + 1], c2 = src[i * 4 + 2];
+            dst[i * 4 + 0] = swap ? c2 : c0;
+            dst[i * 4 + 1] = c1;
+            dst[i * 4 + 2] = swap ? c0 : c2;
+            dst[i * 4 + 3] = 0xFF;
+        }
+    }
+    j->src = NULL;
+    if (j->release) j->release(j->release_ctx, j->release_idx);
+}
 
 /** @brief Encode one job's pixels to its PNG, log the line the synchronous path logs, and free the job.
  *
@@ -83,6 +118,12 @@ static struct {
  * @param where "writer" or "inline", named in the log line. */
 static void png_job_run(png_job_t* j, const char* where) {
     const Uint64 t0 = SDL_GetTicksNS();   /* clock-guard: wall */
+    if (j->src) png_job_take_src(j);
+    if (!j->px) {
+        OPL_ERROR_F("screenshot", "%s screenshot: no memory for %s", j->what, j->path);
+        free(j);
+        return;
+    }
     /* OPENPETE_SHOT_WRITE_DELAY_MS=N adds N ms to the write: a slow file
      * system or an on-access scanner, for the harness that measures which
      * thread waits on it. */
@@ -143,6 +184,27 @@ static int png_async_init(void) {
     return 1;
 }
 
+/** @brief Start the writer thread unless it runs, failed to start once, or is quitting; s_aw.mx is held.
+ * @return 1 when a writer thread accepts jobs, else 0. */
+static int png_writer_ensure_locked(void) {
+    if (!s_aw.th && !s_aw.failed && !s_aw.quit) {
+        s_aw.th = SDL_CreateThread(png_writer_main, "openpete-shotpng", NULL);
+        if (!s_aw.th) {
+            s_aw.failed = 1;
+            OPL_WARN_F("screenshot", "PNG writer thread not created: %s; writing inline", SDL_GetError());
+        }
+    }
+    return s_aw.th && !s_aw.quit;
+}
+
+/** @brief Append a job to the writer's queue and wake the writer; s_aw.mx is held and the queue has room.
+ * @param j The job; the writer frees it. */
+static void png_enqueue_locked(png_job_t* j) {
+    s_aw.q[(s_aw.head + s_aw.n) % PNG_ASYNC_SLOTS] = j;
+    s_aw.n++;
+    SDL_SignalCondition(s_aw.cv);
+}
+
 int openpete_write_png_rgba_async(const char* path, unsigned char* pixels, int w, int h,
                                   const char* what, unsigned key, double readback_ms) {
     if (!path || !pixels || w <= 0 || h <= 0) { free(pixels); return 1; }
@@ -151,22 +213,12 @@ int openpete_write_png_rgba_async(const char* path, unsigned char* pixels, int w
     snprintf(j->path, sizeof j->path, "%s", path);
     snprintf(j->what, sizeof j->what, "%s", what ? what : "offscreen");
     j->px = pixels; j->w = w; j->h = h; j->key = key; j->readback_ms = readback_ms;
-    const char* sync = getenv("OPENPETE_SHOT_SYNC");
     int queued = 0;
-    if (!(sync && *sync && *sync != '0') && png_async_init()) {
+    if (!openpete_png_async_inline() && png_async_init()) {
         SDL_LockMutex(s_aw.mx);
-        if (!s_aw.th && !s_aw.failed && !s_aw.quit) {
-            s_aw.th = SDL_CreateThread(png_writer_main, "openpete-shotpng", NULL);
-            if (!s_aw.th) {
-                s_aw.failed = 1;
-                OPL_WARN_F("screenshot", "PNG writer thread not created: %s; writing inline", SDL_GetError());
-            }
-        }
-        if (s_aw.th && !s_aw.quit && s_aw.n < PNG_ASYNC_SLOTS) {
-            s_aw.q[(s_aw.head + s_aw.n) % PNG_ASYNC_SLOTS] = j;
-            s_aw.n++;
+        if (png_writer_ensure_locked() && s_aw.n < PNG_ASYNC_SLOTS) {
+            png_enqueue_locked(j);
             queued = 1;
-            SDL_SignalCondition(s_aw.cv);
         }
         SDL_UnlockMutex(s_aw.mx);
     }
@@ -174,11 +226,95 @@ int openpete_write_png_rgba_async(const char* path, unsigned char* pixels, int w
     return 0;
 }
 
+int openpete_png_async_inline(void) {
+    const char* sync = getenv("OPENPETE_SHOT_SYNC");
+    return (sync && *sync && *sync != '0') ? 1 : 0;
+}
+
+int openpete_png_request(const char* path, const char* what) {
+    if (!path || !*path || !png_async_init()) return 1;
+    png_job_t* j = (png_job_t*)calloc(1, sizeof *j);
+    if (!j) return 1;
+    snprintf(j->path, sizeof j->path, "%s", path);
+    snprintf(j->what, sizeof j->what, "%s", what ? what : "offscreen");
+    j->t_req = SDL_GetTicksNS();   /* clock-guard: wall */
+    SDL_LockMutex(s_aw.mx);
+    const int n = s_aw.req_n;
+    if (n < PNG_ASYNC_REQUESTS) {
+        s_aw.req[(s_aw.req_head + n) % PNG_ASYNC_REQUESTS] = j;
+        s_aw.req_n++;
+    }
+    SDL_UnlockMutex(s_aw.mx);
+    if (n < PNG_ASYNC_REQUESTS) return 0;
+    OPL_WARN_F("screenshot", "%s screenshot %s dropped: %d requests pending", j->what, path, n);
+    free(j);
+    return 1;
+}
+
+int openpete_png_requests_pending(void) {
+    if (!s_aw.mx) return 0;
+    SDL_LockMutex(s_aw.mx);
+    const int n = s_aw.req_n;
+    SDL_UnlockMutex(s_aw.mx);
+    return n;
+}
+
+void* openpete_png_request_take(unsigned key) {
+    if (!s_aw.mx) return NULL;
+    png_job_t* j = NULL;
+    SDL_LockMutex(s_aw.mx);
+    if (s_aw.req_n > 0) {
+        const int k = s_aw.req_head;
+        j = s_aw.req[k];
+        s_aw.req[k] = NULL;
+        s_aw.req_head = (k + 1) % PNG_ASYNC_REQUESTS;
+        s_aw.req_n--;
+        j->key = key;
+    }
+    SDL_UnlockMutex(s_aw.mx);
+    return j;
+}
+
+int openpete_png_request_submit(void* job, const void* src, int w, int h, int bgra,
+                                openpete_png_release_fn release, void* release_ctx,
+                                int release_idx) {
+    png_job_t* j = (png_job_t*)job;
+    if (!j || !src || w <= 0 || h <= 0 || !s_aw.mx) {
+        if (release) release(release_ctx, release_idx);
+        free(j);
+        return 1;
+    }
+    SDL_LockMutex(s_aw.mx);
+    const int writer = png_writer_ensure_locked();
+    if (writer && s_aw.n >= PNG_ASYNC_SLOTS) {
+        SDL_UnlockMutex(s_aw.mx);
+        return 2;
+    }
+    j->src = (const unsigned char*)src; j->bgra = bgra;
+    j->release = release; j->release_ctx = release_ctx; j->release_idx = release_idx;
+    j->w = w; j->h = h;
+    /* The span logged as the readback: request to hand-off. */
+    j->readback_ms = (double)(SDL_GetTicksNS() - j->t_req) / 1e6;   /* clock-guard: wall */
+    if (writer) png_enqueue_locked(j);
+    SDL_UnlockMutex(s_aw.mx);
+    if (!writer) png_job_run(j, "inline");
+    return 0;
+}
+
+void openpete_png_request_cancel(void* job, const char* why) {
+    png_job_t* j = (png_job_t*)job;
+    if (!j) return;
+    OPL_WARN_F("screenshot", "%s screenshot %s not taken: %s", j->what, j->path, why ? why : "cancelled");
+    free(j);
+}
+
 int openpete_png_async_pending(const char* path) {
     if (!path || !s_aw.mx) return 0;
     int hit = 0;
     SDL_LockMutex(s_aw.mx);
     if (s_aw.cur && strcmp(s_aw.cur->path, path) == 0) hit = 1;
+    for (int i = 0; !hit && i < s_aw.req_n; i++)
+        if (strcmp(s_aw.req[(s_aw.req_head + i) % PNG_ASYNC_REQUESTS]->path, path) == 0) hit = 1;
     for (int i = 0; !hit && i < s_aw.n; i++)
         if (strcmp(s_aw.q[(s_aw.head + i) % PNG_ASYNC_SLOTS]->path, path) == 0) hit = 1;
     SDL_UnlockMutex(s_aw.mx);

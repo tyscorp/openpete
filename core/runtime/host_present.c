@@ -590,12 +590,14 @@ static void inline_canonical_render(void) OP_REQUIRES(sim)
  * One unsuffixed PNG of the offscreen the present blitted, so it carries the
  * sub-tick scene, mods, postfx and overlays as presented, rather than the
  * reference-aligned recompose the --screenshot-on-frame variants need.
- * Native display only. The device is the present thread's while eager is
- * engaged, so the readback borrows it; the PNG encode and the file write
- * run on the PNG writer thread, which logs the file once written, so the
- * sim thread and the audio feed's producer stall only for the borrow and
- * the readback. The bug report's image stays synchronous: the bundle
- * reads the file right after. */
+ * Native display only. While the present thread holds the display, the
+ * request goes to it (openpete_png_request): it copies its next presented
+ * image in that present's own submission and
+ * the PNG writer converts, encodes and writes it, so neither this thread
+ * nor the display waits. Otherwise, and under OPENPETE_SHOT_SYNC, this
+ * thread reads the offscreen back itself and the writer encodes. The bug
+ * report's image stays synchronous: the bundle reads the file right
+ * after. */
 static void present_player_screenshot(void) OP_REQUIRES(sim)
 {
     char bug_path[1400];
@@ -614,7 +616,14 @@ static void present_player_screenshot(void) OP_REQUIRES(sim)
     if (!openpete_native_render_enabled()) {
         OPL_WARN_F("screenshot",
                    "no native renderer: nothing to capture");
-    } else if (openpete_screenshot_user_path(path, sizeof path) == 0) {
+    } else if (openpete_screenshot_user_path(path, sizeof path) != 0) {
+        return;
+    } else if (openpete_present_thread_active() && !openpete_png_async_inline()) {
+        /* The present thread copies its next presented image in that
+         * present's submission (the native render's shot cycle); the
+         * display stays where it is. */
+        (void)openpete_png_request(path, "player");
+    } else {
         const int pt_was = openpete_present_thread_borrow();
         openpete_native_render_screenshot_async(path, "player");
         openpete_present_thread_return(pt_was);

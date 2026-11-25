@@ -730,6 +730,63 @@ bool rhi_cycle_readback(rhi_device *dev, uint64_t tag, void *out, size_t out_byt
  * @return true when a thumbnail was written to @p out. */
 bool rhi_cycle_thumb(rhi_device *dev, int queue, int max_w, int max_h, uint64_t tag,
                      void *out, size_t out_bytes, int *out_w, int *out_h, uint64_t *out_tag);
+/* ---- player screenshot pool -------------------------------------------
+ *
+ * The offscreen as presented, copied into a host-cached staging buffer
+ * inside the present's own command buffer, so taking a screenshot stalls
+ * neither the GPU nor the display's owner. The buffer is read where it is
+ * mapped once its frame's fence retired, and handed out to a reader on
+ * any thread (the PNG writer), which returns it. */
+#define RHI_SHOT_POOL 8
+/** @brief Copy the offscreen into a free screenshot buffer in the current frame's command buffer.
+ *
+ * Called between the blit and end_frame on the display's owner, as
+ * rhi_cycle_thumb is. Buffer 0 is used whenever it is free; a buffer
+ * smaller than the swapchain extent is recreated.
+ * @param dev Device whose current frame records the copy.
+ * @param tag Opaque token returned with the copy by rhi_shot_ready.
+ * @return The buffer's index, or -1 outside an active frame, at an empty
+ *         extent, with every buffer in use, or when allocation failed. */
+int  rhi_shot_queue(rhi_device *dev, uint64_t tag);
+/** @brief Find the oldest queued screenshot whose frame has retired, without changing its state.
+ *
+ * A copy is retired once a frame RHI_FRAMES_IN_FLIGHT serials later began
+ * (rhi_frame_serial), or after rhi_shot_drain. Display owner only.
+ * @param dev Device.
+ * @param px Receives the mapped pixels, R,G,B,A or B,G,R,A per rhi_shot_bgra, alpha as rendered; may be NULL.
+ * @param w Receives the width; may be NULL.
+ * @param h Receives the height; may be NULL.
+ * @param tag Receives the copy's token; may be NULL.
+ * @return The buffer's index, or -1 when none is ready. */
+int  rhi_shot_ready(rhi_device *dev, const void **px, int *w, int *h, uint64_t *tag);
+/** @brief Mark a ready screenshot buffer handed out, or take back a hand-out the reader refused.
+ *
+ * A held buffer's pixels stay mapped until rhi_shot_release. Mark it held
+ * before the reader can see it, since the reader may release it at once.
+ * @param dev Device.
+ * @param i Index rhi_shot_ready returned.
+ * @param held 1 to hand it out, 0 to return it to the ready state. */
+void rhi_shot_hold(rhi_device *dev, int i, int held);
+/** @brief Return a handed-out screenshot buffer to the pool; safe on any thread.
+ * @param dev Device.
+ * @param i Index the holder was given. */
+void rhi_shot_release(rhi_device *dev, int i);
+/** @brief Count the free screenshot buffers, those neither queued nor handed out.
+ * @param dev Device, or NULL.
+ * @return The count, 0 for NULL. */
+int  rhi_shot_free(rhi_device *dev);
+/** @brief Free every screenshot buffer but the first when none is in use; display owner only.
+ * @param dev Device, or NULL. */
+void rhi_shot_trim(rhi_device *dev);
+/** @brief Wait the device idle when a screenshot copy is queued, so rhi_shot_ready returns it without later frames.
+ *
+ * For teardown, after the last present. Display owner only.
+ * @param dev Device, or NULL. */
+void rhi_shot_drain(rhi_device *dev);
+/** @brief Report whether screenshot buffers hold B,G,R,A rather than R,G,B,A.
+ * @return 1 for B,G,R,A, else 0. */
+int  rhi_shot_bgra(void);
+
 /** @brief Wait the device idle and retrieve the pending --record capture with the lowest tag, without recording a new one.
  *
  * Called at shutdown, up to RHI_FRAMES_IN_FLIGHT times, to flush the
