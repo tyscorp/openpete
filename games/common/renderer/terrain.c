@@ -177,6 +177,18 @@ static inline int thdr_flags(uint32_t w1)  { return (int)(w1 & game_layout.terra
  * @param w1 The sector header's word 1.
  * @return Nonzero when the layout defines terrain.flat_flag and w1 carries it. */
 static inline int thdr_flat(uint32_t w1)   { return game_layout.terrain.flat_flag && (w1 & game_layout.terrain.flat_flag); }
+/** @brief Tests sector header flags for the draw's second, semi-transparent walk (the water sectors).
+ *
+ * The flags carry terrain.second_pass_flag and not terrain.no_hp_flag
+ * (Spyro 2 environment.s 80023E2C-80023E58: andi 0x5000, 0x4000 emits no
+ * entry, else the +0x2200 list); the draw lists such a sector for the second
+ * walk instead of the HP walk. Always 0 on a layout without that walk.
+ * @param flags The header flags (thdr_flags).
+ * @return 1 for a second-walk sector, else 0. */
+static inline int thdr_second_walk(int flags) {
+    const uint32_t wf = game_layout.terrain.second_pass_flag;
+    return wf && (flags & (int)wf) && !(flags & (int)game_layout.terrain.no_hp_flag);
+}
 /** @brief Returns a sector header half-word as the signed 16-bit coordinate the world draw computes with.
  *
  * The bounding centre (words 0 and 1) and the origin (words 2 and 3) reach the
@@ -9591,10 +9603,11 @@ static void tvis_calibrate(CPUState* cpu, const tvis_sphere* S, uint32_t list, u
  * C' of the previous tick when the two tick cells are within Chebyshev
  * distance 1 and the tree snapshot did not change between them, so a sub-tick
  * present between the two tick cameras has both cells' sets
- * (sector_pvs_filled_step). The sky draw applies the same rule to the sky
- * tree (cyclorama.c) and reports into this file's load windows
- * (terrain_sector_filled_note_sky). Everything here runs on the sim thread
- * and writes host memory only. */
+ * (sector_pvs_filled_step). U also holds every second-walk sector
+ * (sf_admit_second_walk) at every camera position. The sky draw applies the
+ * same rule to the sky tree (cyclorama.c) and reports into this file's load
+ * windows (terrain_sector_filled_note_sky). Everything here runs on the sim
+ * thread and writes host memory only. */
 
 static sector_pvs_tree_t   s_sf_tree OP_GUARDED_BY(sim);   /* thread-roles: the terrain tree snapshot, refreshed and read on sim at the walk */
 static sector_pvs_filled_t s_sf OP_GUARDED_BY(sim);        /* C' over two ticks, U */
@@ -9613,14 +9626,18 @@ static uint32_t  s_sf_v_n OP_GUARDED_BY(sim);
 static unsigned long s_sf_ticks OP_GUARDED_BY(sim), s_sf_computes OP_GUARDED_BY(sim),
                      s_sf_refreshes OP_GUARDED_BY(sim), s_sf_walks_differ OP_GUARDED_BY(sim),
                      s_sf_added OP_GUARDED_BY(sim), s_sf_unions OP_GUARDED_BY(sim);
+static unsigned long s_sf_water OP_GUARDED_BY(sim);   /* the sectors sf_admit_second_walk added to U, run total */
 
 /* One load window: the canonical walks between two changes of (level,
  * sub-area). `notree` counts the walks that ran frustum because the level
  * had no tree or its lookup flag was 0; `pred`/`pred_rej` count
- * terrain_sector_admitted's filled answers and its rejections. */
+ * terrain_sector_admitted's filled answers and its rejections; `water` sums
+ * the sectors sf_admit_second_walk added to U and `water_walks` counts the
+ * walks where it added one. */
 typedef struct {
     int32_t level, area;
     unsigned long walks, notree, ticks, computes, walks_differ, added, pred, pred_rej;
+    unsigned long water, water_walks;   /* second-walk sectors added to U */
     unsigned long sky, sky_computes, sky_differ, sky_added;   /* filled sky draws */
     unsigned long contain, contain_rej;   /* terrain_point_admitted answers and rejections */
 } sf_window_t;
@@ -9640,10 +9657,11 @@ static void sf_window_close(void) OP_REQUIRES(sim) {
     const int engaged = w->computes > 0 && w->walks_differ > 0;
     fprintf(stderr, "[sector-filled-window] frame=%u level=%d area=%d walks=%lu notree=%lu ticks=%lu "
                     "computes=%lu walks_differ=%lu added=%lu pred=%lu pred_rejected=%lu sky=%lu "
-                    "sky_computes=%lu sky_differ=%lu sky_added=%lu contain=%lu contain_rejected=%lu engaged=%d\n",
+                    "sky_computes=%lu sky_differ=%lu sky_added=%lu contain=%lu contain_rejected=%lu water=%lu "
+                    "water_walks=%lu engaged=%d\n",
             openpete_frame, w->level, w->area, w->walks, w->notree, w->ticks, w->computes,
             w->walks_differ, w->added, w->pred, w->pred_rej, w->sky, w->sky_computes, w->sky_differ,
-            w->sky_added, w->contain, w->contain_rej, engaged);
+            w->sky_added, w->contain, w->contain_rej, w->water, w->water_walks, engaged);
     s_sf_windows++;
     s_sf_windows_engaged += (unsigned long)engaged;
     s_sf_total.walks += w->walks; s_sf_total.notree += w->notree; s_sf_total.ticks += w->ticks;
@@ -9651,6 +9669,7 @@ static void sf_window_close(void) OP_REQUIRES(sim) {
     s_sf_total.added += w->added; s_sf_total.pred += w->pred; s_sf_total.pred_rej += w->pred_rej;
     s_sf_total.sky += w->sky; s_sf_total.sky_computes += w->sky_computes;
     s_sf_total.sky_differ += w->sky_differ; s_sf_total.sky_added += w->sky_added;
+    s_sf_total.water += w->water; s_sf_total.water_walks += w->water_walks;
     s_sf_win_open = 0;
 }
 
@@ -9663,11 +9682,11 @@ static void sf_exit_report(void) {
     sf_window_close();
     fprintf(stderr, "sector-filled: windows=%lu engaged=%lu walks=%lu notree=%lu ticks=%lu computes=%lu "
                     "refreshes=%lu unions=%lu walks_differ=%lu added=%lu pred=%lu pred_rejected=%lu sky=%lu "
-                    "sky_computes=%lu sky_differ=%lu sky_added=%lu\n",
+                    "sky_computes=%lu sky_differ=%lu sky_added=%lu water=%lu water_walks=%lu\n",
             s_sf_windows, s_sf_windows_engaged, s_sf_total.walks, s_sf_total.notree, s_sf_total.ticks,
             s_sf_total.computes, s_sf_refreshes, s_sf_unions, s_sf_total.walks_differ, s_sf_total.added,
             s_sf_total.pred, s_sf_total.pred_rej, s_sf_total.sky, s_sf_total.sky_computes,
-            s_sf_total.sky_differ, s_sf_total.sky_added);
+            s_sf_total.sky_differ, s_sf_total.sky_added, s_sf_total.water, s_sf_total.water_walks);
 }
 
 /** @brief Opens a new load window when the level or sub-area differs from the open one's, closing that first; counts the walk.
@@ -9710,6 +9729,30 @@ static int sf_lookup(const int32_t p[3], const int d[3], uint8_t vis[256]) OP_RE
     return open;
 }
 
+/** @brief Adds every second-walk sector (thdr_second_walk) to the drawn set U.
+ *
+ * The game's second walk drops a face whose corner-SZ3 sum reaches
+ * TN_WATER_DROP_SUM, so the game never draws such a sector from far and the
+ * PVS lists hold no verdict on it: a lattice point whose list omits one
+ * does not say the sector is hidden there. Admitting it at every camera
+ * position leaves the frustum test and the native draw to decide what of
+ * it is drawn. Reads the sector table of the last canonical walk
+ * (s_sf_sector_ptr); none recorded admits nothing.
+ * @param cpu The guest CPU state, read only.
+ * @param n The sector count, at most 256.
+ * @return The sectors U did not already hold. */
+static int sf_admit_second_walk(CPUState* cpu, uint32_t n) OP_REQUIRES(sim) {
+    if (!game_layout.terrain.second_pass_flag || !s_sf_sector_ptr) return 0;
+    int added = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        const uint32_t sp = rd(cpu, s_sf_sector_ptr + i * 4u);
+        if (!sp || !thdr_second_walk(thdr_flags(rd(cpu, sp + 4u)))) continue;
+        added += !s_sf.u[i];
+        s_sf.u[i] = 0xFFu;
+    }
+    return added;
+}
+
 /** @brief Advances the filled set on a canonical walk: snapshot refresh, C' of the tick, U over two ticks.
  *
  * A sub-tick re-extract (s_vanim_sub) reads the U of the last canonical walk
@@ -9732,6 +9775,10 @@ static void sf_tick(CPUState* cpu, uint32_t sectorCnt) OP_REQUIRES(sim) {
     s_sf_ticks++;
     s_sf_win.ticks++;
     const int r = sector_pvs_filled_step(&s_sf, &s_sf_tree, p, n, v);
+    const int water = sf_admit_second_walk(cpu, n);
+    s_sf_water += (unsigned long)water;
+    s_sf_win.water += (unsigned long)water;
+    s_sf_win.water_walks += water > 0;
     if (r & SECTOR_PVS_COMPUTED) { s_sf_computes++; s_sf_win.computes++; }
     if (r & SECTOR_PVS_UNIONED) s_sf_unions++;
     int added = 0;
@@ -9744,9 +9791,9 @@ static void sf_tick(CPUState* cpu, uint32_t sectorCnt) OP_REQUIRES(sim) {
     const char* e = getenv("OPENPETE_SECTOR_FILLED_CENSUS");
     if (e && *e && *e != '0' && (s_sf_ticks % 300u) == 1u)
         fprintf(stderr, "[sector-filled] frame=%u ticks=%lu computes=%lu refreshes=%lu "
-                        "unions=%lu walks_differ=%lu added=%lu gen=%u\n",
+                        "unions=%lu walks_differ=%lu added=%lu water=%lu water_now=%d gen=%u\n",
                 openpete_frame, s_sf_ticks, s_sf_computes, s_sf_refreshes, s_sf_unions,
-                s_sf_walks_differ, s_sf_added, s_sf_tree.gen);
+                s_sf_walks_differ, s_sf_added, s_sf_water, water, s_sf_tree.gen);
 }
 
 void terrain_sector_filled_note_sky(int computed, int added) OP_REQUIRES(sim) {
@@ -13908,15 +13955,12 @@ static int tn_sz3(double m3, double scale) {
 
 /** @brief Returns 1 when the draw lists a sector for its second, semi-transparent walk instead of the HP walk.
  *
- * The sector's header carries terrain.second_pass_flag and not
- * terrain.no_hp_flag (Spyro 2 environment.s 80023E2C-80023E58: andi 0x5000,
- * 0x4000 emits no entry, else the +0x2200 list). Such a sector carries one
- * colour, which every face corner indexes.
+ * The test is thdr_second_walk on the cached header flags. Such a sector
+ * carries one colour, which every face corner indexes.
  * @param SC The sector's cache entry.
  * @return 1 for such a sector, else 0. */
 static int tn_sector_water(const tscache_t* SC) {
-    const uint32_t wf = game_layout.terrain.second_pass_flag;
-    return wf && (SC->flags & (int)wf) && !(SC->flags & (int)game_layout.terrain.no_hp_flag);
+    return thdr_second_walk(SC->flags);
 }
 
 /** @brief Returns 1 when an HP face of the sector's own tier takes the second walk's model at the far split.

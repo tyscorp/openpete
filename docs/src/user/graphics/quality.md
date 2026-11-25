@@ -112,7 +112,7 @@ inside geometry, the skipped parts can show as missing terrain.
 | `auto` (default <!-- id: knob:sector_visibility -->) | `filled` on Spyro 2 and 3, `frustum` on Spyro 1. The setting is saved once and applies to every game. |
 | `frustum` | Every section of the level and of the sky inside the view is drawn, hidden or not, and depth decides what shows. This departs from the original presentation. |
 | `game` | The game's own visibility decision, as the original drew it |
-| `filled` | Spyro 2 and 3: the game's own decision, plus the sections of the level and of the sky it leaves out at one position while drawing them from the positions around it. This departs from the original presentation. On Spyro 1 and on levels without the game's visibility data, the same as `frustum`. |
+| `filled` | Spyro 2 and 3: the game's own decision, plus the sections of the level and of the sky it leaves out at one position while drawing them from the positions around it, and every water, lava or other see-through surface inside the view. This departs from the original presentation. On Spyro 1 and on levels without the game's visibility data, the same as `frustum`. |
 
 Dev overlay **Sector visibility**, `--sector-visibility auto|frustum|game|filled`
 <!-- id: knob:sector_visibility -->. A settings file saved by an earlier
