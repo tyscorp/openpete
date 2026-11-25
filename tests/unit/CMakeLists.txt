@@ -1338,7 +1338,11 @@ target_include_directories(rhi_compile_stress PRIVATE ${RHI_STRESS_INCLUDES})
 target_compile_definitions(rhi_compile_stress PRIVATE OPENPETE_NO_GLSLANG VK_NO_PROTOTYPES)
 target_link_options(rhi_compile_stress PRIVATE ${RHI_STRESS_LINK})
 target_link_libraries(rhi_compile_stress PRIVATE openpete_rhi SDL3::SDL3-static ${CMAKE_DL_LIBS})
-set_target_properties(rhi_compile_stress PROPERTIES C_STANDARD 11)
+# INTERPROCEDURAL_OPTIMIZATION OFF: under LTO the plugin drops the __wrap_
+# definitions and the SDL definitions the __real_ names reach, since no IR
+# object names either (tests/sched/CMakeLists.txt). As regular objects,
+# mod_shader.c's calls reach the wraps and the wraps reach SDL's IR.
+set_target_properties(rhi_compile_stress PROPERTIES C_STANDARD 11 INTERPROCEDURAL_OPTIMIZATION OFF)
 add_test(NAME rhi_compile_stress COMMAND rhi_compile_stress 4 3)
 set_tests_properties(rhi_compile_stress PROPERTIES SKIP_RETURN_CODE 77 LABELS "vulkan")
 # The compile pool's step-down at the first tick, on host tasks: one worker
@@ -1364,7 +1368,7 @@ if(NOT WIN32 AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(rhi_compile_stress_tsan PRIVATE -fsanitize=thread -g -O1)
     target_link_options(rhi_compile_stress_tsan PRIVATE -fsanitize=thread ${RHI_STRESS_LINK})
     target_link_libraries(rhi_compile_stress_tsan PRIVATE SDL3::SDL3-static ${CMAKE_DL_LIBS})
-    set_target_properties(rhi_compile_stress_tsan PROPERTIES C_STANDARD 11)
+    set_target_properties(rhi_compile_stress_tsan PROPERTIES C_STANDARD 11 INTERPROCEDURAL_OPTIMIZATION OFF)
     # openpete_rhi's build generates the embedded-shader source.
     add_dependencies(rhi_compile_stress_tsan openpete_rhi)
 endif()

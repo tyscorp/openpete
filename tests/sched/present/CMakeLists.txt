@@ -228,7 +228,15 @@ add_custom_command(
             present_sched_ring48 present_sched_obj48 openpete_sched
     COMMENT "present_sched: upkeep fence (sched_seams.py)"
     COMMAND_EXPAND_LISTS VERBATIM)
-add_custom_target(present_sched_seams ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/sched_seams.stamp)
+# In ALL under linux-release only, like the libclang ratchets (core/CMakeLists.txt): the fence needs
+# the python clang bindings, which the release container's image does not carry. Elsewhere the target
+# builds on request and the ctest sched_seams skips (64) without the bindings.
+get_filename_component(_pt_bindir_name "${CMAKE_BINARY_DIR}" NAME)
+set(_pt_seams_all "")
+if(_pt_bindir_name STREQUAL "linux-release")
+    set(_pt_seams_all ALL)
+endif()
+add_custom_target(present_sched_seams ${_pt_seams_all} DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/sched_seams.stamp)
 add_test(NAME sched_seams
          COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/fences/sched_seams.py check ${PT_SEAMS_ARGS}
          COMMAND_EXPAND_LISTS)

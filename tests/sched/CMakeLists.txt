@@ -13,6 +13,18 @@ endif()
 cmake_language(DEFER CALL openpete_label_directory_tests unit)
 find_package(Threads REQUIRED)
 
+# No link-time optimization for any target here or in present/. GNU ld
+# applies --wrap outside the GCC LTO plugin's symbol resolution: the plugin
+# sees the reference to SDL_LockMutex resolved and __wrap_SDL_LockMutex
+# referenced by no object (PREVAILING_DEF_IRONLY), drops it, and the renamed
+# reference is undefined at the final link; when the real definition is IR
+# as well, the call binds to it and skips the wrap without an error. A
+# regular object's reference is wrapped whether the definition it reaches
+# is regular or IR, so an IR archive (openpete_rhi under a preset with IPO
+# on) may be linked here while no wrapped symbol has both an IR caller and
+# an IR definition.
+set(CMAKE_INTERPROCEDURAL_OPTIMIZATION OFF)
+
 set(SCHED_SDL_WRAPS
     SDL_CreateMutex SDL_DestroyMutex SDL_LockMutex SDL_TryLockMutex SDL_UnlockMutex
     SDL_CreateCondition SDL_DestroyCondition SDL_SignalCondition SDL_BroadcastCondition
