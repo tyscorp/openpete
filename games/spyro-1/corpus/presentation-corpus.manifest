@@ -233,3 +233,9 @@ portal-handover|1700|100||1913|--skip-to-level artisans --freecam-path ticks=120
 # distance and draw no terrain on the original-LOD leg.
 gnasty_gnorc_attack@tcforce|1700|100||1796,1808|OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
 crystal-flight-skip-entry@tcforce|1700|2||1700|--skip-to-level crystal_flight OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off
+
+# stone-hill-skip-fadein: the first gameplay renders after --skip-to-level.
+# At VBL 1583 the title exit leaves D_80075950.post unwritten, so the first
+# gameplay draw skips its VSync wait and the next tick renders in the same
+# VBL: key 1584 is the present where both renders reach the native scene.
+stone-hill-skip-fadein|1584|2||1584|--skip-to-level stone_hill
