@@ -4773,9 +4773,13 @@ typedef struct {
  * world draw writes that byte 0 for a sector the PVS hid, a sector whose
  * sphere fails its 4:3 frustum test, and a sector no tier range lists
  * (environment.s 80023CB4, 80023E88, 800244F0 on Spyro 2). Only the PVS
- * reason belongs to --sector-visibility: a moby whose sector this tick's PVS
- * shows (terrain_sector_pvs_shown) stays dropped, so the frustum and tier
- * drops remain the game's cull's and --lod's. Under every --lod the
+ * reason belongs to --sector-visibility. The tier ranges are distance, which
+ * --lod governs, and the sector frustum is the 4:3 view: under original LOD
+ * a moby whose sector this tick's PVS shows (terrain_sector_pvs_shown) stays
+ * dropped, the game's own frustum and tier verdict; under extended LOD the
+ * tier drop is the distance the mode lifts and the sector frustum is the
+ * game's 4:3 one, not the presented view's, so such a moby takes the
+ * clause's later tests as a PVS-hidden one does. Under every --lod the
  * --sector-visibility predicate (moby_reveal_sector_rejected, asked before
  * this clause, which under game rejects every PVS-hidden sector, so the
  * clause reveals nothing there) and the native occlusion test decide a
@@ -4791,16 +4795,17 @@ typedef struct {
  * @param m The Moby address.
  * @param drawn The drawn-verdict byte the cull tested.
  * @param kind The model kind whose queue the record joins.
- * @param c Tallies the candidate, a PVS-shown sector's withheld moby, its
- *          occlusion verdict and the record.
+ * @param c Tallies the candidate, a PVS-shown sector's withheld moby (original
+ *          LOD), its occlusion verdict and the record.
  * @return 1 when a record was appended, else 0. */
 static int moby_reveal_sector_only(CPUState* cpu, uint32_t m, unsigned drawn,
                                    moby_reveal_kind_t kind, moby_reveal_census_t* c) OP_REQUIRES(sim) {
     if (!moby_game.cull_view_admits) return 0;
     if (kind == MOBY_REVEAL_ANIMATED && moby_rec_holds_moby(cpu, m)) return 0;
     if (moby_game.cull_view_admits(cpu, m, drawn, 1.0, 1.0, 0) != MOBY_WIDE_SECTOR) return 0;
-    if (terrain_sector_pvs_shown(cpu->read_byte(m + game_layout.moby.sector_off)) != 0) {
-        c->sector_shown++;   /* dropped by the 4:3 frustum or the tier ranges */
+    if (!openpete_no_lod &&
+        terrain_sector_pvs_shown(cpu->read_byte(m + game_layout.moby.sector_off)) != 0) {
+        c->sector_shown++;   /* dropped by the 4:3 sector frustum or the tier ranges */
         return 0;
     }
     const moby_wide_verdict_t g = moby_game.cull_view_admits(cpu, m, drawn, 1.0, 1.0, 1);

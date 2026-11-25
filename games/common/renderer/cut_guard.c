@@ -997,7 +997,7 @@ void cam_bracket_run(uint8_t* cam, const openpete_interp_snapshot_t* prev2,
                      const openpete_interp_snapshot_t* curr,
                      const cut_cam_desc_t* desc, uint32_t view_off,
                      cam_bracket_t* out) {
-    cam_bracket_t r = { 0, 0, 0, 0.0, NULL, { 0.0, 0.0, 0.0 } };
+    cam_bracket_t r = { 0, 0, 0, 0, 0.0, NULL, { 0.0, 0.0, 0.0 } };
     s_cam_snap = 0;
     s_held_ns = 0;
     const uint8_t* pcam = snap_region(prev, desc->cam_region);
@@ -1011,7 +1011,8 @@ void cam_bracket_run(uint8_t* cam, const openpete_interp_snapshot_t* prev2,
     const double pair_age = (double)((int64_t)openpete_interp_present_now()
                                      - (int64_t)curr->tick_ns)
                           / (double)g_openpete_tick_period_ns;
-    r.hold = r.cut && pair_age <= CUT_PAIR_STALE_TICKS &&
+    r.stale = pair_age > CUT_PAIR_STALE_TICKS;
+    r.hold = r.cut && !r.stale &&
              cut_camera_hold(period, curr->tick_ns);
     if (r.cut && !r.hold) { s_cam_snap = 1; if (out) *out = r; return; }
 

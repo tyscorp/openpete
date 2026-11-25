@@ -396,6 +396,9 @@ typedef struct cam_bracket {
     int      bracketed;        /* the staged camera carries an interpolated pair */
     int      cut;              /* the pair is a discontinuity */
     int      hold;             /* the interval is open and shows tick N-1 */
+    int      stale;            /* curr is more than CUT_PAIR_STALE_TICKS ticks old
+                                * at the present: a cut the pair carries is one the
+                                * ring replays, not one this interval ends */
     double   alpha;            /* the alpha the present drew at (0 while held) */
     const uint8_t* tickcam;    /* curr's camera bytes, for a feeder that re-bases
                                 * records composed against the tick's camera */

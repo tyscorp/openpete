@@ -594,6 +594,15 @@ static void game_reextract_body(void* cpu_v) {
     const int cam_cut   = rc.br.cut;
     const int hold      = rc.br.hold;
     const double alpha  = rc.br.alpha;
+    /* The moby occlusion cache holds each record's rect as the last present
+     * that drew it projected it. Across a cut that present showed the other
+     * side's camera (a held cut draws tick N-1's, the presents after it tick
+     * N's), so a cached rect lies at the wrong screen position and depth for
+     * up to its two-VBL life. Culling is suspended over the cut: every
+     * record is decoded and its rect rewritten at the new camera before a
+     * cached rect decides again. A stale pair replays a cut the presents
+     * since have already drawn at the new camera, so it suspends nothing. */
+    if (cam_cut && !rc.br.stale) openpete_native_occl_suspend(12);
     /* The late switch: before alpha 1 the present shows tick N-1's set of
      * particle and moby records (paired records lerp, records gone or reused
      * at tick N hold their N-1 state, records new at tick N are absent), and
