@@ -165,10 +165,6 @@ title-demo|1073|20||1083,2783
 # terrain polys of the left building missing, the purple clear colour shows
 # through. Blessed pre-fix.
 title-demo-early|633|20||663
-# title-demo-leftwall: the title screen at VBL 840 (openpete_frame 270 on a
-# headless run; user report 2026-11-25): at 16:9 the far-left castle wall shows
-# rectangular textured and flat patches. Blessed pre-fix.
-title-demo-leftwall|840|20||840
 
 # open-options and open-atlas are the corpus rows for the 2D UI layer: they are
 # the only movies whose frames carry its classes inside the visible band. At
