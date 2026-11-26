@@ -10,6 +10,8 @@
 #   engage        the extended leg's occlusion cull culls at least one record
 #                 of either kind
 #   report        no count criterion; the census is printed
+#   sector_visibility=MODE
+#                 every leg runs with --sector-visibility MODE
 # Every row also requires every screenshot of the extended leg to be
 # byte-identical to the reference leg's.
 #
@@ -21,7 +23,9 @@
 # is visible (394 simple triangles extended against 243 original).
 # idol_springs_terrain: looking down at terrain; 6-14 animated records hidden
 # behind it are drawn at both LODs (canonical-queued records, which a headless
-# run keeps on every present).
+# run keeps on every present). Under filled (the Spyro 2 default) and game
+# sector visibility the moby path feeds nothing at this pose, so no sub-tick
+# replay runs; the row runs frustum, which admits the hidden records.
 colossus_wall        | colossus     | pos=(47666, 60635, 12089) yaw=78 pitch=41     | max_ratio=2 engage
 colossus_open        | colossus     | pos=(47666, 60635, 12089) yaw=2126 pitch=41   | unchanged
-idol_springs_terrain | idol_springs | pos=(115428, 98127, 14292) yaw=-1135 pitch=900 | report
+idol_springs_terrain | idol_springs | pos=(115428, 98127, 14292) yaw=-1135 pitch=900 | report sector_visibility=frustum

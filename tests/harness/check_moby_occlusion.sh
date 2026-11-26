@@ -99,9 +99,11 @@ MIN_LINES=8
 OUT="${PG_BUILD_DIR:-build/linux-release}/moby-occlusion/$GAME"
 mkdir -p "$OUT"
 
-# One leg. args: row level pose leg; writes $OUT/<row>__<leg>.log and its PNGs.
+# One leg. args: row level pose leg [run args...]; writes $OUT/<row>__<leg>.log
+# and its PNGs.
 run_leg() {
     local row="$1" level="$2" pose="$3" leg="$4"
+    shift 4
     local tag="$OUT/${row}__${leg}" lod=extended
     [[ "$leg" == orig ]] && lod=original
     rm -f "${tag:?}.log" "${tag:?}"__*.png
@@ -118,7 +120,7 @@ run_leg() {
         --skip-to-level "$level" --freecam-pose "$pose" \
         --screenshot-native-only --screenshot-on-frame "$CANON_VBL" \
         --screenshot-intermediate-on-frame "$INTER_VBLS" \
-        --screenshot-output "${tag}__{n}.png" --frame-limit "$FRAME_LIMIT"
+        --screenshot-output "${tag}__{n}.png" --frame-limit "$FRAME_LIMIT" "$@"
     local rc=$?
     echo "moby-occlusion: leg $row/$leg rc=$rc"
     if [[ -n "$KEEP" ]]; then
@@ -182,7 +184,11 @@ while IFS='|' read -r name level pose checks; do
     pose="$(echo "$pose" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
     checks="$(echo "${checks:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
     rows+=("$name|$checks")
-    for leg in ext ref orig; do run_leg "$name" "$level" "$pose" "$leg"; done
+    row_args=()
+    for chk in $checks; do
+        [[ "$chk" == sector_visibility=* ]] && row_args+=(--sector-visibility "${chk#sector_visibility=}")
+    done
+    for leg in ext ref orig; do run_leg "$name" "$level" "$pose" "$leg" "${row_args[@]}"; done
 done < "$MANIFEST"
 pan_args=()
 for r in "${pan_rows[@]}"; do
@@ -304,7 +310,7 @@ for name, checks in rows:
                 vac.append('engage: ext leg culled no record')
             else:
                 notes.append('ext culled %d records over the window' % occl)
-        elif chk == 'report':
+        elif chk == 'report' or chk.startswith('sector_visibility='):
             pass
         else:
             vac.append('unknown check %s' % chk)
