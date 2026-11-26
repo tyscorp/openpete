@@ -305,6 +305,15 @@ run_one() {  # name key frame_limit leg flag targets lodmode freeze launch row-l
   if [[ $rc -ne 0 || $miss -ne 0 ]]; then
     pg_keep_crash_leg "$legdir" "${name}__${tag}${leg}" "$rc" "${cmd[@]}"
   fi
+  # A crashed first attempt is retried (scripts/presentation-game.sh,
+  # crashed legs): its tiles and sidecars are deleted so a tile the retry
+  # does not write is missing, and the leg is not recorded as done.
+  if pg_retry_owed "$rc"; then
+    pg_census_clear "$OUTDIR" "${pngs[@]}"
+    for t in "${pngs[@]}"; do rm -f -- "${OUTDIR:?}/$t"; done
+    rm -rf -- "${legdir:?}"
+    return "$PG_LEG_RETRY_RC"
+  fi
   if [[ $miss -eq 0 ]]; then
     local -a tiles=("${pngs[@]}")
     (( PG_CENSUS_ON )) && for t in "${pngs[@]}"; do tiles+=("$(pg_census_name "$t")"); done
@@ -422,9 +431,10 @@ while IFS= read -r row; do
     echo "[$key] movie=$fc frame-limit=$flim  canon=[$canon]  inter=[$inter]  lods=[$CAP_LODS]${freeze:+  freeze}${pins:+  pins=$pins}${launch:+  launch=$launch}"
     # Sweep both LOD modes: original (untagged golden) + extended (lodext__ tag).
     for lod in $CAP_LODS; do
-      cj_run run_one "$name" "$key" "$flim" canon --screenshot-on-frame "$canon" "$lod" "$freeze" "$launch" "$row"
-      cj_run run_one "$name" "$key" "$flim" inter --screenshot-intermediate-on-frame "$inter" "$lod" "$freeze" "$launch" "$row"
-      cj_run run_one "$name" "$key" "$flim" ident --screenshot-intermediate-on-frame "$canon" "$lod" "$freeze" "$launch" "$row"
+      tag="$(lod_tag "$lod")"
+      cj_run pg_leg_retry "${key}__${tag}canon" run_one "$name" "$key" "$flim" canon --screenshot-on-frame "$canon" "$lod" "$freeze" "$launch" "$row"
+      cj_run pg_leg_retry "${key}__${tag}inter" run_one "$name" "$key" "$flim" inter --screenshot-intermediate-on-frame "$inter" "$lod" "$freeze" "$launch" "$row"
+      cj_run pg_leg_retry "${key}__${tag}ident" run_one "$name" "$key" "$flim" ident --screenshot-intermediate-on-frame "$canon" "$lod" "$freeze" "$launch" "$row"
     done
   done
 done < "$MANIFEST"

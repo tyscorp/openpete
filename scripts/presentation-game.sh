@@ -158,6 +158,10 @@ pg_resolve() {
 # listing on the host shows the gate in flight. Returns the inner
 # run's status; 64 (SKIP) when no container engine or no current image exists.
 PG_IMAGE_RECIPE=/etc/openpete/capture.Dockerfile
+# A gate run with OPENPETE_CAPTURE_OUTSIDE_IMAGE=<reason> (a harness test of
+# the gate's own control flow) runs in place on this machine; its candidate
+# directory holds this file with the reason, and a promote refuses it.
+PG_OUTSIDE_IMAGE_FILE=outside-image.txt
 PG_CONTAINER_BUILD_DIR=build/linux-release-container
 
 pg_in_capture_image() { [[ -f "$PG_IMAGE_RECIPE" ]]; }
@@ -438,20 +442,43 @@ pg_split_launch() {  # launch-field
 # crashed leg creates nothing. PG_CRASH_LIST, the candidate directory's
 # crashes.txt, lists the run's crashed legs (`<leg>\t<rc>\t<kept dir>`), from
 # which the verdict report names each one.
+#
+# Retry. A leg whose process died of a signal (pg_rc_crashed) is run once more
+# (pg_leg_retry), so a rare abort (glibc heap corruption detected on a
+# llvmpipe worker thread, say) costs one leg instead of the leg's row. The
+# crashed attempt is kept as above; its tiles are deleted and it is not
+# recorded as done, so only the retry's tiles reach the verdict, the resume
+# stamps and the stream. A retry that fails in any way is kept as
+# <leg>.retry. PG_RETRY_LIST, crash-retries.txt beside crashes.txt, holds one
+# row per retried leg (`<leg>\t<rc>\t<pass|fail>`): pass when the retry wrote
+# every tile and exited 0, fail otherwise. The outcome is also appended to the
+# kept rc.txt as `retry=`, printed as `  CRASHED <leg> rc=N retry=pass|fail`
+# and, under OPENPETE_STREAM_FILE, streamed as
+# `CRASHED <leg> rc=N retry=pass|fail <epoch>`. pg_crash_list names it on the
+# leg's line; a fail fails the gate's verdict.
+#
+# Leg function contract: on attempt 1 (PG_LEG_TRY=1) an exit code
+# pg_retry_owed accepts makes the function keep the leg, delete its outputs
+# and return PG_LEG_RETRY_RC without recording the leg.
 
-# Set and export PG_CRASH_DIR, this run's crash directory, and PG_CRASH_LIST,
-# outdir/crashes.txt, unless an enclosing script set them; when this call sets
-# them, also delete outdir's crashes.txt and legacy *.crash.log copies of the
-# previous run. A script run by an enclosing run shares that run's directory
-# and list. args: outdir
+# Exit code a leg function returns in place of its own when the leg crashed
+# and a retry is owed.
+PG_LEG_RETRY_RC=3
+
+# Set and export PG_CRASH_DIR, this run's crash directory, PG_CRASH_LIST,
+# outdir/crashes.txt, and PG_RETRY_LIST, outdir/crash-retries.txt, unless an
+# enclosing script set them; when this call sets them, also delete outdir's
+# two lists and legacy *.crash.log copies of the previous run. A script run
+# by an enclosing run shares that run's directory and lists. args: outdir
 pg_crash_init() {
   [[ -n "${PG_CRASH_DIR:-}" ]] && return 0
   local root="${PRESENTATION_GOLDEN_CRASH_DIR:-${1%/}.crashes}"
   PG_CRASH_DIR="$(realpath -m -- "$root")/$(date +%Y%m%d-%H%M%S)-$$-$RANDOM"
   PG_CRASH_LIST="$(realpath -m -- "$1")/crashes.txt"
-  export PG_CRASH_DIR PG_CRASH_LIST
+  PG_RETRY_LIST="${PG_CRASH_LIST%/*}/crash-retries.txt"
+  export PG_CRASH_DIR PG_CRASH_LIST PG_RETRY_LIST
   [[ -d "$1" ]] || return 0
-  rm -f -- "${1:?}/crashes.txt"
+  rm -f -- "${1:?}/crashes.txt" "${1:?}/crash-retries.txt"
   find "${1:?}" -maxdepth 1 -type f -name '*.crash.log' -delete
 }
 
@@ -542,12 +569,47 @@ pg_row_cost() {
   awk -v k="$2" -v r="$3" -v l="$4" -v a="$5" -v b="$now"     'BEGIN { printf "%s\t%s\t%s\t%.1f\n", k, r, l, b - a }' >>"$1/row-cost.tsv"
 }
 
-# Keep a crashed leg: copy its scratch directory to PG_CRASH_DIR/<leg>, write
-# argv.txt and rc.txt, move core files written into the working directory
-# since the leg started, append the leg to PG_CRASH_LIST and quote the
-# identifying log lines into the corpus log. args: legdir leg-name rc argv...
+# Succeed when a leg's exit code is a signal's (128 + N) other than a stop of
+# the run (SIGHUP, SIGINT, SIGTERM: 129, 130, 143): an abort (134), a fault
+# (135, 139), or SIGKILL (137: the OOM killer, or the leg timeout's -k after
+# an ignored SIGTERM). args: rc
+pg_rc_crashed() { (( $1 > 128 && $1 != 129 && $1 != 130 && $1 != 143 )); }
+
+# Succeed when the leg running now is a first attempt under pg_leg_retry and
+# its exit code is a crash. args: rc
+pg_retry_owed() { (( ${PG_LEG_TRY:-0} == 1 )) && pg_rc_crashed "$1"; }
+
+# Run a leg function under the retry rule (Retry above): once, and once more
+# when it returns PG_LEG_RETRY_RC; then record the outcome. Returns the last
+# attempt's status. args: leg-name function arg...
+pg_leg_retry() {
+  local leg="$1" r frc outcome=pass kept; shift
+  PG_LEG_TRY=1 PG_LEG_CRASH_RC=""
+  "$@"; r=$?
+  if (( r != PG_LEG_RETRY_RC )); then PG_LEG_TRY=0; return "$r"; fi
+  frc="$PG_LEG_CRASH_RC" kept="$PG_CRASH_DIR/$leg"
+  echo "  retrying crashed leg $leg (rc=$frc) once"
+  PG_LEG_TRY=2 PG_LEG_CRASH_RC=""
+  "$@"; r=$?
+  PG_LEG_TRY=0
+  [[ $r -ne 0 || -n "$PG_LEG_CRASH_RC" ]] && outcome=fail
+  [[ -d "$kept" ]] && echo "retry=$outcome" >>"$kept/rc.txt"
+  printf '%s\t%s\t%s\n' "$leg" "$frc" "$outcome" >>"${PG_RETRY_LIST:-${PG_CRASH_LIST%/*}/crash-retries.txt}"
+  echo "  CRASHED $leg rc=$frc retry=$outcome"
+  [[ -z "${OPENPETE_STREAM_FILE:-}" ]] \
+    || printf 'CRASHED %s rc=%s retry=%s %s\n' "$leg" "$frc" "$outcome" "$(date +%s.%3N)" >>"$OPENPETE_STREAM_FILE"
+  return "$r"
+}
+
+# Keep a crashed leg: copy its scratch directory to PG_CRASH_DIR/<leg> (on a
+# retry attempt <leg>.retry), write argv.txt and rc.txt, move core files
+# written into the working directory since the leg started, append the leg to
+# PG_CRASH_LIST and quote the identifying log lines into the corpus log. Sets
+# PG_LEG_CRASH_RC, which pg_leg_retry reads. args: legdir leg-name rc argv...
 pg_keep_crash_leg() {
   local legdir="$1" name="$2" rc="$3"; shift 3
+  (( ${PG_LEG_TRY:-0} == 2 )) && name="$name.retry"
+  PG_LEG_CRASH_RC="$rc"
   local kept="${PG_CRASH_DIR:?pg_crash_init not called}/$name" log="$legdir/leg.log" sig="" c
   mkdir -p "$kept"
   cp -a "$legdir/." "$kept/"
@@ -584,12 +646,21 @@ pg_keep_crash_leg() {
   fi
 }
 
-# Print one line per crashed leg listed in outdir/crashes.txt, each after
-# the prefix. args: prefix outdir
+# Print one line per crashed leg listed in outdir/crashes.txt after the
+# prefix: `<leg> rc=N <kept dir>`, then ` retry=pass|fail` for a retried leg
+# (outdir/crash-retries.txt). args: prefix outdir
 pg_crash_list() {
   [[ -s "$2/crashes.txt" ]] || return 0
-  local name rc dir
+  local name rc dir retry
   while IFS=$'\t' read -r name rc dir; do
-    echo "$1$name rc=$rc $dir"
+    retry="$(awk -F'\t' -v l="$name" '$1 == l { print $3 }' "$2/crash-retries.txt" 2>/dev/null | tail -n 1)"
+    echo "$1$name rc=$rc $dir${retry:+ retry=$retry}"
   done <"$2/crashes.txt"
+}
+
+# Print the legs of outdir/crash-retries.txt whose retry failed, one per line.
+# args: outdir
+pg_retry_failed() {
+  [[ -s "$1/crash-retries.txt" ]] || return 0
+  awk -F'\t' '$3 == "fail" { print $1 }' "$1/crash-retries.txt"
 }

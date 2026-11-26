@@ -89,21 +89,31 @@ run() {  # target leg out-flag out-name frame-list limit [env...]
     cp -f "$legdir/leg.log" "$WORK/${target}_$leg.log"
     [[ $rc -ne 0 ]] && pg_keep_crash_leg "$legdir" "credits__${target}__$leg" "$rc" "${cmd[@]}"
     rm -rf -- "${legdir:?}"
+    if pg_retry_owed "$rc"; then
+        local f; local -a fs; IFS=, read -ra fs <<<"$frames"
+        for f in "${fs[@]}"; do rm -f -- "${WORK:?}/${target}_${name}_$f-vk.png"; done
+        return "$PG_LEG_RETRY_RC"
+    fi
+    return 0
 }
+
+# One leg under the retry rule (pg_leg_retry); a crashed first attempt's
+# captures are deleted before the retry. args: as run
+leg() { pg_leg_retry "credits__${1}__$2" run "$@"; }
 
 rc=0
 for case in $CASES; do
     IFS=: read -r T C1 SETB FLYB SPAWN WEND NLET <<<"$case"
     C0=$((C1-2)); I0=$((C1-1)); I1=$((C1+1)); C2=$((C1+2)); LIM=$((C1+4))
-    run "$T" canon --screenshot-on-frame canon "$C0,$C1,$C2" "$LIM"
-    run "$T" inter --screenshot-intermediate-on-frame inter "$I0,$I1" "$LIM"
-    run "$T" ident --screenshot-intermediate-on-frame ident "$C1" "$LIM" OPENPETE_INTERMEDIATE_ALPHA=1
+    leg "$T" canon --screenshot-on-frame canon "$C0,$C1,$C2" "$LIM"
+    leg "$T" inter --screenshot-intermediate-on-frame inter "$I0,$I1" "$LIM"
+    leg "$T" ident --screenshot-intermediate-on-frame ident "$C1" "$LIM" OPENPETE_INTERMEDIATE_ALPHA=1
     for f in canon_$C0 canon_$C1 canon_$C2 inter_$I0 inter_$I1 ident_$C1; do
         [[ -f "$WORK/${T}_$f-vk.png" ]] || { echo "credits-interp: FAIL [$T] capture missing $f"; exit 1; }
     done
     # Key census: keylog lines carry the frame; the intermediate request is
     # what enables per-object capture headless.
-    run "$T" keys --screenshot-intermediate-on-frame keys "$((WEND-1))" "$WEND" OPENPETE_INTERP_OBJS_KEYLOG=1
+    leg "$T" keys --screenshot-intermediate-on-frame keys "$((WEND-1))" "$WEND" OPENPETE_INTERP_OBJS_KEYLOG=1
 
     python3 - "$WORK" "$T" "$C1" "$SETB" "$FLYB" "$SPAWN" "$WEND" "$NLET" <<'PY' || rc=1
 import sys, re

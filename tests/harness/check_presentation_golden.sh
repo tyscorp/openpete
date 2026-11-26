@@ -128,8 +128,9 @@
 # verdict and exit code, the row census, the sha256 of the blessed.tsv and
 # identity baseline read, the credits, identity and diff exit codes, the
 # divergent, missing and extra tiles, the identity pairs over baseline
-# (both members) and every crashed capture leg (`crashed-leg: <leg> rc=N
-# <kept dir>`, from crashes.txt). The identity and diff output is kept beside
+# (both members), every crashed capture leg (`crashed-leg: <leg> rc=N
+# <kept dir>[ retry=pass|fail]`, from crashes.txt and crash-retries.txt) and
+# the incomplete capture stages (`capture-incomplete: bk2 freecam`). The identity and diff output is kept beside
 # it in verdict-ident.log and verdict-diff.log. A capture that ends
 # incomplete also writes the report.
 #
@@ -138,7 +139,19 @@
 # beside the candidate directory that no run deletes (default
 # <candidate>.crashes/<time>-<pid>-<random>/<leg>/; PRESENTATION_GOLDEN_CRASH_DIR
 # replaces <candidate>.crashes; scripts/presentation-game.sh, crashed legs).
-# A crash alone does not change the verdict.
+# A leg whose process died of a signal is run once more (same section); its
+# crashed-leg line ends ` retry=pass` or ` retry=fail`, the run prints
+# `CRASHED <leg> rc=N retry=pass|fail`, and under OPENPETE_STREAM_FILE the
+# stream carries the same line. A failed retry fails the verdict; a crash
+# whose retry passed, or a leg not retried, does not change it.
+#
+# Stages. The bk2 corpus, the freecam corpus and the credits leg each run
+# whatever an earlier one reports, so one failed leg costs its own tiles
+# only. A capture stage that ends incomplete fails the verdict after the
+# identity leg and the diff ran over everything captured (the MISSING
+# lines of the diff and of the corpus scripts name every absent tile); the
+# report's `capture-incomplete:` line names the stages, and the stream gets
+# no `END`.
 #
 # PRESENTATION_TIER selects the corpus tier (scripts/presentation-game.sh):
 # its manifest, golden, identity baseline and default candidate directory. A
@@ -166,7 +179,8 @@
 # way when it passed. Imported tiles go through the same strict diff.
 #
 # Exit: 0 = matches golden, the identity leg is within baseline and the credits
-#       leg passes; 1 = divergence, identity exceed, credits failure (or no
+#       leg passes; 1 = divergence, identity exceed, an incomplete capture
+#       stage, a crashed leg whose retry failed, credits failure (or no
 #       credits-verdict.txt on the presentation tier), a vacuous (zero-row)
 #       run, a --verdict-only DIR that is absent or not mounted in the
 #       image, a missing corpus manifest (either one; the message names the
@@ -273,7 +287,20 @@ if pg_in_capture_image; then
 else
   pg_knob_screen presentation-golden "${KNOBS[@]}"
 fi
-if ! pg_in_capture_image; then
+# OPENPETE_CAPTURE_OUTSIDE_IMAGE=<reason>: run in place outside the image, for
+# a harness test of this script's control flow on a machine without the
+# image. Its verdict is not the golden's: --bless and --verdict-only are
+# refused, the candidate directory records the reason (PG_OUTSIDE_IMAGE_FILE)
+# and the report an `outside-image:` line, and a promote refuses it.
+OUTSIDE_IMAGE=""
+if [[ -n "${OPENPETE_CAPTURE_OUTSIDE_IMAGE:-}" ]] && ! pg_in_capture_image; then
+  if [[ $BLESS -eq 1 || -n "$VERDICT_ONLY" ]]; then
+    echo "[presentation-golden] FAIL: OPENPETE_CAPTURE_OUTSIDE_IMAGE takes no --bless or --verdict-only"; exit 1
+  fi
+  OUTSIDE_IMAGE="$OPENPETE_CAPTURE_OUTSIDE_IMAGE"
+  echo "[presentation-golden] OUTSIDE THE CAPTURE IMAGE ($OUTSIDE_IMAGE): this verdict is not the golden's"
+fi
+if ! pg_in_capture_image && [[ -z "$OUTSIDE_IMAGE" ]]; then
   if [[ -n "$VERDICT_ONLY" ]]; then
     # The container sees this tree and the store's parent directory only.
     vdir="$(realpath -m -- "$VERDICT_ONLY")"
@@ -328,6 +355,7 @@ REPORT_NAME="verdict-report.txt"
 # produced nothing proves nothing about the renderer, so it is refused here;
 # a capture no row matches is refused by the diff. Sets captured, compared,
 # goldrows.
+CAP_FAILED=""       # capture stages that ended incomplete, each after a space
 captured=0 imported=0 imported_rows=0 compared=0 copies=0 goldrows=0 irc="not run" crc="not run" drc="not run"
 vr_census() {
   local f census total=0
@@ -405,6 +433,7 @@ vr_finish() {
     echo "identity-rc: $irc"
     echo "diff-rc: $drc"
     echo "forwarded-knobs: $(pg_knobs_recorded "$OUT")"
+    [[ -s "$OUT/$PG_OUTSIDE_IMAGE_FILE" ]] && echo "outside-image: $(head -n 1 "$OUT/$PG_OUTSIDE_IMAGE_FILE")"
     echo "docs-pairs-rc: ${prc:-}"
     if (( PG_REPEAT )); then
       echo "repeat: $PG_REPEAT"
@@ -419,6 +448,7 @@ vr_finish() {
           print "repeat-divergent: " d; print "repeat-legs: " l; print "repeat-compared: " c }' "$OUT/verdict-diff.log"
     fi
     pg_crash_list "crashed-leg: " "$OUT"
+    [[ -n "$CAP_FAILED" ]] && echo "capture-incomplete:$CAP_FAILED"
     [[ -f "$OUT/verdict-diff.log" ]] && awk '
       $1 == "DIVERGE" { print "divergent: " $2 " " substr($0, index($0, $3)) }
       $1 == "MISSING" { print "missing: " $2 }
@@ -440,10 +470,11 @@ vr_finish() {
 # OUT, then the verdict; exits. The identity leg and the diff both run
 # whatever the other reports, so one run reports every verdict. Their
 # previous outputs in OUT (heat diffs, logs, report) are deleted first. A
-# capturing run under OPENPETE_STREAM_FILE first appends `END` to the stream:
-# the capture reached its verdict, so every row's lines are in the stream.
+# capturing run under OPENPETE_STREAM_FILE whose every capture stage completed
+# first appends `END` to the stream: the capture reached its verdict, so every
+# row's lines are in the stream.
 vr_verdict() {
-  [[ -z "$VERDICT_ONLY" ]] && rs_stream_end
+  [[ -z "$VERDICT_ONLY" && -z "$CAP_FAILED" ]] && rs_stream_end
   rm -rf "$OUT/diff"
   rm -f "$OUT/verdict-ident.log" "$OUT/verdict-diff.log" "$OUT/$REPORT_NAME"
   rm -f "${OUT:?}/tile-digests.tsv"
@@ -471,6 +502,17 @@ vr_verdict() {
     | tee "$OUT/verdict-diff.log"
   drc=${PIPESTATUS[0]}
   if [[ $drc -eq 64 ]]; then echo "[presentation-golden] SKIP (diff prereqs missing)"; vr_finish 64; fi
+  # A crashed leg whose retry failed and an incomplete capture stage are
+  # reported first: the identity and docs failures that follow from the
+  # absent tiles are their consequences.
+  local retry_failed cap_fail=0; retry_failed="$(pg_retry_failed "$OUT" | tr '\n' ' ')"
+  if [[ -n "$retry_failed" ]]; then
+    echo "[presentation-golden] FAIL: crashed leg(s) whose retry failed: ${retry_failed% }"; cap_fail=1
+  fi
+  if [[ -n "$CAP_FAILED" ]]; then
+    echo "[presentation-golden] FAIL: capture incomplete:$CAP_FAILED (the MISSING lines above name the absent tiles)"; cap_fail=1
+  fi
+  (( cap_fail && drc == 0 )) && vr_finish 1
   # Docs pairs: each before/after pair of docs: rows must differ in this
   # capture (65 = the game has no docs rows).
   rm -f "${OUT:?}/verdict-docs.log"
@@ -542,8 +584,9 @@ elif [[ ! -e .git ]]; then
 fi
 python3 scripts/presentation-blessed.py capture-record "$GAME" --tier "$PG_TIER" "$OUT" --build-dir "$BUILD_DIR" "${FIELDS_ARG[@]}" \
   || { echo "[presentation-golden] FAIL: capture record not written"; exit 1; }
-rm -f "${OUT:?}/$PG_KNOBS_FILE"
+rm -f "${OUT:?}/$PG_KNOBS_FILE" "${OUT:?}/$PG_OUTSIDE_IMAGE_FILE"
 (( ${#KNOBS[@]} )) && printf '%s\n' "${KNOBS[@]}" >"$OUT/$PG_KNOBS_FILE"
+[[ -n "$OUTSIDE_IMAGE" ]] && echo "$OUTSIDE_IMAGE" >"$OUT/$PG_OUTSIDE_IMAGE_FILE"
 
 # Capture at the compiled DEFAULT depth encoding (now screen-affine), so the
 # golden tracks whatever ships. The depth A/B is a separate manual tool
@@ -559,7 +602,12 @@ fi
 if [[ $rc -eq 64 ]]; then echo "[presentation-golden] SKIP (capture prereqs missing)"; exit 64; fi
 # 65 = the bk2 corpus had no rows for this game. Not a failure on its own: the
 # freecam corpus may still carry rows, and the row count below decides.
-if [[ $rc -ne 0 && $rc -ne 65 ]]; then echo "[presentation-golden] FAIL: capture incomplete"; vr_finish 1; fi
+# Any other failure is recorded and the run goes on to the freecam corpus and
+# the credits leg; the verdict fails on it (vr_verdict).
+if [[ $rc -ne 0 && $rc -ne 65 ]]; then
+  echo "[presentation-golden] bk2 capture incomplete (rc=$rc); the freecam corpus and the credits leg still run"
+  CAP_FAILED+=" bk2"
+fi
 
 # The freecam corpus is additive: a manifest with no rows returns 0 (nothing to
 # capture), a missing Vulkan loader returns 64 (skip that corpus, keep the bk2
@@ -567,7 +615,10 @@ if [[ $rc -ne 0 && $rc -ne 65 ]]; then echo "[presentation-golden] FAIL: capture
 if [[ -n "$PG_FREECAM_MANIFEST" ]]; then
   tests/harness/freecam-corpus.sh default "$OUT" "$FC_SEL" $BUILD_ARG "$GAME_ARG"
   frc=$?
-  if [[ $frc -eq 1 ]]; then echo "[presentation-golden] FAIL: freecam capture incomplete"; vr_finish 1; fi
+  if [[ $frc -eq 1 ]]; then
+    echo "[presentation-golden] freecam capture incomplete; the credits leg still runs"
+    CAP_FAILED+=" freecam"
+  fi
 fi
 
 vr_census
@@ -578,6 +629,9 @@ vr_census
 ACCEPT_ARG=()
 [[ -n "$ENV_ACCEPT" ]] && ACCEPT_ARG=("--environment-accept=$ENV_ACCEPT")
 python3 scripts/presentation-blessed.py environment "$GAME" --tier "$PG_TIER" --candidate "$OUT"
+if [[ $BLESS -eq 1 && -n "$CAP_FAILED" ]]; then
+  echo "[presentation-golden] FAIL: capture incomplete:$CAP_FAILED; nothing promoted"; vr_finish 1
+fi
 if [[ $BLESS -eq 1 ]]; then
   PRESENTATION_TIER="$PG_TIER" tests/harness/presentation-corpus-promote.sh "$OUT" --all "$GAME_ARG" "${ACCEPT_ARG[@]}" \
     || { echo "[presentation-golden] FAIL: promote refused; identity baseline left as is"; exit 1; }

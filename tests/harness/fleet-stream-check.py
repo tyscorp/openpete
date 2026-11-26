@@ -15,6 +15,9 @@ write. Cases (each prints its counts):
               compared; DIVERGE, EXTRA, EXCEED, CREDITS sets)
   drop-div    OPENPETE_STREAM_DROP of a DIVERGE line: stream mismatch, rc 1
   drop-same   OPENPETE_STREAM_DROP of a SAME line on a passing unit: rc 0 -> 1
+  crashed     CRASHED lines: parsed (malformed forms refused), printed as they
+              arrive, the verdict and unit-end check unchanged; the result
+              line counts crashed legs by retry outcome and names each
   extra       a unit whose only moves are EXTRA tiles (new rows): the stream
               pulls each tile without a heat diff, the accepted pull keeps
               it in the stream directory, promote_select sees it
@@ -374,6 +377,45 @@ def case_equality(tmp):
         check(name, r["rc"] == 1 and "stream mismatch" not in r["status"] and bool(r.get("stream_mismatch")),
               f"dropped {drop}; report rc {want_rc0} -> unit rc {r['rc']}; "
               f"mismatch: {r.get('stream_mismatch')}")
+
+
+def case_crashed(tmp):
+    """CRASHED stream lines are parsed and printed as they arrive, leave the unit-end check and verdict as they were, and are counted on the result line."""
+    leg_pass, leg_fail = "rowx__canon", "rowy__ident"
+    bad = [gf.parse_stream_line(s) for s in ("CRASHED rowx rc=134 1.0", "CRASHED rowx rc=134 retry=maybe 1.0",
+                                             "CRASHED rowx 134 retry=pass 1.0")]
+    rec = gf.parse_stream_line(f"CRASHED {leg_pass} rc=134 retry=pass 1.5")
+    check("crashed-parse", bad == [None, None, None] and rec is not None and rec["tile"] == leg_pass
+          and rec["detail"] == "rc=134 retry=pass" and rec["epoch"] == 1.5,
+          f"well-formed {rec}; malformed forms {bad}")
+    results = {}
+    for name, extra in (("base", ""), ("crashed", "crashed")):
+        co = FakeCo(tmp, f"crashed-{name}")
+        body = full_unit(div=[], same=TILES[1:6], extra=[], ident=[], exceed=[])
+        if extra:
+            body = body.replace("emit END", f"emit CRASHED {leg_pass} rc=134 retry=pass\n"
+                                f"emit CRASHED {leg_fail} rc=139 retry=fail\nemit END")
+            body = body.replace("\nreport ", f"\nreport 'crashed-leg: {leg_pass} rc=134 /k/{leg_pass} retry=pass' "
+                                f"'crashed-leg: {leg_fail} rc=139 /k/{leg_fail} retry=fail' "
+                                f"'crashed-leg: {leg_fail}.retry rc=139 /k/{leg_fail}.retry' "
+                                f"'crashed-leg: rowz__inter rc=1 /k/rowz__inter' ")
+        co.plan(UNIT, body)
+        job = gf.Job("unit", GAME, TIER)
+        _res, out = captured(lambda: (co.go([job]), co.print_summary(0)))
+        results[name] = (job, out)
+    (bj, _bout), (cj, cout) = results["base"], results["crashed"]
+    live = [ln for ln in cout.splitlines() if ": CRASHED " in ln and "result" not in ln]
+    summary = [ln for ln in cout.splitlines() if ln.startswith(f"[fleet] result {UNIT}: ")]
+    check("crashed-stream", len(live) == 2 and "malformed" not in cout
+          and cj.result["rc"] == bj.result["rc"] and not cj.result.get("stream_mismatch")
+          and cj.result.get("stream") == bj.result.get("stream"),
+          f"{len(live)} live CRASHED line(s); rc {cj.result['rc']} (without: {bj.result['rc']}); "
+          f"mismatch: {cj.result.get('stream_mismatch') or 'none'}")
+    want = "crashed=3 (1 not retried, 1 retried fail, 1 retried pass)"
+    check("crashed-result", bool(summary) and want in summary[0]
+          and sum(1 for ln in summary if ": CRASHED " in ln) == 4
+          and not any("crashed=" in ln for ln in _bout.splitlines()),
+          f"result line {summary[0] if summary else 'absent'!r}; {len(summary) - 1} CRASHED result line(s)")
 
 
 def case_extra(tmp):
@@ -1762,7 +1804,7 @@ def main():
     tmp = tempfile.mkdtemp(prefix="fleet-stream-check.")
     gf.ledger_path = lambda: os.path.join(tmp, "ledger.tsv")
     try:
-        for case in (case_framing, case_pool, case_stream_off, case_equality, case_extra, case_drain, case_exempt,
+        for case in (case_framing, case_pool, case_stream_off, case_equality, case_crashed, case_extra, case_drain, case_exempt,
                      case_kill, case_stop, case_stop_cli, case_stop_sync, case_reap, case_transport, case_clean,
                      case_expect, case_canary_verdict, case_run_candidate, case_move, case_move_cli,
                      case_keep_and_resume_inputs, case_keep_exhausted, case_ledger, case_repeat,

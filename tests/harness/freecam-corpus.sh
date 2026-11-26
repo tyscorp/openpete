@@ -168,7 +168,18 @@ run_leg() {  # slug frame_limit leg flag target lodmode level pose launch row-li
   (( miss )) || pg_census_check "$OUTDIR" "$log" "$png" || miss=1
   # A leg that wrote its tile and then exited nonzero (an abort at shutdown)
   # keeps the tile and its verdict, and is kept as a crashed leg.
-  [[ $rc -ne 0 || $miss -ne 0 ]] && pg_keep_crash_leg "$legdir" "${slug}__${tag}${leg}" "$rc" "${cmd[@]}"
+  if [[ $rc -ne 0 || $miss -ne 0 ]]; then
+    pg_keep_crash_leg "$legdir" "${slug}__${tag}${leg}" "$rc" "${cmd[@]}"
+  fi
+  # A crashed first attempt is retried (scripts/presentation-game.sh,
+  # crashed legs): its tile and sidecar are deleted and the leg is not
+  # recorded as done.
+  if pg_retry_owed "$rc"; then
+    pg_census_clear "$OUTDIR" "$png"
+    rm -f -- "${OUTDIR:?}/$png"
+    rm -rf -- "${legdir:?}"
+    return "$PG_LEG_RETRY_RC"
+  fi
   if [[ $miss -ne 0 ]]; then rm -rf -- "${legdir:?}"; return 1; fi
   # The intermediate leg is only evidence when the sub-tick re-extract actually
   # installed an interpolation bracket. Unbracketed, the re-extract composes the
@@ -212,9 +223,10 @@ while IFS= read -r row; do
     ran=$((ran+1))
     echo "[$slug] level=$level start=$start pose='$pose'${launch:+  launch=$launch}"
     for lod in $CAP_LODS; do
-      cj_run run_leg "$slug" "$flim" canon --screenshot-on-frame "$start" "$lod" "$level" "$pose" "$launch" "$row"
-      cj_run run_leg "$slug" "$flim" inter --screenshot-intermediate-on-frame "$local_istart" "$lod" "$level" "$pose" "$launch" "$row"
-      cj_run run_leg "$slug" "$flim" ident --screenshot-intermediate-on-frame "$start" "$lod" "$level" "$pose" "$launch" "$row"
+      tag="$(lod_tag "$lod")"
+      cj_run pg_leg_retry "${slug}__${tag}canon" run_leg "$slug" "$flim" canon --screenshot-on-frame "$start" "$lod" "$level" "$pose" "$launch" "$row"
+      cj_run pg_leg_retry "${slug}__${tag}inter" run_leg "$slug" "$flim" inter --screenshot-intermediate-on-frame "$local_istart" "$lod" "$level" "$pose" "$launch" "$row"
+      cj_run pg_leg_retry "${slug}__${tag}ident" run_leg "$slug" "$flim" ident --screenshot-intermediate-on-frame "$start" "$lod" "$level" "$pose" "$launch" "$row"
     done
   done
 done < "$MANIFEST"

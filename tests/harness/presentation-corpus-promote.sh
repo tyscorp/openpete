@@ -52,7 +52,8 @@
 # is present.
 #
 # A candidate directory holding forwarded-knobs.txt (a capture run with
-# check_presentation_golden.sh --env) is refused: its tiles are an A/B.
+# check_presentation_golden.sh --env) is refused: its tiles are an A/B. So is
+# one holding outside-image.txt (captured outside the capture image).
 #
 # After running, review `git -C <openpete> diff --cached` and commit deliberately.
 #
@@ -76,6 +77,12 @@ if [[ -n "$rec_tier" && -z "${PRESENTATION_TIER:-}" ]]; then export PRESENTATION
 rec_knobs="$(pg_knobs_recorded "${1:-}")"
 if [[ -n "$rec_knobs" ]]; then
   echo "[promote] REFUSED: ${1:-} was captured with forwarded knobs $rec_knobs (its $PG_KNOBS_FILE); promote only a stock capture"
+  exit 1
+fi
+# A capture taken outside the capture image (OPENPETE_CAPTURE_OUTSIDE_IMAGE)
+# is not under the golden's environment.
+if [[ -e "${1:-}/$PG_OUTSIDE_IMAGE_FILE" ]]; then
+  echo "[promote] REFUSED: ${1:-} was captured outside the capture image (its $PG_OUTSIDE_IMAGE_FILE); promote only an in-image capture"
   exit 1
 fi
 

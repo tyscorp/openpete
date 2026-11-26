@@ -211,7 +211,9 @@ coordinator:
 Stream: a unit's supervisor sets OPENPETE_STREAM_FILE=<attempt base>.stream;
 each finished row appends one SAME|DIVERGE|EXTRA|IDENT|EXCEED line per tile
 (classified by the end verdict's functions), the credits leg `CREDITS rc=N`,
-imported rows their lines tagged `imported`, and the capture's verdict `END`.
+each retried crashed capture leg `CRASHED <leg> rc=N retry=pass|fail`
+(printed as it arrives), imported rows their lines tagged `imported`, and
+the capture's verdict `END`.
 Each poll returns the done marker, then the stream's new bytes from the
 attempt's offset (POLL_SCRIPT); complete lines go to <local run
 dir>/stream.log tagged with unit, host, attempt and receipt time; at most
@@ -3816,6 +3818,9 @@ class Coordinator:
         tag = expect_tag(self.expect, att.job.name, rec)
         self.log_stream(f"{att.job.name} {att.hs.name} {att.n} {rec['receipt']:.3f} {raw}"
                         + (f" {tag}" if tag else ""))
+        if rec["verb"] == "CRASHED":
+            print(f"[fleet] {att.job.name}: CRASHED {rec['tile']} {rec['detail']} "
+                  f"(on {att.hs.name}, attempt {att.n})")
         if rec["verb"] in MOVED_VERBS:
             lat = ""
             if rec["epoch"] is not None and att.hs.name in self.skew:
@@ -4171,6 +4176,7 @@ class Coordinator:
                   f"of {f.get('manifest-rows', '?')}")
         job.result["census"] = census
         job.result["imported_rows"] = int(f.get("imported-rows") or 0)
+        job.result["crashed"] = report["crashed"]
         print(f"[fleet] {job.name}: census {census}")
         if self.repeat() and job.kind == "unit":
             rows = [repeat_row_text(r) for r in report["repeat-rows"]]
@@ -4495,8 +4501,13 @@ class Coordinator:
             verdict = {0: "PASS", EXIT_SKIP: "SKIP"}.get(r["rc"], "FAIL")
             census = f"; {r['census']}" if r.get("census") else ""
             moved = "".join(f"; moved {a} -> {b}" for a, b in j.moved)
+            crashed = crashed_text(r.get("crashed") or [])
             print(f"[fleet] result {j.name}: {verdict} on {r['host']} (rc {r['rc']}, "
-                  f"attempt {r.get('attempt', '-')}, {r.get('wall', '-')} s; {r['status']}{census}{moved})")
+                  f"attempt {r.get('attempt', '-')}, {r.get('wall', '-')} s; {r['status']}{census}"
+                  f"{'; ' + crashed if crashed else ''}{moved})")
+            for c in r.get("crashed") or []:
+                print(f"[fleet] result {j.name}: CRASHED {c['leg']} rc={c['rc']}"
+                      + (f" retry={c['retry']}" if c["retry"] else ""))
             if r.get("repeat"):
                 print(f"[fleet] result {j.name}: repeat {r['repeat']}")
             if r.get("stream_mismatch"):
@@ -5159,8 +5170,13 @@ def merge_row_cost(local, job, hs, run_id):
 
 
 def parse_report(path):
-    """Parse verdict-report.txt into fields, divergent and extra tiles, identity-pair members and repeat-row lines."""
-    out = {"fields": {}, "divergent": [], "extra": [], "identity": [], "repeat-rows": []}
+    """Parse verdict-report.txt into fields, divergent and extra tiles, identity-pair members, repeat-row and crashed-leg lines.
+
+    A crashed-leg line is `<leg> rc=N <kept dir>[ retry=pass|fail]`; each
+    becomes {leg, rc, retry} (retry None for a leg that was not retried).
+    """
+    out = {"fields": {}, "divergent": [], "extra": [], "identity": [], "repeat-rows": [],
+           "crashed": []}
     try:
         text = open(path, encoding="utf-8").read()
     except OSError:
@@ -5173,10 +5189,31 @@ def parse_report(path):
             out["identity"] += [t for t in val.split()[:2] if t.endswith(".png")]
         elif key == "repeat-row":
             out["repeat-rows"].append(val.strip())
+        elif key == "crashed-leg" and val.split():
+            words = val.split()
+            retry = next((w[len("retry="):] for w in words[2:] if w.startswith("retry=")), None)
+            out["crashed"].append({"leg": words[0], "rc": words[1][len("rc="):] if len(words) > 1 else "?",
+                                   "retry": retry})
         elif key:
             out["fields"].setdefault(key, val.strip())
     out["identity"] = sorted(set(out["identity"]))
     return out
+
+
+def crashed_text(crashed):
+    """Return `crashed=N (k retried pass, ...)` over a report's crashed legs, '' when none.
+
+    A `<leg>.retry` line is the retry attempt of a counted leg, not a leg of
+    its own.
+    """
+    legs = [c for c in crashed if not c["leg"].endswith(".retry")]
+    if not legs:
+        return ""
+    counts = {}
+    for c in legs:
+        k = f"retried {c['retry']}" if c["retry"] else "not retried"
+        counts[k] = counts.get(k, 0) + 1
+    return f"crashed={len(legs)} (" + ", ".join(f"{n} {k}" for k, n in sorted(counts.items())) + ")"
 
 
 # ---- run: the stream, its unit-end check and expected moves ---------------------
@@ -5205,8 +5242,9 @@ def parse_stream_line(line):
     """Parse one stream line into {verb, tile, detail, epoch, imported}, or None when malformed.
 
     Tile verbs carry `<tile> <detail> <epoch>`, CREDITS `rc=N <epoch>` (tile
-    `credits`), END `<epoch>` (tile `END`); a trailing `imported` marks a line
-    of a row the attempt imported.
+    `credits`), CRASHED `<leg> rc=N retry=pass|fail <epoch>` (tile the leg,
+    detail `rc=N retry=X`), END `<epoch>` (tile `END`); a trailing `imported`
+    marks a line of a row the attempt imported.
     """
     f = line.split()
     if not f:
@@ -5215,6 +5253,9 @@ def parse_stream_line(line):
         tile, detail, rest = "END", "", f[1:]
     elif f[0] == "CREDITS" and len(f) >= 2 and f[1].startswith("rc="):
         tile, detail, rest = "credits", f[1], f[2:]
+    elif (f[0] == "CRASHED" and len(f) >= 4 and f[2].startswith("rc=")
+          and f[3] in ("retry=pass", "retry=fail")):
+        tile, detail, rest = f[1], f"{f[2]} {f[3]}", f[4:]
     elif f[0] in TILE_VERBS and len(f) >= 4:
         tile, detail, rest = f[1], f[2], f[3:]
     else:
