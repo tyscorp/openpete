@@ -41,18 +41,26 @@
 # display (scripts/lib/xvfb.sh): a headless run builds no occlusion grid, so
 # its cull never decides. Each row runs RUNS times with the occlusion audit on
 # (OPENPETE_MOBY_OCCL_VERIFY=1 OPENPETE_MOBY_OCCL_DBG=1), which decodes every
-# record the cull judged hidden and prints one [occl-VERIFY-WRONG] line per
-# record whose fresh bounds query visible. A wrong cull whose cached rect is
-# at most 2 ticks old is PAN when the fresh rect leaves the cached rect by
-# more than the own-motion inflation of the cull query (8 px plus (age+1)
-# times the larger of 102400/max(vz,512) and 1.5 x the measured motion, at
-# the default --fov), so only camera motion moved it there; else NONPAN. An
-# older rect is re-projected at the present's camera (REFRESHED, unclassed);
-# a simple-moby record's bounds are built at the present's camera
-# ([occl-VERIFY-simple-WRONG], SIMPLE, unclassed).
-# The row fails when the PAN total over its runs exceeds pan_max. Engagement
-# (VACUOUS): a run that did not load the bk2, did not exit at the frame
-# limit, printed no audit line, or judged no record hidden (would_cull 0).
+# record the cull judged hidden and queries its fresh bounds. The query
+# answers visible ([occl-VERIFY-WRONG]), hidden (no line), or refuses
+# ([occl-VERIFY-REFUSED]: no grid, suspended, stale, or the grid's camera
+# outside the query bound of the present's). A refused record is re-asked,
+# uninflated at its present's camera, against each later grid until one
+# answers (visible: WRONG) or 16 VBLs pass ([occl-VERIFY-UNRESOLVED]).
+# Each line is classed: a record whose cached rect is at most 2 ticks old is
+# PAN when the fresh rect leaves the cached rect by more than the own-motion
+# inflation of the cull query (8 px plus (age+1) times the larger of
+# 102400/max(vz,512) and 1.5 x the measured motion, at the default --fov),
+# so only camera motion moved it there; else NONPAN. An older rect is
+# re-projected at the present's camera (REFRESHED); a simple-moby record's
+# bounds are built at the present's camera ([occl-VERIFY-simple-*], SIMPLE).
+# Checks: <class>_max=N fails the row when the class's WRONG total over its
+# runs exceeds N (class pan, nonpan, refreshed or simple); unresolved_frac=F
+# fails it when the UNRESOLVED total exceeds F times the REFUSED total.
+# Engagement (VACUOUS): a run that did not load the bk2, did not exit at the
+# frame limit, printed no audit line, or judged no record hidden (would_cull
+# 0); with refused_min=N, a row whose REFUSED total is below N (the recheck
+# ran fewer times).
 # The culled fraction would_cull / presents (subtick-view presents) is
 # printed per run.
 #
@@ -332,17 +340,20 @@ import os, re, sys
 out = sys.argv[1]
 rows = [r.split('|', 2) for r in sys.argv[2:]]
 
-wrong_re = re.compile(r'\[occl-VERIFY-WRONG vbl=(\d+)\] moby=\w+ cached rect=\((-?\d+),(-?\d+)\)-\((-?\d+),(-?\d+)\) '
+wrong_re = re.compile(r'\[occl-VERIFY-(WRONG|REFUSED|UNRESOLVED) vbl=(\d+)\] moby=\w+ cached rect=\((-?\d+),(-?\d+)\)-\((-?\d+),(-?\d+)\) '
                       r'vz=(-?\d+) age=(\d+) fresh rect=\((-?\d+),(-?\d+)\)-\((-?\d+),(-?\d+)\) vz=-?\d+ mot=([\d.]+)')
+simple_re = re.compile(r'\[occl-VERIFY-simple-(WRONG|REFUSED|UNRESOLVED) ')
 verify_re = re.compile(r'\[moby-occl-verify vbl=\d+\] would_cull=(\d+) wrong=(\d+)')
+CLASSES = ('PAN', 'NONPAN', 'REFRESHED', 'SIMPLE')
+VERDICTS = ('WRONG', 'REFUSED', 'UNRESOLVED')
 presents_re = re.compile(r'subtick-view: presents=(\d+)')
 
 def classify(m):
     """PAN, NONPAN or REFRESHED for one wrong-cull line (see the header)."""
-    c = [int(m.group(i)) for i in (2, 3, 4, 5)]
-    vz, age = int(m.group(6)), int(m.group(7))
-    f = [int(m.group(i)) for i in (8, 9, 10, 11)]
-    mot = float(m.group(12))
+    c = [int(m.group(i)) for i in (3, 4, 5, 6)]
+    vz, age = int(m.group(7)), int(m.group(8))
+    f = [int(m.group(i)) for i in (9, 10, 11, 12)]
+    mot = float(m.group(13))
     if age > 2:
         return 'REFRESHED'
     own = max(102400.0 / max(vz, 512), 1.5 * mot)
@@ -351,18 +362,20 @@ def classify(m):
     return 'PAN' if shift > inf else 'NONPAN'
 
 def run_census(path):
-    r = {'PAN': 0, 'NONPAN': 0, 'REFRESHED': 0, 'SIMPLE': 0, 'would': None, 'wrong': None,
-         'presents': None, 'bk2': False, 'limit': False, 'pan_vbls': []}
+    r = {(k, v): 0 for k in CLASSES for v in VERDICTS}
+    r.update({'would': None, 'wrong': None, 'presents': None, 'bk2': False, 'limit': False,
+              'pan_vbls': []})
     for ln in open(path, errors='replace'):
         m = wrong_re.search(ln)
         if m:
             k = classify(m)
-            r[k] += 1
-            if k == 'PAN':
-                r['pan_vbls'].append(m.group(1))
+            r[(k, m.group(1))] += 1
+            if k == 'PAN' and m.group(1) == 'WRONG':
+                r['pan_vbls'].append(m.group(2))
             continue
-        if '[occl-VERIFY-simple-WRONG ' in ln:
-            r['SIMPLE'] += 1
+        m = simple_re.search(ln)
+        if m:
+            r[('SIMPLE', m.group(1))] += 1
             continue
         m = verify_re.search(ln)
         if m:
@@ -378,11 +391,14 @@ def run_census(path):
     return r
 
 verdict = 0
-print('%-22s %-5s %10s %6s %4s %6s %9s %6s %8s %8s' %
-      ('row', 'run', 'would_cull', 'wrong', 'PAN', 'NONPAN', 'REFRESHED', 'SIMPLE', 'presents', 'culled/p'))
+# Per class: WRONG/REFUSED/UNRESOLVED.
+print('%-22s %-5s %10s %6s %12s %12s %12s %12s %8s %8s' %
+      ('row', 'run', 'would_cull', 'wrong', 'PAN w/r/u', 'NONPAN w/r/u', 'REFR w/r/u', 'SIMPLE w/r/u',
+       'presents', 'culled/p'))
+wru = lambda r, k: '%d/%d/%d' % tuple(r[(k, v)] for v in VERDICTS)
 for name, runs, checks in rows:
     vac, fail, notes = [], [], []
-    tot = {'PAN': 0, 'NONPAN': 0, 'REFRESHED': 0, 'SIMPLE': 0}
+    tot = {(k, v): 0 for k in CLASSES for v in VERDICTS}
     fracs = []
     for n in range(1, int(runs) + 1):
         log = os.path.join(out, '%s__run%d.log' % (name, n))
@@ -390,9 +406,9 @@ for name, runs, checks in rows:
             vac.append('run%d: no log' % n); continue
         r = run_census(log)
         frac = r['would'] / r['presents'] if r['would'] is not None and r['presents'] else None
-        print('%-22s %-5s %10s %6s %4d %6d %9d %6d %8s %8s' %
-              (name, 'run%d' % n, r['would'], r['wrong'], r['PAN'], r['NONPAN'], r['REFRESHED'], r['SIMPLE'],
-               r['presents'], '-' if frac is None else '%.4f' % frac))
+        print('%-22s %-5s %10s %6s %12s %12s %12s %12s %8s %8s' %
+              (name, 'run%d' % n, r['would'], r['wrong'], wru(r, 'PAN'), wru(r, 'NONPAN'),
+               wru(r, 'REFRESHED'), wru(r, 'SIMPLE'), r['presents'], '-' if frac is None else '%.4f' % frac))
         for k in tot:
             tot[k] += r[k]
         if frac is not None:
@@ -407,18 +423,30 @@ for name, runs, checks in rows:
             vac.append('run%d: no [moby-occl-verify] line' % n)
         elif r['would'] == 0:
             vac.append('run%d: would_cull 0' % n)
+    refused = sum(tot[(k, 'REFUSED')] for k in CLASSES)
+    unresolved = sum(tot[(k, 'UNRESOLVED')] for k in CLASSES)
     for chk in checks.split():
-        if chk.startswith('runs='):
+        key, _, val = chk.partition('=')
+        if key == 'runs':
             continue
-        if chk.startswith('pan_max='):
-            lim = int(chk.split('=', 1)[1])
-            if tot['PAN'] > lim:
-                fail.append('PAN wrong culls %d > %d' % (tot['PAN'], lim))
+        if key.endswith('_max') and key[:-4].upper() in CLASSES:
+            k, lim = key[:-4].upper(), int(val)
+            if tot[(k, 'WRONG')] > lim:
+                fail.append('%s wrong culls %d > %d' % (k, tot[(k, 'WRONG')], lim))
             else:
-                notes.append('PAN wrong culls %d <= %d' % (tot['PAN'], lim))
+                notes.append('%s wrong culls %d <= %d' % (k, tot[(k, 'WRONG')], lim))
+        elif key == 'refused_min':
+            if refused < int(val):
+                vac.append('REFUSED %d < %s: the recheck did not engage' % (refused, val))
+        elif key == 'unresolved_frac':
+            lim = float(val)
+            if unresolved > lim * refused:
+                fail.append('UNRESOLVED %d > %g x REFUSED %d' % (unresolved, lim, refused))
+            else:
+                notes.append('UNRESOLVED %d <= %g x REFUSED %d' % (unresolved, lim, refused))
         else:
             vac.append('unknown check %s' % chk)
-    notes.append('NONPAN %d REFRESHED %d SIMPLE %d' % (tot['NONPAN'], tot['REFRESHED'], tot['SIMPLE']))
+    notes.append('WRONG/REFUSED/UNRESOLVED ' + ' '.join('%s %s' % (k, wru(tot, k)) for k in CLASSES))
     if fracs:
         notes.append('culled/present mean %.4f' % (sum(fracs) / len(fracs)))
     v = 'VACUOUS' if vac else ('FAIL' if fail else 'PASS')

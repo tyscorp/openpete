@@ -3012,6 +3012,8 @@ games/common/renderer/moby.c	-	s_rec_snap_queued	static	-
 games/common/renderer/moby.c	-	s_rec_snap_ref_ns	static	-	
 games/common/renderer/moby.c	-	s_rec_snap_trail_n	static	-	
 games/common/renderer/moby.c	-	s_rec_snap_words	static	-	
+games/common/renderer/moby.c	-	s_recheck	static	-	occlusion audit state beside s_ver_would, on the moby extract thread
+games/common/renderer/moby.c	-	s_recheck_n	static	-	occlusion audit state beside s_ver_would, on the moby extract thread
 games/common/renderer/moby.c	-	s_recs	static	-	
 games/common/renderer/moby.c	-	s_reg_moby	static	-	
 games/common/renderer/moby.c	-	s_reg_moby_n	static	-	
@@ -3109,9 +3111,11 @@ games/common/renderer/moby.c	-	s_us_rvdec	static	-
 games/common/renderer/moby.c	-	s_us_rvfields	static	-	
 games/common/renderer/moby.c	-	s_us_walk	static	-	
 games/common/renderer/moby.c	-	s_us_walk_rex	static	-	
+games/common/renderer/moby.c	-	s_ver_refused	static	-	occlusion audit state beside s_ver_would, on the moby extract thread
 games/common/renderer/moby.c	-	s_ver_simple_n	static	-	
 games/common/renderer/moby.c	-	s_ver_simple_out	static	-	
 games/common/renderer/moby.c	-	s_ver_snap	static	-	
+games/common/renderer/moby.c	-	s_ver_unresolved	static	-	occlusion audit state beside s_ver_would, on the moby extract thread
 games/common/renderer/moby.c	-	s_ver_would	static	-	
 games/common/renderer/moby.c	-	s_ver_wrong	static	-	
 games/common/renderer/moby.c	-	s_verify_hi	static	-	

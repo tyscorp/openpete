@@ -18174,11 +18174,30 @@ static int occl_verify_on(void) {
     if (v < 0) { const char* e = getenv("OPENPETE_MOBY_OCCL_VERIFY"); v = (e && *e && *e != '0'); }
     return v;
 }
-static long s_ver_would = 0;   /* stale-cache verdicts said CULL */
-static long s_ver_wrong = 0;   /* ...of which fresh bounds said VISIBLE */
+static long s_ver_would = 0;       /* stale-cache verdicts said CULL */
+static long s_ver_wrong = 0;       /* ...of which fresh bounds answered VISIBLE, at once or on recheck */
+static long s_ver_refused = 0;     /* ...whose fresh query the held grid refused */
+static long s_ver_unresolved = 0;  /* ...of those no later grid answered within OCCL_RECHECK_VBLS */
 
 static void occl_proj_bounds(const proj_xy* p, int n, float* px0, float* py0,
                              float* px1, float* py1, float* pvz);
+
+/** @brief Return the outcome of one audit query, under the configured occlusion slack floored at zero.
+ *
+ * A negative OPENPETE_MOBY_OCCL_SLACK makes the cull accept occluders behind
+ * the moby; the audit never does, so it answers with the depth test itself.
+ * @param x0 The rect's left edge, PSX screen px.
+ * @param y0 The rect's top edge.
+ * @param x1 The rect's right edge.
+ * @param y1 The rect's bottom edge.
+ * @param vzmin The nearest view-Z.
+ * @param cam The camera the rect was projected with.
+ * @return The OPENPETE_OCCL_Q_* outcome index. */
+static int occl_audit_outcome(float x0, float y0, float x1, float y1, float vzmin,
+                              const openpete_occl_camera* cam) {
+    const float slack = openpete_native_occl_slack();
+    return openpete_native_occl_query_outcome(x0, y0, x1, y1, vzmin, cam, slack > 0.0f ? slack : 0.0f);
+}
 
 /** @brief Query one explicit set of bounds with the age-0 inflation of occl_record_decide.
  *
@@ -18189,19 +18208,133 @@ static void occl_proj_bounds(const proj_xy* p, int n, float* px0, float* py0,
  * @param vzmin The nearest view-Z.
  * @param mot The moby's measured screen motion per tick.
  * @param mot_vz The moby's measured view-Z motion per tick.
- * @return Nonzero when the query culls. */
+ * @param cam The camera the rect was projected with.
+ * @return The OPENPETE_OCCL_Q_* outcome index (occl_audit_outcome). */
 static int occl_query_at(float x0, float y0, float x1, float y1, float vzmin,
-                         float mot, float mot_vz) {
+                         float mot, float mot_vz, const openpete_occl_camera* cam) {
     float vzm = vzmin < 512.0f ? 512.0f : vzmin;
     float own = 102400.0f * (float)s_view.s / vzm;
     if (mot * 1.5f > own) own = mot * 1.5f;
     float inf = 8.0f + occl_pan_inflation(0u) + own;
     float vzs = 600.0f;
     if (mot_vz * 1.5f > vzs) vzs = mot_vz * 1.5f;
-    openpete_occl_camera qcam; ngte_occl_camera(&s_view, &qcam);
-    return openpete_native_occl_query(x0 - inf, y0 - inf, x1 + inf, y1 + inf,
-                                      vzmin - vzs, &qcam);
+    return occl_audit_outcome(x0 - inf, y0 - inf, x1 + inf, y1 + inf, vzmin - vzs, cam);
 }
+
+/** @brief Return whether a query outcome is a refusal: no grid, suspended, stale, or a grid camera outside the bound.
+ * @param q The OPENPETE_OCCL_Q_* outcome index.
+ * @return 1 for a refusal, else 0. */
+static int occl_outcome_refused(int q) {
+    return q == OPENPETE_OCCL_Q_NOGRID || q == OPENPETE_OCCL_Q_SUSPENDED ||
+           q == OPENPETE_OCCL_Q_STALE || q == OPENPETE_OCCL_Q_MOVED;
+}
+
+/* One audited record: the fresh rect of a record the cull judged hidden, the
+ * camera it was projected with, and the cache entry the cull judged (the
+ * animated kind) for the report. A record whose fresh query is refused waits
+ * here and is re-asked against each later grid at its own camera. */
+typedef struct {
+    uint32_t moby;
+    unsigned vbl;                  /* VBL of the audited present */
+    int simple, zeropx;            /* simple-moby kind; fresh rect outside the visible extent */
+    float x0, y0, x1, y1, vz;      /* fresh rect, uninflated */
+    occl_rect_t snap;              /* cache entry the cull judged (animated kind) */
+    openpete_occl_camera cam;      /* camera of the audited present */
+} occl_audit_t;
+enum { OCCL_RECHECK_N = 256 };
+#define OCCL_RECHECK_VBLS 16u     /* VBLs a refused record waits for an answering grid */
+static occl_audit_t s_recheck[OCCL_RECHECK_N];
+static int s_recheck_n;
+
+/** @brief Print one audit line for a record, tagged with its verdict.
+ *
+ * The animated kind prints the judged cache entry and the fresh rect
+ * (`[occl-VERIFY-<tag> ...] ... cached rect=... age=... fresh rect=...`),
+ * the simple kind its fresh rect (`[occl-VERIFY-simple-<tag> ...]`); both
+ * end in the query outcome index q.
+ * @param tag The verdict: WRONG, zeropx, REFUSED or UNRESOLVED.
+ * @param e The audited record.
+ * @param q The OPENPETE_OCCL_Q_* outcome index the verdict rests on. */
+static void occl_audit_report(const char* tag, const occl_audit_t* e, int q) {
+    if (e->simple) {
+        fprintf(stderr, "[occl-VERIFY-simple-%s vbl=%u] moby=%08x fresh rect=(%.0f,%.0f)-(%.0f,%.0f) vz=%.0f q=%d\n",
+                tag, e->vbl, e->moby, e->x0, e->y0, e->x1, e->y1, e->vz, q);
+        return;
+    }
+    fprintf(stderr, "[occl-VERIFY-%s vbl=%u] moby=%08x cached rect=(%.0f,%.0f)-(%.0f,%.0f) vz=%.0f age=%u "
+                    "fresh rect=(%.0f,%.0f)-(%.0f,%.0f) vz=%.0f mot=%.1f scan_max=%.0f q=%d\n",
+            tag, e->vbl, e->moby, e->snap.x0, e->snap.y0, e->snap.x1, e->snap.y1, e->snap.vz_min,
+            e->vbl - e->snap.tick, e->x0, e->y0, e->x1, e->y1, e->vz, e->snap.mot,
+            openpete_native_occl_last_scan_max(), q);
+}
+
+/** @brief Settle an audited record on an answered outcome: a visible answer is a wrong verdict.
+ *
+ * A culled or off-screen answer settles silently. A visible or too-near
+ * answer is reported as zeropx when the fresh rect lies outside the visible
+ * extent (it draws no pixel whatever the verdict), else as WRONG and counted
+ * in s_ver_wrong.
+ * @param e The audited record.
+ * @param q The answered OPENPETE_OCCL_Q_* outcome index. */
+static void occl_audit_settle(const occl_audit_t* e, int q) {
+    if (q == OPENPETE_OCCL_Q_CULLED || q == OPENPETE_OCCL_Q_OFFSCREEN) return;
+    if (!e->zeropx) s_ver_wrong++;
+    occl_audit_report(e->zeropx ? "zeropx" : "WRONG", e, q);
+}
+
+/** @brief Judge an audited record on its first query: settle an answer, queue a refusal for recheck.
+ *
+ * A refusal is counted in s_ver_refused and reported REFUSED; it waits in
+ * s_recheck for occl_recheck_service. With the queue full it is UNRESOLVED
+ * at once.
+ * @param e The audited record, its fields filled.
+ * @param q The OPENPETE_OCCL_Q_* outcome index of its first query. */
+static void occl_audit_judge(const occl_audit_t* e, int q) {
+    if (!occl_outcome_refused(q)) { occl_audit_settle(e, q); return; }
+    s_ver_refused++;
+    occl_audit_report("REFUSED", e, q);
+    if (s_recheck_n < OCCL_RECHECK_N) { s_recheck[s_recheck_n++] = *e; return; }
+    s_ver_unresolved++;
+    occl_audit_report("UNRESOLVED", e, q);
+}
+
+/** @brief Re-ask every refused audit record against the grid now held, at the record's own camera and uninflated rect.
+ *
+ * The grid that answers is one rendered from a camera within the query's
+ * bound of the audited present's, so its cells describe that present's
+ * view. An answer settles the record (occl_audit_settle); a refusal keeps it
+ * waiting until OCCL_RECHECK_VBLS VBLs have passed, then counts it in
+ * s_ver_unresolved. Each settled record prints one
+ * `[occl-VERIFY-RECHECK ...]` line. */
+static void occl_recheck_service(void) {
+    for (int i = 0; i < s_recheck_n;) {
+        const occl_audit_t* e = &s_recheck[i];
+        const int q = occl_audit_outcome(e->x0, e->y0, e->x1, e->y1, e->vz, &e->cam);
+        const int refused = occl_outcome_refused(q);
+        if (refused && openpete_frame - e->vbl <= OCCL_RECHECK_VBLS) { i++; continue; }
+        const int hidden = q == OPENPETE_OCCL_Q_CULLED || q == OPENPETE_OCCL_Q_OFFSCREEN;
+        fprintf(stderr, "[occl-VERIFY-RECHECK vbl=%u] kind=%s moby=%08x at=%u outcome=%s q=%d\n",
+                openpete_frame, e->simple ? "simple" : "anim", e->moby, e->vbl,
+                refused ? "unresolved" : (hidden ? "hidden" : "visible"), q);
+        if (refused) { s_ver_unresolved++; occl_audit_report("UNRESOLVED", e, q); }
+        else occl_audit_settle(e, q);
+        s_recheck[i] = s_recheck[--s_recheck_n];
+    }
+}
+
+/** @brief Fill an audit record with a fresh rect, the present's camera and whether the rect lies outside the visible extent.
+ * @param e Receives the record; snap is left for the caller.
+ * @param moby The Moby address.
+ * @param simple Nonzero for the simple-moby kind.
+ * @param p The record's projected verts.
+ * @param n Their count, at least 1. */
+static void occl_audit_fill(occl_audit_t* e, uint32_t moby, int simple, const proj_xy* p, int n) {
+    e->moby = moby; e->vbl = openpete_frame; e->simple = simple;
+    occl_proj_bounds(p, n, &e->x0, &e->y0, &e->x1, &e->y1, &e->vz);
+    e->zeropx = (e->x1 < s_view.xlo || e->x0 > s_view.xhi || e->y1 < 0.0f || e->y0 > 224.0f);
+    ngte_occl_camera(&s_view, &e->cam);
+}
+
 static occl_rect_t s_ver_snap;   /* the entry the cull judged, for the report */
 /** @brief Audit-mode entry for a record the cull judged hidden: count it and keep the cache entry that judged it.
  *
@@ -18214,32 +18347,20 @@ static int occl_verify_begin(uint32_t moby) {
     s_ver_snap = s_occl_cache[occl_slot(moby)];
     return 1;
 }
-/** @brief Audit-mode exit: re-query the fresh bounds of an extracted record the cull judged hidden and report a visible verdict.
+/** @brief Audit-mode exit: query the fresh bounds of an extracted record the cull judged hidden and judge the outcome.
  *
- * A fresh rect outside the visible extent is reported as zeropx, any other
- * as a wrong verdict and counted in s_ver_wrong. Nothing is reported when
- * the fresh query culls too.
+ * The query inflates the fresh rect as the cull's age-0 query does. A
+ * culled answer reports nothing, a visible one is WRONG or zeropx, a
+ * refusal waits for a later grid (occl_audit_judge).
  * @param moby The Moby address.
  * @param p The record's projected verts.
  * @param n Their count; 0 or less returns without a report. */
 static void occl_verify_end(uint32_t moby, const proj_xy* p, int n) {
     if (n <= 0) return;                 /* no verts projected -> nothing drawable */
-    float x0, y0, x1, y1, vz;
-    occl_proj_bounds(p, n, &x0, &y0, &x1, &y1, &vz);
-    if (occl_query_at(x0, y0, x1, y1, vz, s_ver_snap.mot, s_ver_snap.mot_vz)) return;
-    /* Classify: a fresh rect fully outside the visible extent produces ZERO
-     * pixels regardless of the verdict - the conservative inflation merely
-     * crossed the boundary. Only on-screen fresh rects are real events. */
-    float xlo = s_view.xlo, xhi = s_view.xhi;
-    int zeropx = (x1 < xlo || x0 > xhi || y1 < 0.0f || y0 > 224.0f);
-    if (!zeropx) s_ver_wrong++;
-    fprintf(stderr, "[occl-VERIFY-%s vbl=%u] moby=%08x cached rect=(%.0f,%.0f)-(%.0f,%.0f) vz=%.0f age=%u "
-                    "fresh rect=(%.0f,%.0f)-(%.0f,%.0f) vz=%.0f mot=%.1f scan_max=%.0f\n",
-            zeropx ? "zeropx" : "WRONG", openpete_frame, moby,
-            s_ver_snap.x0, s_ver_snap.y0, s_ver_snap.x1, s_ver_snap.y1, s_ver_snap.vz_min,
-            openpete_frame - s_ver_snap.tick,
-            x0, y0, x1, y1, vz, s_ver_snap.mot,
-            openpete_native_occl_last_scan_max());
+    occl_audit_t e;
+    occl_audit_fill(&e, moby, 0, p, n);
+    e.snap = s_ver_snap;
+    occl_audit_judge(&e, occl_query_at(e.x0, e.y0, e.x1, e.y1, e.vz, s_ver_snap.mot, s_ver_snap.mot_vz, &e.cam));
 }
 
 static long s_ver_simple_n, s_ver_simple_out;   /* simple-moby records audited / not contained */
@@ -18257,31 +18378,27 @@ int moby_simple_occluded(CPUState* cpu, uint32_t moby, const double org[3], doub
 /** @brief Audit the bounds of the last moby_simple_occluded call against a simple-moby record's projected vertices (OPENPETE_MOBY_OCCL_VERIFY).
  *
  * Counts and prints a vertex outside the bounds' rect or nearer than their
- * view-Z, and for a record the test culled, re-queries the vertices' own
- * rect (occl_proj_bounds) and prints a visible verdict, counted as wrong
- * when the rect lies on screen. Does nothing with the audit off or when the
- * last call named another moby or built no bounds.
+ * view-Z, and for a record the test culled, queries the vertices' own rect
+ * (occl_proj_bounds) and judges the outcome (occl_audit_judge). Does nothing
+ * with the audit off or when the last call named another moby or built no
+ * bounds.
  * @param moby The Moby address.
  * @param p The record's projected vertices.
  * @param n Their count. */
 static void moby_simple_occl_audit(uint32_t moby, const proj_xy* p, int n) {
     if (!occl_verify_on() || n <= 0 || s_simple_box.moby != moby || !s_simple_box.b.valid) return;
     const occl_box_t* b = &s_simple_box.b;
-    float x0, y0, x1, y1, vz;
-    occl_proj_bounds(p, n, &x0, &y0, &x1, &y1, &vz);
+    occl_audit_t e;
+    occl_audit_fill(&e, moby, 1, p, n);
     s_ver_simple_n++;
-    if (x0 < b->x0 || x1 > b->x1 || y0 < b->y0 || y1 > b->y1 || vz < b->vz) {
+    if (e.x0 < b->x0 || e.x1 > b->x1 || e.y0 < b->y0 || e.y1 > b->y1 || e.vz < b->vz) {
         s_ver_simple_out++;
         fprintf(stderr, "[occl-VERIFY-simple-UNCONTAINED vbl=%u] moby=%08x box=(%.1f,%.1f)-(%.1f,%.1f) vz=%.1f "
                         "verts=(%.1f,%.1f)-(%.1f,%.1f) vz=%.1f\n",
-                openpete_frame, moby, b->x0, b->y0, b->x1, b->y1, b->vz, x0, y0, x1, y1, vz);
+                openpete_frame, moby, b->x0, b->y0, b->x1, b->y1, b->vz, e.x0, e.y0, e.x1, e.y1, e.vz);
     }
-    if (s_simple_box.culled && !occl_query_at(x0, y0, x1, y1, vz, 0.0f, 0.0f)) {
-        const int zeropx = (x1 < s_view.xlo || x0 > s_view.xhi || y1 < 0.0f || y0 > 224.0f);
-        if (!zeropx) s_ver_wrong++;
-        fprintf(stderr, "[occl-VERIFY-simple-%s vbl=%u] moby=%08x fresh rect=(%.0f,%.0f)-(%.0f,%.0f) vz=%.0f\n",
-                zeropx ? "zeropx" : "WRONG", openpete_frame, moby, x0, y0, x1, y1, vz);
-    }
+    if (s_simple_box.culled)
+        occl_audit_judge(&e, occl_query_at(e.x0, e.y0, e.x1, e.y1, e.vz, 0.0f, 0.0f, &e.cam));
 }
 
 /** @brief The screen rect and nearest view-Z of a record's projected verts, in the units the occlusion query takes.
@@ -20680,7 +20797,9 @@ static void moby_reextract_body(CPUState* cpu) {
     moby_native_set_actor_front(cpu);
 
     /* Occlusion census: per-present culled count for the phase counters + an
-     * OPENPETE_MOBY_OCCL_DBG once-per-second summary line. */
+     * OPENPETE_MOBY_OCCL_DBG once-per-second summary line. The audit's
+     * refused records are re-asked first (the queue is empty with it off). */
+    occl_recheck_service();
     {
         static long prev_culled = 0;
         openpete_phase_set_count(OPPC_CULLED, (int)(s_occl_culled - prev_culled));
@@ -20706,9 +20825,11 @@ static void moby_reextract_body(CPUState* cpu) {
                         q[6]-pq[6], q[7]-pq[7], q[8]-pq[8]);
                 if (occl_verify_on())
                     fprintf(stderr, "[moby-occl-verify vbl=%u] would_cull=%ld wrong=%ld (%.3f%%) "
+                                    "refused=%ld unresolved=%ld pending=%d "
                                     "simple_audited=%ld simple_uncontained=%ld\n",
                             openpete_frame, s_ver_would, s_ver_wrong,
                             s_ver_would > 0 ? 100.0 * (double)s_ver_wrong / (double)s_ver_would : 0.0,
+                            s_ver_refused, s_ver_unresolved, s_recheck_n,
                             s_ver_simple_n, s_ver_simple_out);
                 for (int k = 0; k < OPENPETE_OCCL_Q_COUNT; k++) pq[k] = q[k];
                 for (int k = 0; k < 4; k++) pf[k] = s_occl_f[k];

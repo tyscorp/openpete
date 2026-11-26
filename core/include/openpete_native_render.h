@@ -3269,6 +3269,26 @@ void openpete_native_occl_live_camera(openpete_occl_camera *c);
  * @return 1 to cull, 0 to keep. */
 int  openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float vz_near,
                                 const openpete_occl_camera *cam);
+/** @brief Return the outcome of an occlusion query: refused, kept by depth, or culled, without counting it in the census.
+ *
+ * openpete_native_occl_query is this outcome under the configured slack,
+ * counted, and mapped to 1 for OPENPETE_OCCL_Q_CULLED and
+ * OPENPETE_OCCL_Q_OFFSCREEN. OPENPETE_OCCL_Q_NOGRID, _SUSPENDED, _STALE and
+ * _MOVED refuse: the held grid cannot answer for this camera.
+ * OPENPETE_OCCL_Q_TOONEAR and _VISIBLE answer that the rect may draw.
+ * @param sx0 Left edge in PSX screen pixels.
+ * @param sy0 Top edge in PSX screen pixels.
+ * @param sx1 Right edge in PSX screen pixels.
+ * @param sy1 Bottom edge in PSX screen pixels.
+ * @param vz_near Nearest view-Z of the object, including the caller's slack.
+ * @param cam The camera the caller's walk projects with.
+ * @param slack The view-Z margin by which occluding cells must be nearer.
+ * @return The OPENPETE_OCCL_Q_* outcome index. */
+int  openpete_native_occl_query_outcome(float sx0, float sy0, float sx1, float sy1, float vz_near,
+                                        const openpete_occl_camera *cam, float slack);
+/** @brief Return the view-Z slack openpete_native_occl_query applies (OPENPETE_MOBY_OCCL_SLACK, default 1500).
+ * @return The slack in view-Z units. */
+float openpete_native_occl_slack(void);
 /** @brief Build the occlusion grid headless at the host loop's present step, as a live present does.
  *
  * Headless never runs a live present, so without this no grid exists and

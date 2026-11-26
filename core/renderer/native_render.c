@@ -13484,21 +13484,18 @@ static int occl_uv_offscreen(const occl_uv_rect *r, float vz_near)
     return vz_near > 256.0f && (r->u1 < 0.0f || r->u0 > 1.0f || r->v1 < 0.0f || r->v0 > 1.0f);
 }
 
-int openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float vz_near,
-                               const openpete_occl_camera *cam)
+int openpete_native_occl_query_outcome(float sx0, float sy0, float sx1, float sy1, float vz_near,
+                                       const openpete_occl_camera *cam, float slack)
 {
     const occl_grid_t *G = occl_grid_reader();
     int refusal = occl_grid_refusal(G);
-    if (refusal >= 0) { s_occl_qstat[refusal]++; return 0; }
+    if (refusal >= 0) return refusal;
     occl_uv_rect r = occl_rect_uv(G, sx0, sy0, sx1, sy1);
-    if (occl_uv_offscreen(&r, vz_near)) {
-        s_occl_qstat[OPENPETE_OCCL_Q_OFFSCREEN]++;
-        return 1;
-    }
+    if (occl_uv_offscreen(&r, vz_near)) return OPENPETE_OCCL_Q_OFFSCREEN;
     /* Past the frustum reject, which is a test on the caller's own rect and
      * needs no depth: every verdict below reads the grid's cells, so it is
      * only valid while the two cameras agree. */
-    if (!occl_cam_in_bound(G, cam)) { s_occl_qstat[OPENPETE_OCCL_Q_MOVED]++; return 0; }
+    if (!occl_cam_in_bound(G, cam)) return OPENPETE_OCCL_Q_MOVED;
     if (occl_camdbg() && cam) {
         const openpete_occl_camera *gc = &G->cam;
         float dx = cam->pos[0] - gc->pos[0];
@@ -13512,8 +13509,8 @@ int openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float
                 gc->pos[0], gc->pos[1], gc->pos[2],
                 cam->pos[0], cam->pos[1], cam->pos[2]);
     }
-    float need = vz_near - occl_slack();
-    if (need <= 1.0f) { s_occl_qstat[OPENPETE_OCCL_Q_TOONEAR]++; return 0; }
+    float need = vz_near - slack;
+    if (need <= 1.0f) return OPENPETE_OCCL_Q_TOONEAR;
     /* One-cell inflation, then CLAMP to the grid: the off-grid part of a rect
      * is outside the visible extent (zero pixels by definition), so only the
      * on-grid slice needs the depth test. All-near cells there => every pixel
@@ -13529,14 +13526,21 @@ int openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float
         for (int cx = cx0; cx <= cx1; cx++) {
             float c = G->vz[cy * OCCL_GW + cx];
             if (c > scan_max) scan_max = c;
-            if (c >= need) {
-                s_occl_qstat[OPENPETE_OCCL_Q_VISIBLE]++; return 0;
-            }
+            if (c >= need) return OPENPETE_OCCL_Q_VISIBLE;
         }
     s_occl_last_scan_max = scan_max;   /* diagnostics: farthest cell in the culled rect */
-    s_occl_qstat[OPENPETE_OCCL_Q_CULLED]++;
-    return 1;
+    return OPENPETE_OCCL_Q_CULLED;
 }
+
+int openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float vz_near,
+                               const openpete_occl_camera *cam)
+{
+    const int o = openpete_native_occl_query_outcome(sx0, sy0, sx1, sy1, vz_near, cam, occl_slack());
+    s_occl_qstat[o]++;
+    return o == OPENPETE_OCCL_Q_CULLED || o == OPENPETE_OCCL_Q_OFFSCREEN;
+}
+
+float openpete_native_occl_slack(void) { return occl_slack(); }
 
 float openpete_native_occl_last_scan_max(void) { return s_occl_last_scan_max; }
 

@@ -7,4 +7,12 @@
 #   pan_max=N   at most N PAN-class wrong culls summed over the runs: a cached
 #               rect the camera turn carried past its own-motion inflation
 #               while the cull still judged it hidden
-summer_forest_pan | games/spyro-2/bk2/summer-forest-camera-pan.bk2 | 8500 | runs=3 pan_max=0
+#   nonpan_max=N, refreshed_max=N, simple_max=N
+#               at most N wrong culls of that class summed over the runs
+#   refused_min=N
+#               engagement: at least N audit queries refused and rechecked
+#               against a later grid, summed over the runs
+#   unresolved_frac=F
+#               at most F times the refused queries left unanswered by every
+#               grid of the next 16 VBLs
+summer_forest_pan | games/spyro-2/bk2/summer-forest-camera-pan.bk2 | 8500 | runs=3 pan_max=0 nonpan_max=0 refreshed_max=0 simple_max=0 refused_min=1 unresolved_frac=0.10
