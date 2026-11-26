@@ -17590,6 +17590,10 @@ static double moby_gpf_subtick(uint32_t moby, int gnow, double frac) {
  * exempt (drawn depth-off - never depth-occluded). Direct-mapped cache: a
  * collision only evicts (-> that moby extracts normally), never lies. */
 typedef struct { uint32_t moby; float x0, y0, x1, y1, vz_min; unsigned tick;
+                 /* Game ticks (openpete_loop_anchor_ticks) at the extraction:
+                  * the camera pan allowance is measured per tick, so its
+                  * staleness is counted in ticks, not in VBLs (`tick`). */
+                 uint32_t sim_tick;
                  float mot, mot_vz;      /* measured screen / view-Z motion per VBL (px, world units) */
                  /* Anchor for the extraction-free bounds refresh below: the
                   * record's origin projection, view-space TR.z, model radius
@@ -17600,6 +17604,17 @@ typedef struct { uint32_t moby; float x0, y0, x1, y1, vz_min; unsigned tick;
 #define OCCL_HASH_N 1024                       /* power of two; ~500 live mobys max */
 static occl_rect_t s_occl_cache[OCCL_HASH_N];
 static float s_occl_pan_px = 0.0f;             /* px/tick pan allowance (orchestrator) */
+
+/** @brief The camera-pan part of the occlusion query inflation, in PSX screen px, for bounds a given number of game ticks old.
+ *
+ * s_occl_pan_px is one tick's pan. The camera a present shows lies between
+ * the last two ticks, so bounds taken k ticks ago trail it by at most k + 1
+ * ticks of pan. The allowance is scaled by the view's H scale.
+ * @param ticks Game ticks since the bounds were taken.
+ * @return The inflation. */
+static float occl_pan_inflation(uint32_t ticks) {
+    return ((float)ticks + 1.0f) * s_occl_pan_px * (float)s_view.s;
+}
 /* s_occl_culled / s_occl_seen: census (records, re-extract + reveal passes) -
  * declared above append_revealed_regular, which is also a cull site. */
 
@@ -17733,9 +17748,10 @@ static int occl_refresh_bounds(CPUState* cpu, uint32_t moby, const occl_rect_t* 
  * extracted, which refreshes them. Bounds older than two VBLs are rebuilt
  * around the moby's current origin (occl_refresh_bounds), which owes no
  * own-motion allowance; without a usable anchor the moby is extracted. The
- * query rect inflates by 8 px plus the bounds' age times the camera pan and
- * the moby's own-motion allowance, and the depth by a margin scaled the same
- * way. A visible verdict not taken on bounds a decode measured at this VBL
+ * query rect inflates by 8 px, plus one tick's camera pan per game tick of
+ * the bounds' age plus one (occl_pan_inflation), plus the moby's own-motion
+ * allowance per VBL of their age plus one; the depth inflates by a margin
+ * per VBL the same way. A visible verdict not taken on bounds a decode measured at this VBL
  * (no entry, no anchor, the rebuilt rect, or cached bounds whose inflation
  * grew with their age) sets s_occl_fallback: such a verdict is provisional
  * until occl_confirm tests the bounds of the decode that follows it.
@@ -17748,6 +17764,7 @@ static int occl_record_decide(CPUState* cpu, uint32_t moby) {
     const occl_rect_t* e = &s_occl_cache[occl_slot(moby)];
     if (e->moby != moby) { s_occl_f[1]++; s_occl_fallback = 1; return 0; }   /* no cached bounds -> extract (refreshes) */
     unsigned age = openpete_frame - e->tick;
+    uint32_t pan_age = openpete_loop_anchor_ticks() - e->sim_tick;
     float rx0 = e->x0, ry0 = e->y0, rx1 = e->x1, ry1 = e->y1, rvz = e->vz_min;
     float own;
     const int refreshed = age > 2u;
@@ -17759,12 +17776,13 @@ static int occl_record_decide(CPUState* cpu, uint32_t moby) {
          * bounded by its model radius, so no own-motion allowance is owed - only
          * the camera's pan across this present. */
         age = 0u;
+        pan_age = 0u;
         own = 0.0f;
     } else {
         /* Own-motion allowance ≈ 256 world units/tick at an overestimated H≈400:
          * px = 400·256/vz, scaled by the view's H scale (the pan allowance is
          * measured at the canonical H and scaled the same way). Camera pan
-         * rides s_occl_pan_px (measured per tick).
+         * is aged in ticks (occl_pan_inflation).
          * Own-motion allowance: the 256-u/tick model floor OR the moby's MEASURED
          * screen motion ×1.5, whichever is larger - fast movers (birds ~750 u/tick)
          * beat the model by 3× and could stay culled ≤3 presents while emerging
@@ -17774,7 +17792,7 @@ static int occl_record_decide(CPUState* cpu, uint32_t moby) {
         if (e->mot * 1.5f > own) own = e->mot * 1.5f;
     }
     float aged = (float)age + 1.0f;
-    float inf = 8.0f + aged * (s_occl_pan_px * (float)s_view.s + own);
+    float inf = 8.0f + occl_pan_inflation(pan_age) + aged * own;
     float vzs = 600.0f;
     if (e->mot_vz * 1.5f > vzs) vzs = e->mot_vz * 1.5f;
     openpete_occl_camera qcam; ngte_occl_camera(&s_view, &qcam);
@@ -17801,7 +17819,7 @@ typedef struct { float x0, y0, x1, y1, vz; int valid; } occl_box_t;
 static int occl_box_decide(uint32_t moby, const occl_box_t* b) {
     if (moby_is_hud(moby)) { s_occl_f[0]++; return 0; }
     if (!b->valid) { s_occl_f[2]++; return 0; }
-    const float inf = 8.0f + s_occl_pan_px * (float)s_view.s;
+    const float inf = 8.0f + occl_pan_inflation(0u);
     openpete_occl_camera qcam; ngte_occl_camera(&s_view, &qcam);
     return openpete_native_occl_query(b->x0 - inf, b->y0 - inf, b->x1 + inf, b->y1 + inf,
                                       b->vz - 600.0f, &qcam);
@@ -18177,7 +18195,7 @@ static int occl_query_at(float x0, float y0, float x1, float y1, float vzmin,
     float vzm = vzmin < 512.0f ? 512.0f : vzmin;
     float own = 102400.0f * (float)s_view.s / vzm;
     if (mot * 1.5f > own) own = mot * 1.5f;
-    float inf = 8.0f + (s_occl_pan_px * (float)s_view.s + own);
+    float inf = 8.0f + occl_pan_inflation(0u) + own;
     float vzs = 600.0f;
     if (mot_vz * 1.5f > vzs) vzs = mot_vz * 1.5f;
     openpete_occl_camera qcam; ngte_occl_camera(&s_view, &qcam);
@@ -18322,7 +18340,7 @@ static void occl_cache_update(CPUState* cpu, uint32_t moby, const proj_xy* p, in
         e->mot = 0.0f; e->mot_vz = 0.0f;
     }
     e->moby = moby; e->x0 = x0; e->y0 = y0; e->x1 = x1; e->y1 = y1;
-    e->vz_min = vzm; e->tick = openpete_frame;
+    e->vz_min = vzm; e->tick = openpete_frame; e->sim_tick = openpete_loop_anchor_ticks();
     /* Anchor for the extraction-free refresh: this pose's origin projection and
      * TR.z, plus the model radius (AnimationHeader byte[7] << 4, the same
      * bounding radius the .s cone cull biases by @8001F2A0) and the class the
