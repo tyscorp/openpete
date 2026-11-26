@@ -38,6 +38,21 @@ extern "C" {
 int sector_pvs_lookup(const uint8_t* b, uint32_t len, uint32_t tree, const int32_t pos[3],
                       uint8_t vis[256], int* open);
 
+/** @brief Looks the tree up one lattice step from a position, open outside the 128-cell lattice.
+ *
+ * The point is `p` plus `d` cells on each axis; outside world 0 to 262143 on
+ * an axis it is open without a lookup (the descent's coordinate would wrap
+ * into another cell).
+ * @param b The bytes holding the tree.
+ * @param len Their length.
+ * @param tree The offset of the root node in b.
+ * @param p The position, world units.
+ * @param d The step in cells.
+ * @param vis Receives the point's 256 visibility bytes, all 0 at an open point.
+ * @return 1 when the point is open, else 0. */
+int sector_pvs_lookup_step(const uint8_t* b, uint32_t len, uint32_t tree, const int32_t p[3], const int d[3],
+                           uint8_t vis[256]);
+
 /** Lattice points of the 3x3x3 ring around a cell: index (dx+1)*9 + (dy+1)*3
  * + (dz+1), the centre at SECTOR_PVS_CENTRE, the opposite of k at 26 - k. */
 #define SECTOR_PVS_RING   27
@@ -70,6 +85,28 @@ void sector_pvs_ring(const uint8_t* b, uint32_t len, uint32_t tree, const int32_
  * @param out The set to add to, 0xFF per admitted sector. */
 void sector_pvs_pairs(const uint8_t nb[SECTOR_PVS_RING][256], const uint8_t open[SECTOR_PVS_RING],
                       int open_agrees, uint32_t n, uint8_t out[256]);
+
+/** The column rule's reach: the cells straight above a position tested for
+ * an open one, and the cells straight below whose lists it admits. */
+#define SECTOR_PVS_COLUMN_GATE  2
+#define SECTOR_PVS_COLUMN_DEPTH 4
+
+/** @brief Admits what the cells straight below a position list when a cell straight above it is open.
+ *
+ * When one of the SECTOR_PVS_COLUMN_GATE cells straight above `p`'s cell (+Z)
+ * is open, every sector one of the SECTOR_PVS_COLUMN_DEPTH cells straight
+ * below it lists is set in `out`. A camera at the top of the tree looks down
+ * past a cell whose list was computed from below the surface; the cells under
+ * it list what that view reaches. `out` is only set, never cleared.
+ * @param b The bytes holding the tree.
+ * @param len Their length.
+ * @param tree The offset of the root node in b.
+ * @param p The position, world units.
+ * @param n The sector count to test, at most 256.
+ * @param out The set to add to, 0xFF per admitted sector.
+ * @return The sectors set that `out` did not hold, -1 when no cell above is open. */
+int sector_pvs_column(const uint8_t* b, uint32_t len, uint32_t tree, const int32_t p[3], uint32_t n,
+                      uint8_t out[256]);
 
 struct CPUState;
 
@@ -107,6 +144,8 @@ typedef struct {
     int32_t cur_cell[3], prev_cell[3];
     unsigned cur_gen, prev_gen;
     int cur_ok, prev_ok;
+    int column;                   /* nonzero: C' also takes sector_pvs_column */
+    int col_added;                /* the sectors the column added to C' at the last recompute (-1: gate closed) */
 } sector_pvs_filled_t;
 
 /* sector_pvs_filled_step's result bits. */
@@ -115,9 +154,10 @@ typedef struct {
 
 /** @brief Advances the filled set one tick: C' at the tick camera's cell, U over two ticks.
  *
- * C' (`base` plus the opposite-pair admissions, an open partner agreeing)
- * is recomputed when the cell or the tree generation changed, else the
- * previous tick's C' carries over. U is C' united with the previous tick's
+ * C' (`base` plus the opposite-pair admissions, an open partner agreeing,
+ * plus sector_pvs_column's admissions when F->column is set) is recomputed
+ * when the cell or the tree generation changed, else the previous tick's C'
+ * carries over. U is C' united with the previous tick's
  * C' when the two cells are within Chebyshev distance 1 and the generation
  * did not change. Out-of-lattice points are open (sector_pvs_ring).
  * @param F The filled state.

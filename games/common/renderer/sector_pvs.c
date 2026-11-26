@@ -83,21 +83,48 @@ int sector_pvs_lookup(const uint8_t* b, uint32_t len, uint32_t t, const int32_t 
     return n;
 }
 
+int sector_pvs_lookup_step(const uint8_t* b, uint32_t len, uint32_t tree, const int32_t p[3], const int d[3],
+                           uint8_t vis[256]) {
+    int32_t q[3];
+    for (int a = 0; a < 3; a++) {
+        q[a] = p[a] + d[a] * SECTOR_PVS_CELL;
+        if (q[a] < 0 || q[a] >= 128 * SECTOR_PVS_CELL) { memset(vis, 0, 256); return 1; }
+    }
+    int open = 1;
+    sector_pvs_lookup(b, len, tree, q, vis, &open);
+    if (open) memset(vis, 0, 256);
+    return open;
+}
+
 void sector_pvs_ring(const uint8_t* b, uint32_t len, uint32_t tree, const int32_t p[3],
                      uint8_t nb[SECTOR_PVS_RING][256], uint8_t open[SECTOR_PVS_RING]) {
     for (int k = 0; k < SECTOR_PVS_RING; k++) {
         const int d[3] = { k / 9 - 1, (k / 3) % 3 - 1, k % 3 - 1 };
-        int32_t q[3];
-        int out = 0;
-        for (int a = 0; a < 3; a++) {
-            q[a] = p[a] + d[a] * SECTOR_PVS_CELL;
-            out |= q[a] < 0 || q[a] >= 128 * SECTOR_PVS_CELL;
-        }
-        int op = 1;
-        if (!out) sector_pvs_lookup(b, len, tree, q, nb[k], &op);
-        open[k] = (uint8_t)op;
-        if (op) memset(nb[k], 0, 256);
+        open[k] = (uint8_t)sector_pvs_lookup_step(b, len, tree, p, d, nb[k]);
     }
+}
+
+int sector_pvs_column(const uint8_t* b, uint32_t len, uint32_t tree, const int32_t p[3], uint32_t n,
+                      uint8_t out[256]) {
+    uint8_t vis[256];
+    int gate = 0;
+    for (int h = 1; h <= SECTOR_PVS_COLUMN_GATE && !gate; h++) {
+        const int d[3] = { 0, 0, h };
+        gate = sector_pvs_lookup_step(b, len, tree, p, d, vis);
+    }
+    if (!gate) return -1;
+    if (n > 256u) n = 256u;
+    int added = 0;
+    for (int k = 1; k <= SECTOR_PVS_COLUMN_DEPTH; k++) {
+        const int d[3] = { 0, 0, -k };
+        if (sector_pvs_lookup_step(b, len, tree, p, d, vis)) continue;
+        for (uint32_t i = 0; i < n; i++) {
+            if (!vis[i] || out[i]) continue;
+            out[i] = 0xFF;
+            added++;
+        }
+    }
+    return added;
 }
 
 void sector_pvs_pairs(const uint8_t nb[SECTOR_PVS_RING][256], const uint8_t open[SECTOR_PVS_RING],
@@ -162,6 +189,7 @@ int sector_pvs_filled_step(sector_pvs_filled_t* F, const sector_pvs_tree_t* T, c
         memcpy(F->cur, base, sizeof F->cur);
         sector_pvs_ring(T->b, T->len, 0, p, nb, open);
         sector_pvs_pairs((const uint8_t (*)[256])nb, open, 1, n, F->cur);
+        F->col_added = F->column ? sector_pvs_column(T->b, T->len, 0, p, n, F->cur) : -1;
         memcpy(F->cur_cell, cell, sizeof cell);
         F->cur_gen = T->gen;
         F->cur_ok = 1;

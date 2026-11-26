@@ -9603,7 +9603,9 @@ static void tvis_calibrate(CPUState* cpu, const tvis_sphere* S, uint32_t list, u
  * C' of the previous tick when the two tick cells are within Chebyshev
  * distance 1 and the tree snapshot did not change between them, so a sub-tick
  * present between the two tick cameras has both cells' sets
- * (sector_pvs_filled_step). U also holds every second-walk sector
+ * (sector_pvs_filled_step). C' also holds what the 1 to 4 cells straight
+ * below the camera's cell list when a cell 1 or 2 straight above it is open
+ * (sector_pvs_column). U also holds every second-walk sector
  * (sf_admit_second_walk) at every camera position. The sky draw applies the
  * same rule to the sky tree (cyclorama.c) and reports into this file's load
  * windows (terrain_sector_filled_note_sky). Everything here runs on the sim
@@ -9627,17 +9629,21 @@ static unsigned long s_sf_ticks OP_GUARDED_BY(sim), s_sf_computes OP_GUARDED_BY(
                      s_sf_refreshes OP_GUARDED_BY(sim), s_sf_walks_differ OP_GUARDED_BY(sim),
                      s_sf_added OP_GUARDED_BY(sim), s_sf_unions OP_GUARDED_BY(sim);
 static unsigned long s_sf_water OP_GUARDED_BY(sim);   /* the sectors sf_admit_second_walk added to U, run total */
+static unsigned long s_sf_col OP_GUARDED_BY(sim);     /* the sectors sector_pvs_column added to C', run total */
 
 /* One load window: the canonical walks between two changes of (level,
  * sub-area). `notree` counts the walks that ran frustum because the level
  * had no tree or its lookup flag was 0; `pred`/`pred_rej` count
  * terrain_sector_admitted's filled answers and its rejections; `water` sums
  * the sectors sf_admit_second_walk added to U and `water_walks` counts the
- * walks where it added one. */
+ * walks where it added one; `col` sums the sectors sector_pvs_column added
+ * to C' at a recompute, `col_walks` counts the recomputes where it added one
+ * and `col_gates` those where a cell above the camera's was open. */
 typedef struct {
     int32_t level, area;
     unsigned long walks, notree, ticks, computes, walks_differ, added, pred, pred_rej;
     unsigned long water, water_walks;   /* second-walk sectors added to U */
+    unsigned long col, col_walks, col_gates;   /* column sectors added to C' */
     unsigned long sky, sky_computes, sky_differ, sky_added;   /* filled sky draws */
     unsigned long contain, contain_rej;   /* terrain_point_admitted answers and rejections */
 } sf_window_t;
@@ -9658,10 +9664,11 @@ static void sf_window_close(void) OP_REQUIRES(sim) {
     fprintf(stderr, "[sector-filled-window] frame=%u level=%d area=%d walks=%lu notree=%lu ticks=%lu "
                     "computes=%lu walks_differ=%lu added=%lu pred=%lu pred_rejected=%lu sky=%lu "
                     "sky_computes=%lu sky_differ=%lu sky_added=%lu contain=%lu contain_rejected=%lu water=%lu "
-                    "water_walks=%lu engaged=%d\n",
+                    "water_walks=%lu col=%lu col_walks=%lu col_gates=%lu engaged=%d\n",
             openpete_frame, w->level, w->area, w->walks, w->notree, w->ticks, w->computes,
             w->walks_differ, w->added, w->pred, w->pred_rej, w->sky, w->sky_computes, w->sky_differ,
-            w->sky_added, w->contain, w->contain_rej, w->water, w->water_walks, engaged);
+            w->sky_added, w->contain, w->contain_rej, w->water, w->water_walks, w->col, w->col_walks,
+            w->col_gates, engaged);
     s_sf_windows++;
     s_sf_windows_engaged += (unsigned long)engaged;
     s_sf_total.walks += w->walks; s_sf_total.notree += w->notree; s_sf_total.ticks += w->ticks;
@@ -9670,6 +9677,7 @@ static void sf_window_close(void) OP_REQUIRES(sim) {
     s_sf_total.sky += w->sky; s_sf_total.sky_computes += w->sky_computes;
     s_sf_total.sky_differ += w->sky_differ; s_sf_total.sky_added += w->sky_added;
     s_sf_total.water += w->water; s_sf_total.water_walks += w->water_walks;
+    s_sf_total.col += w->col; s_sf_total.col_walks += w->col_walks; s_sf_total.col_gates += w->col_gates;
     s_sf_win_open = 0;
 }
 
@@ -9682,11 +9690,13 @@ static void sf_exit_report(void) {
     sf_window_close();
     fprintf(stderr, "sector-filled: windows=%lu engaged=%lu walks=%lu notree=%lu ticks=%lu computes=%lu "
                     "refreshes=%lu unions=%lu walks_differ=%lu added=%lu pred=%lu pred_rejected=%lu sky=%lu "
-                    "sky_computes=%lu sky_differ=%lu sky_added=%lu water=%lu water_walks=%lu\n",
+                    "sky_computes=%lu sky_differ=%lu sky_added=%lu water=%lu water_walks=%lu col=%lu col_walks=%lu "
+                    "col_gates=%lu\n",
             s_sf_windows, s_sf_windows_engaged, s_sf_total.walks, s_sf_total.notree, s_sf_total.ticks,
             s_sf_total.computes, s_sf_refreshes, s_sf_unions, s_sf_total.walks_differ, s_sf_total.added,
             s_sf_total.pred, s_sf_total.pred_rej, s_sf_total.sky, s_sf_total.sky_computes,
-            s_sf_total.sky_differ, s_sf_total.sky_added, s_sf_total.water, s_sf_total.water_walks);
+            s_sf_total.sky_differ, s_sf_total.sky_added, s_sf_total.water, s_sf_total.water_walks,
+            s_sf_total.col, s_sf_total.col_walks, s_sf_total.col_gates);
 }
 
 /** @brief Opens a new load window when the level or sub-area differs from the open one's, closing that first; counts the walk.
@@ -9718,15 +9728,21 @@ static void sf_tree_refresh(CPUState* cpu) OP_REQUIRES(sim) {
  * @param vis Receives the 256 visibility bytes, all 0 at an open point.
  * @return 1 when the point is open, else 0. */
 static int sf_lookup(const int32_t p[3], const int d[3], uint8_t vis[256]) OP_REQUIRES(sim) {
-    int32_t q[3];
-    for (int a = 0; a < 3; a++) {
-        q[a] = p[a] + d[a] * SECTOR_PVS_CELL;
-        if (q[a] < 0 || q[a] >= 128 * SECTOR_PVS_CELL) { memset(vis, 0, 256); return 1; }
+    return sector_pvs_lookup_step(s_sf_tree.b, s_sf_tree.len, 0, p, d, vis);
+}
+
+/** @brief Marks the second-walk sectors (thdr_second_walk) of a sector table.
+ * @param cpu The guest CPU state, read only.
+ * @param table The guest sector pointer table, 0 for none (marks nothing).
+ * @param n The sector count, at most 256.
+ * @param out Receives 0xFF per second-walk sector, 0 for every other byte. */
+static void sf_second_walk_set(CPUState* cpu, uint32_t table, uint32_t n, uint8_t out[256]) {
+    memset(out, 0, 256);
+    if (!game_layout.terrain.second_pass_flag || !table) return;
+    for (uint32_t i = 0; i < n && i < 256u; i++) {
+        const uint32_t sp = rd(cpu, table + i * 4u);
+        out[i] = sp && thdr_second_walk(thdr_flags(rd(cpu, sp + 4u))) ? 0xFFu : 0u;
     }
-    int open = 0;
-    sector_pvs_lookup(s_sf_tree.b, s_sf_tree.len, 0, q, vis, &open);
-    if (open) memset(vis, 0, 256);
-    return open;
 }
 
 /** @brief Adds every second-walk sector (thdr_second_walk) to the drawn set U.
@@ -9742,15 +9758,25 @@ static int sf_lookup(const int32_t p[3], const int d[3], uint8_t vis[256]) OP_RE
  * @param n The sector count, at most 256.
  * @return The sectors U did not already hold. */
 static int sf_admit_second_walk(CPUState* cpu, uint32_t n) OP_REQUIRES(sim) {
-    if (!game_layout.terrain.second_pass_flag || !s_sf_sector_ptr) return 0;
+    uint8_t w[256];
+    sf_second_walk_set(cpu, s_sf_sector_ptr, n, w);
     int added = 0;
     for (uint32_t i = 0; i < n; i++) {
-        const uint32_t sp = rd(cpu, s_sf_sector_ptr + i * 4u);
-        if (!sp || !thdr_second_walk(thdr_flags(rd(cpu, sp + 4u)))) continue;
+        if (!w[i]) continue;
         added += !s_sf.u[i];
         s_sf.u[i] = 0xFFu;
     }
     return added;
+}
+
+/** @brief Counts one recompute's column admissions into the run and window totals.
+ * @param added The sectors sector_pvs_column added to C', -1 when no cell above was open. */
+static void sf_note_column(int added) OP_REQUIRES(sim) {
+    if (added < 0) return;
+    s_sf_win.col_gates++;
+    s_sf_col += (unsigned long)added;
+    s_sf_win.col += (unsigned long)added;
+    s_sf_win.col_walks += added > 0;
 }
 
 /** @brief Advances the filled set on a canonical walk: snapshot refresh, C' of the tick, U over two ticks.
@@ -9774,12 +9800,17 @@ static void sf_tick(CPUState* cpu, uint32_t sectorCnt) OP_REQUIRES(sim) {
     const uint8_t* v = s_sf_v;
     s_sf_ticks++;
     s_sf_win.ticks++;
+    s_sf.column = 1;
     const int r = sector_pvs_filled_step(&s_sf, &s_sf_tree, p, n, v);
     const int water = sf_admit_second_walk(cpu, n);
     s_sf_water += (unsigned long)water;
     s_sf_win.water += (unsigned long)water;
     s_sf_win.water_walks += water > 0;
-    if (r & SECTOR_PVS_COMPUTED) { s_sf_computes++; s_sf_win.computes++; }
+    if (r & SECTOR_PVS_COMPUTED) {
+        s_sf_computes++;
+        s_sf_win.computes++;
+        sf_note_column(s_sf.col_added);
+    }
     if (r & SECTOR_PVS_UNIONED) s_sf_unions++;
     int added = 0;
     for (uint32_t i = 0; i < n; i++) added += s_sf.u[i] && !v[i];
@@ -9791,9 +9822,9 @@ static void sf_tick(CPUState* cpu, uint32_t sectorCnt) OP_REQUIRES(sim) {
     const char* e = getenv("OPENPETE_SECTOR_FILLED_CENSUS");
     if (e && *e && *e != '0' && (s_sf_ticks % 300u) == 1u)
         fprintf(stderr, "[sector-filled] frame=%u ticks=%lu computes=%lu refreshes=%lu "
-                        "unions=%lu walks_differ=%lu added=%lu water=%lu water_now=%d gen=%u\n",
+                        "unions=%lu walks_differ=%lu added=%lu water=%lu water_now=%d col=%lu gen=%u\n",
                 openpete_frame, s_sf_ticks, s_sf_computes, s_sf_refreshes, s_sf_unions,
-                s_sf_walks_differ, s_sf_added, s_sf_water, water, s_sf_tree.gen);
+                s_sf_walks_differ, s_sf_added, s_sf_water, water, s_sf_col, s_sf_tree.gen);
 }
 
 void terrain_sector_filled_note_sky(int computed, int added) OP_REQUIRES(sim) {
@@ -9855,7 +9886,8 @@ int terrain_sector_admitted(uint32_t i) OP_REQUIRES(sim) {
  * partner agreeing), with each extra sector's Chebyshev lattice distance to
  * the nearest listing point and, for a sector only D1 admits, the listing
  * neighbours' direction. =cal prints a [secvis-cal] line per walk instead.
- * OPENPETE_SECTOR_VIS_SWEEP=<vbl> prices V, C, C' and D1 over every cell of
+ * OPENPETE_SECTOR_VIS_SWEEP=<vbl> prices V, C, C', D1 and the column rule
+ * (sector_pvs_column: cells changed, sectors added) over every cell of
  * the level's tree once ([secvis-sweep], [secvis-edge]). OPENPETE_SECVIS_OWNER=1
  * keys the effect pools ([secvis-owner]). Reads guest RAM only; never
  * changes what draws. */
@@ -10033,6 +10065,10 @@ typedef struct {
     double v, c, c2, d1, open_only;
     long cells, cells_c2, cells_d1;
     int best_n[3], best_xyz[3][3], best_sec[3];
+    uint8_t water[256];           /* the second-walk sectors (sf_admit_second_walk's set) */
+    long col_cells;               /* cells where sector_pvs_column adds to V, C' and the water */
+    double col_added;             /* the sectors it adds there */
+    int col_max;
 } secvis_sweep_sums_t;
 
 /** @brief Returns the id of `vis` in the interned lists, adding it when new (0 when the table is full).
@@ -10110,12 +10146,32 @@ static void secvis_sweep_rank(secvis_sweep_sums_t* S, int no, int sec, const int
     }
 }
 
+/** @brief Counts what sector_pvs_column adds at a cell beyond V, the pair admissions and the water sectors.
+ * @param c The cell.
+ * @param v The cell's list.
+ * @param cp The cell's pair admissions, an open partner agreeing.
+ * @param n The sector count, at most 256.
+ * @param S The sums, accumulated. */
+static void secvis_sweep_column(const int c[3], const uint8_t v[256], const uint8_t cp[256], uint32_t n,
+                                secvis_sweep_sums_t* S) OP_REQUIRES(sim) {
+    uint8_t b[256];
+    for (int i = 0; i < 256; i++) b[i] = v[i] | cp[i] | S->water[i];
+    const int32_t q[3] = { c[0] * SECTOR_PVS_CELL + 1024, c[1] * SECTOR_PVS_CELL + 1024,
+                           c[2] * SECTOR_PVS_CELL + 1024 };
+    const int added = sector_pvs_column(s_sf_tree.b, s_sf_tree.len, 0, q, n, b);
+    if (added <= 0) return;
+    S->col_cells++;
+    S->col_added += added;
+    if (added > S->col_max) S->col_max = added;
+}
+
 /** @brief Prices one non-open cell: |V| and C, C', D1 minus V, the open-only admissions, the edge rank.
  * @param L The lattice.
  * @param c The cell.
  * @param n The sector count, at most 256.
  * @param S The sums, accumulated. */
-static void secvis_sweep_cell(const secvis_lattice_t* L, const int c[3], uint32_t n, secvis_sweep_sums_t* S) {
+static void secvis_sweep_cell(const secvis_lattice_t* L, const int c[3], uint32_t n, secvis_sweep_sums_t* S)
+    OP_REQUIRES(sim) {
     uint8_t nb[SECTOR_PVS_RING][256], open[SECTOR_PVS_RING], cs[256] = { 0 }, cp[256] = { 0 }, d1[256] = { 0 };
     secvis_lattice_ring(L, c, nb, open);
     sector_pvs_pairs((const uint8_t (*)[256])nb, open, 0, n, cs);
@@ -10135,6 +10191,7 @@ static void secvis_sweep_cell(const secvis_lattice_t* L, const int c[3], uint32_
     }
     S->v += nv; S->c += nc; S->c2 += nc2; S->d1 += nd; S->open_only += no;
     S->cells++;
+    secvis_sweep_column(c, v, cp, n, S);
     S->cells_c2 += nc2 > nc;
     S->cells_d1 += nd > 0;
     if (first_no >= 0) secvis_sweep_rank(S, no, first_no, c);
@@ -10177,6 +10234,7 @@ static void secvis_sweep(CPUState* cpu, const tvis_sphere* T, uint32_t sectorCnt
         secvis_sweep_sums_t S;
         memset(&S, 0, sizeof S);
         const uint32_t n = sectorCnt < 256u ? sectorCnt : 256u;
+        sf_second_walk_set(cpu, T->sectorPtr, n, S.water);
         for (int x = 0; x < SW_N; x++)
             for (int y = 0; y < SW_N; y++)
                 for (int z = 0; z < SW_N; z++) {
@@ -10187,10 +10245,11 @@ static void secvis_sweep(CPUState* cpu, const tvis_sphere* T, uint32_t sectorCnt
         const double cells = S.cells ? (double)S.cells : 1.0;
         fprintf(stderr, "[secvis-sweep] level=0 sectors=%u tree=%u lists=%d%s maxidx=%d points=%ld open=%ld "
                         "cells=%ld mean|V|=%.2f mean|C\\V|=%.3f mean|C'\\V|=%.3f mean|D1\\V|=%.3f "
-                        "mean_open_only=%.3f cells_C'>C=%ld cells_D1>V=%ld\n",
+                        "mean_open_only=%.3f cells_C'>C=%ld cells_D1>V=%ld col_cells=%ld col_added=%.0f "
+                        "col_max=%d\n",
                 sectorCnt, s_sf_tree.len, L.nl - 1, L.nl >= SW_MAXL ? "(cap)" : "", L.maxidx,
                 (long)SW_N * SW_N * SW_N, L.open, S.cells, S.v / cells, S.c / cells, S.c2 / cells,
-                S.d1 / cells, S.open_only / cells, S.cells_c2, S.cells_d1);
+                S.d1 / cells, S.open_only / cells, S.cells_c2, S.cells_d1, S.col_cells, S.col_added, S.col_max);
         secvis_sweep_edges(cpu, T, &S);
     }
     free(L.id); free(L.lists); free(L.hash);
