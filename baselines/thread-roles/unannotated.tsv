@@ -1194,6 +1194,7 @@ core/renderer/native_render.c	-	s_anchor_ledger	static	-
 core/renderer/native_render.c	-	s_area_fade	static	-	
 core/renderer/native_render.c	-	s_area_fade_presents	static	-	
 core/renderer/native_render.c	-	s_background_requested	static	-	
+core/renderer/native_render.c	-	s_bdl	static	-	presenting thread: the present thread while eager production is active, the host loop otherwise; the display handoff orders them
 core/renderer/native_render.c	-	s_bdt	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	-	s_box	static	-	
 core/renderer/native_render.c	-	s_bw	static	-	
@@ -1472,6 +1473,7 @@ core/renderer/native_render.c	-	s_rim_run_n	static	-
 core/renderer/native_render.c	-	s_rim_runs	static	-	
 core/renderer/native_render.c	-	s_rim_tex_runs	static	-	
 core/renderer/native_render.c	-	s_ring	static	-	
+core/renderer/native_render.c	-	s_ring_bd_keep	static	-	ring_mx, as s_ring; written by the presenting thread, read by retire
 core/renderer/native_render.c	-	s_ring_census	static	-	
 core/renderer/native_render.c	-	s_ring_head	static	-	
 core/renderer/native_render.c	-	s_ring_mx	static	-	

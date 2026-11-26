@@ -867,6 +867,10 @@ static uint32_t     s_scene_id_next = 1;
  * to know which of its entries the live scene still holds. */
 static uint32_t     s_scene_epoch = 1;
 static struct { unsigned published, refused_full, superseded, presented; } s_ring_census;
+/* The ring slot of the last world present displayed, kept from retiring as
+ * the live freeze-backdrop source (freeze_bd_note_present), -1 none. Written
+ * by the presenting thread under ring_mx; read by retire under it. */
+static int          s_ring_bd_keep = -1;
 
 
 /* Feed-time accumulation for the 2D-overlay carry (committed by
@@ -5729,10 +5733,12 @@ static bool scene_is_2d_only(const scene_tri_t* scene, int n) {
     return true;
 }
 
-/** @brief Return whether a composed scene qualifies as the freeze-backdrop source.
+/** @brief Return whether a scene with a given retained terrain content qualifies as the freeze-backdrop source.
  *
- * Shared by the live compose and the capture-time snapshot so both use one
- * definition of a scene worth freezing.
+ * The canonical capture pins its scene as the backdrop source by it
+ * (hold_retain_canonical, with the content of the state the scene's build
+ * wrote), and every present tests itself by it (scene_is_freeze_source), so
+ * both use one definition of a scene worth freezing.
  *
  * A source scene carries the game's own geometry and is not itself a freeze
  * scene (bit 31 of the freeze word clear). Past that the 3D content sorts it,
@@ -5744,7 +5750,7 @@ static bool scene_is_2d_only(const scene_tri_t* scene, int n) {
  *   qualifies.
  * - Terrain drawn: an ordinary gameplay frame. Terrain reaches the present by
  *   one of two routes and either qualifies alone: the retained cache's
- *   selected state paints a live sector (frame_content() > 0), or the scene
+ *   state paints a live sector (@p tc > 0), or the scene
  *   carries the game's WORLD triangles, batched on the CPU. A present whose
  *   terrain is all cache-drawn carries no WORLD triangle and, when the moby
  *   path is off or no moby is in view, no ACTOR triangle either, so the
@@ -5753,7 +5759,7 @@ static bool scene_is_2d_only(const scene_tri_t* scene, int n) {
  *   unusable - a delayed or split scene, a software device - because the
  *   feeder then stages an empty state per scene, which reads the same as a
  *   genuine per-scene skip; the CPU route covers those.
- * - Retained path not in use (frame_content() < 0): scene_has_world decides,
+ * - Retained path not in use (@p tc < 0): scene_has_world decides,
  *   as every world triangle is on the CPU.
  * - 3D without terrain while the retained path is in use: the degenerate
  *   pause-entry transition, where the terrain feed cuts out one present
@@ -5763,21 +5769,33 @@ static bool scene_is_2d_only(const scene_tri_t* scene, int n) {
  *   gameplay frame stands.
  *
  * The scene-content clause matches scene_content_test: a present whose only
- * content is the selected retained terrain composes, so it is a source.
- * frame_content() reads the state selected for this present, so the caller
- * selects by stamp first.
- * @param scene   The present's scene triangle buffer.
+ * content is the retained terrain composes, so it is a source.
+ * @param scene   The scene triangle buffer.
  * @param n       Triangle count of @p scene.
- * @param sfreeze The present's freeze word; bit 31 set marks a freeze scene.
+ * @param sfreeze The scene's freeze word; bit 31 set marks a freeze scene.
+ * @param tc      The scene's retained terrain content: 1 a live sector, 0
+ *                none, -1 the retained path not in use.
  * @return true when the scene is a freeze-backdrop source. */
-static bool scene_is_freeze_source(const scene_tri_t* scene, int n, uint32_t sfreeze) {
+static bool scene_is_freeze_source_tc(const scene_tri_t* scene, int n, uint32_t sfreeze, int tc) {
     if (sfreeze & (1u << 31)) return false;
-    const int tc = openpete_tercache_frame_content();
     if (tc > 0) return true;                       /* the retained state paints terrain */
     if (!scene_has_game_tris(scene, n)) return false;
     if (scene_is_2d_only(scene, n)) return true;
     if (tc < 0) return scene_has_world(scene, n);  /* every world triangle is on the CPU */
     return scene_has_terrain(scene, n);
+}
+
+/** @brief Return whether a composed scene qualifies as the freeze-backdrop source, reading the selected retained state.
+ *
+ * scene_is_freeze_source_tc with the retained content of the state the
+ * present selected (openpete_tercache_frame_content), so the caller selects
+ * by stamp first.
+ * @param scene   The present's scene triangle buffer.
+ * @param n       Triangle count of @p scene.
+ * @param sfreeze The present's freeze word; bit 31 set marks a freeze scene.
+ * @return true when the scene is a freeze-backdrop source. */
+static bool scene_is_freeze_source(const scene_tri_t* scene, int n, uint32_t sfreeze) {
+    return scene_is_freeze_source_tc(scene, n, sfreeze, openpete_tercache_frame_content());
 }
 
 /** @brief Resolve the size of the game window.
@@ -6125,14 +6143,10 @@ static struct {
     rhi_texture  *shot_rtt;
     int           shot_w, shot_h;
 
-    /* Capture-time freeze backdrop: the live path snapshots the last world frame
-     * into frozen_tex only when there's a window (win_w>0), so a headless
-     * screenshot of a freeze frame (pause / flight-results / level-exit) has no
-     * backdrop and renders dark. During capture the driver instead renders each
-     * pre-freeze WORLD frame into shot_frozen (at the capture's widescreen extent),
-     * and the freeze overlay prefers it - so the green desaturated frozen-world
-     * effect is captured headless. Holds the most recent world frame; once the
-     * freeze bit is set the snapshot stops updating, freezing that frame. */
+    /* Capture-time freeze backdrop: a headless capture renders the pinned
+     * freeze-backdrop source (the hold store's newest source scene) into
+     * shot_frozen at the capture's widen (freeze_src_settle), as the live
+     * present renders it into frozen_tex; the freeze overlay prefers it. */
     freeze_target_t shot_frozen;
 
     /* SSAA (--ssaa N): the live vk scene renders into a supersampled render
@@ -6147,14 +6161,18 @@ static struct {
     int           ss_w, ss_h, ss_factor;
 
     /* Freeze-frame green overlay (pause / inventory / flight-results backdrop).
-     * native_rtt is the canonical native frame each present; frozen_tex snapshots
-     * the last WORLD frame's native render (copied from native_rtt on non-menu
-     * frames). When the game's freeze backdrop is active, the scene draws
-     * frozen_tex desaturated + green-tinted (freeze_overlay_pipe) instead of the
-     * FT4 that samples PsyCross's VRAM scratch - so the green overlay shows OUR
-     * render and survives the end-state where PsyCross's VRAM is gone. */
-    freeze_target_t frozen_tex;       /* .valid once a world frame is captured; .wf 0 */
+     * frozen_tex holds the render of the freeze-backdrop source, the scene
+     * of the last world present displayed (or the newest canonical source
+     * scene in its place), drawn at the first present that is not a source
+     * (freeze_bd_edge). When the game's freeze backdrop is
+     * active, the scene draws frozen_tex desaturated + green-tinted
+     * (freeze_overlay_pipe) instead of the FT4 that samples PsyCross's VRAM
+     * scratch - so the green overlay shows OUR render and survives the
+     * end-state where PsyCross's VRAM is gone. */
+    freeze_target_t frozen_tex;       /* .valid once a source is rendered; .wf the live widen */
     freeze_target_t frozen_prev;      /* the valid backdrop frozen_tex held before a size change */
+    uint32_t      vj_applied;         /* scene id of the last VRAM journal entry uploaded */
+    int           vj_applied_set;     /* vj_applied holds an upload */
     rhi_pipeline *freeze_overlay_pipe;/* samples frozen_tex, luma + tint (set 0) */
     rhi_pipeline *freeze_plain_pipe;  /* samples frozen_tex unaltered (set 0) */
     rhi_buffer   *fs_quad_vb;         /* full-target (-1..1) quad, UV 0..1 (RT copies) */
@@ -9546,6 +9564,7 @@ static void upload_synced_textures(void)
             }
             break;
         }
+        s_nr.vj_applied = e->scene_id; s_nr.vj_applied_set = 1;
         vram_journal_apply(e);
         vram_journal_pop();
     }
@@ -9646,17 +9665,36 @@ static openpete_render_res_plan_t *rr_live_base(void)
         ? &s_rr.plan : NULL;
 }
 
-/** @brief Create or resize frozen_tex, the live freeze backdrop, at the base size under a live base, else the reference size.
+/** @brief Give the extent and widen the live freeze backdrop renders at: the live base, else the reference height by the reference width times the present's widen.
+ *
+ * The second is the extent freeze_target_fit gives a capture at the same
+ * widen, so a live backdrop and a headless one of one scene are the same
+ * image.
+ * @param w Receives the width.
+ * @param h Receives the height.
+ * @return The widen. */
+static float frozen_live_extent(int *w, int *h)
+{
+    if (!s_nr.headless && s_rr.plan.active) { *w = s_rr.plan.bw; *h = s_rr.plan.bh; return s_rr.plan.wf_render; }
+    const float wf = ws_factor_present();
+    *w = (int)((double)s_nr.ref_w * (double)wf + 0.5);
+    *h = s_nr.ref_h;
+    return wf;
+}
+
+/** @brief Create or resize frozen_tex, the live freeze backdrop, at frozen_live_extent.
  *
  * A size change while the backdrop is valid moves it to frozen_prev, which
  * active_frozen falls back to, so the pause screen keeps its image through
- * any number of size changes; the new frozen_tex starts invalid. Once
- * frozen_tex is valid again the next call releases frozen_prev. Creates and
- * destroys GPU resources and waits idle, so it runs outside a frame. */
+ * any number of size changes; the new frozen_tex starts invalid, and the
+ * next present that is not a freeze source renders the kept source into
+ * it again (freeze_bd_edge). Once frozen_tex is valid again the next call
+ * releases frozen_prev. Creates and destroys GPU resources and waits idle,
+ * so it runs outside a frame. */
 static void ensure_frozen_tex(void)
 {
-    int w = s_nr.ref_w, h = s_nr.ref_h;
-    if (!s_nr.headless && s_rr.plan.active) { w = s_rr.plan.bw; h = s_rr.plan.bh; }
+    int w = 0, h = 0;
+    (void)frozen_live_extent(&w, &h);
     freeze_target_t *f = &s_nr.frozen_tex, *pv = &s_nr.frozen_prev;
     if (f->tex && f->w == w && f->h == h) {
         if (pv->tex && f->valid) {
@@ -16447,10 +16485,9 @@ static void portal_mask_bias(float* c, float* s, float* cl)
 
 /** @brief Return the freeze backdrop record: the screenshot-time capture when valid, else the live one, else the live one before a size change.
  *
- * shot_frozen is written by openpete_native_render_snapshot_frozen during a
- * screenshot run and is preferred whenever it exists and is valid; frozen_tex
- * is written by the live present (capture_freeze_from_offscreen, or the base
- * snapshot under --resolution), so a headless dump would otherwise have no
+ * shot_frozen is written by a headless capture (freeze_src_settle) and is
+ * preferred whenever it exists and is valid; frozen_tex is written by the
+ * live present (freeze_bd_edge), so a headless dump would otherwise have no
  * backdrop. frozen_prev holds the valid backdrop a size change of frozen_tex
  * displaced (ensure_frozen_tex) until frozen_tex is valid again.
  * @return shot_frozen, frozen_tex or frozen_prev, never NULL; frozen_tex.tex may be NULL. */
@@ -21355,56 +21392,71 @@ static void draw_osd_overlay(void) {
         rhi_draw(s_nr.dev, 6, (uint32_t)(i * 6));
 }
 
-/** @brief Copy the just-ended offscreen's content region into frozen_tex as the freeze backdrop.
+static int freeze_bd_on(void);
+/** @brief Copy the just-ended offscreen's picture into frozen_tex under OPENPETE_FREEZE_BD=0, the negative control of the rendered backdrop.
  *
- * The offscreen is projected and pillarboxed for the window, and under
- * --ssaa already resolved to window resolution. The region blitted is the
- * p0 panel rect with its half-width widened by ws_factor, in window pixels;
- * the pause, inventory and exit freeze presents sample it. Only a world
- * present is captured, so the backdrop is the gameplay image and not the
- * menu drawn over it; nothing happens without frozen_tex or with an empty
- * window or region. Marks frozen_valid on a capture. Must be called after
- * rhi_end_offscreen (off_image in TRANSFER_SRC). OPENPETE_LOAD_CENSUS
- * brackets the blit with the characters s and t on stderr.
- * @param world_frame True when this present composed the world. */
-static void capture_freeze_from_offscreen(bool world_frame)
+ * The control reproduces the copy the rendered backdrop replaced: every
+ * world present blits the p0 panel rect of the finished offscreen (its
+ * half-width widened by ws_factor, in window pixels), mod HUD and chrome
+ * included, so the backdrop is whatever present showed a world last, a
+ * sub-tick present included. Must be called after rhi_end_offscreen
+ * (off_image in TRANSFER_SRC). No-op while the rendered backdrop is on.
+ * @param world_frame True when this present composed a world scene. */
+static void freeze_bd_control_copy(bool world_frame)
 {
-    if (!(world_frame && s_nr.frozen_tex.tex && s_nr.win_w > 0 && s_nr.win_h > 0)) return;
+    if (freeze_bd_on() || !world_frame || !s_nr.frozen_tex.tex || s_nr.win_w <= 0 || s_nr.win_h <= 0) return;
     const openpete_px_rect_t rc = view_px_rect();
-    const int sx = rc.x, sy = rc.y, sw = rc.w, sh = rc.h;
-    if (sw > 0 && sh > 0) {
-        static int s_pt = -1;
-        if (s_pt < 0) { const char* e = getenv("OPENPETE_LOAD_CENSUS"); s_pt = (e && *e && *e != '0'); }
-        if (s_pt) { fprintf(stderr, "s"); fflush(stderr); }   /* freeze snapshot enter */
-        rhi_snapshot_offscreen_to_rt(s_nr.dev, s_nr.frozen_tex.tex, sx, sy, sw, sh);
-        if (s_pt) { fprintf(stderr, "t"); fflush(stderr); }   /* freeze snapshot done */
-        s_nr.frozen_tex.valid = true;
-        s_nr.frozen_tex.wf = 0.0f;   /* the present's own aspect */
-    }
+    if (rc.w <= 0 || rc.h <= 0) return;
+    rhi_snapshot_offscreen_to_rt(s_nr.dev, s_nr.frozen_tex.tex, rc.x, rc.y, rc.w, rc.h);
+    s_nr.frozen_tex.valid = true;
+    s_nr.frozen_tex.wf = 0.0f;   /* the present's own aspect */
 }
 
-/** @brief Snapshot the freeze backdrop from the offscreen image before any chrome is drawn into it.
+/* The live freeze backdrop's displayed-scene source. Presenting thread only.
+ * compose_variant records whether the present composed a world scene and
+ * from which compose source (after any hold redirect); freeze_bd_note_present
+ * then keeps that present's ring slot (s_ring_bd_keep) or, for a world
+ * present with no ring slot of its own, drops the keep, so freeze_bd_edge
+ * renders the displayed scene or falls back to the canonical pin. */
+static struct {
+    int                 world;      /* the present being composed is a world present */
+    const scene_slot_t *world_src;  /* its compose source, NULL for the live scene */
+    unsigned            gen;        /* keeps and drops made: the displayed source's generation */
+    unsigned            key;        /* the source frozen_tex holds (freeze_bd_edge) */
+    unsigned            pins, drops, disp, fallback;
+    freeze_target_t     ref;        /* OPENPETE_FREEZE_BD_DUMP: the last world present's scene */
+    uint32_t            ref_id;     /* scene id of the slot ref holds, 0 for the live scene */
+} s_bdl;
+
+/** @brief Record whether the present being composed drew a world scene, and from which compose source.
  *
- * capture_freeze_from_offscreen reads off_image, where the stats block, the
- * version line, the settings menu and the OSD toasts are drawn; a snapshot
- * taken after them keeps that chrome in frozen_tex behind the pause screen
- * after the live chrome has changed or expired. This ends the offscreen
- * pass, takes the snapshot, and reopens the pass loading its contents, so
- * chrome draws into the reopened pass; scene_postfx_split has the same
- * shape. It costs one extra pass boundary on the world presents that feed
- * the freeze. Mod content is drawn before the split and is part of the
- * backdrop: a mod's HUD is content, not chrome.
- * @param world_frame True when this present composes a world scene.
- * @return true when it captured, only during the live present's compose
- *         with frozen_tex allocated; the caller's tail capture then stands
- *         down. */
-static bool chrome_split_capture(bool world_frame)
+ * freeze_bd_note_present reads the record after the present.
+ * @param world True when the scene is a freeze-backdrop source.
+ * @param drew True when the compose drew the scene. */
+static void freeze_bd_world_note(bool world, bool drew)
 {
-    if (!(world_frame && s_nr.frozen_tex.tex && s_overlay_live)) return false;
+    s_bdl.world = world && drew;
+    s_bdl.world_src = s_ps_slot;
+}
+
+/** @brief Copy the offscreen's scene-only picture of a world present into the displayed-world reference when OPENPETE_FREEZE_BD_DUMP sized one.
+ *
+ * Harness instrument: the live backdrop must equal the image of the last
+ * world present (s_bdl.world), taken here after the scene draw and before
+ * the SCENE postfx point, the mod HUD and the chrome. Ends the offscreen
+ * pass, blits the p0 panel rect into s_bdl.ref, and reopens the pass
+ * loading its contents. No-op unless freeze_bd_edge allocated the
+ * reference. */
+static void freeze_bd_ref_copy(void)
+{
+    if (!s_bdl.world || !s_bdl.ref.tex || s_nr.win_w <= 0 || s_nr.win_h <= 0) return;
+    const openpete_px_rect_t rc = view_px_rect();
+    if (rc.w <= 0 || rc.h <= 0) return;
     rhi_end_offscreen(s_nr.dev);
-    capture_freeze_from_offscreen(true);
+    rhi_snapshot_offscreen_to_rt(s_nr.dev, s_bdl.ref.tex, rc.x, rc.y, rc.w, rc.h);
     rhi_begin_offscreen_load(s_nr.dev);
-    return true;
+    s_bdl.ref.valid = true;
+    s_bdl.ref_id = s_ps_slot ? s_ps_slot->scene_id : 0u;
 }
 
 /** @brief Run the SCENE-point postfx chain between the composed scene and the HUD.
@@ -21712,7 +21764,7 @@ static void draw_live_chrome(void)
         openpete_devui_render(s_nr.dev);
 }
 
-static void compose_base(bool world_frame);
+static void compose_base(void);
 
 /** @brief Compose one present's display image into the window-sized offscreen pass.
  *
@@ -21723,10 +21775,12 @@ static void compose_base(bool world_frame);
  * an empty scene falls back to the PSX VRAM framebuffer. Every path then
  * applies the SCENE postfx point, the mod HUD and, when s_overlay_live is
  * set, the stats, version, toast and menu overlays, with the dev overlay
- * unless a COMPOSITE chain is live. The freeze backdrop is captured from the
- * finished offscreen unless the chrome split already took it, and s_pc_cur
- * records what the image shows for the present census. Under an active
- * --resolution base the present composes through compose_base instead. */
+ * unless a COMPOSITE chain is live. s_pc_cur records what the image shows
+ * for the present census, and s_bdl whether the present drew a world scene
+ * and from which compose source (freeze_bd_note_present). Under OPENPETE_FREEZE_BD=0 a world present copies
+ * the finished offscreen into the freeze backdrop (freeze_bd_control_copy).
+ * Under an active --resolution base the present composes through
+ * compose_base instead. */
 static void compose_variant(void)
 {
     /* PsyCross display mode: there is no native scene to walk. The picture is
@@ -21761,17 +21815,12 @@ static void compose_variant(void)
     int sn; uint32_t sbg, sfade, sfreeze;
     const scene_tri_t* scene = scene_present_buf(&sn, &sbg, &sfade, &sfreeze, NULL, NULL);
 
-    /* native_rtt is the OFF-DISPLAY reference-resolution render that the
-     * freeze-backdrop snapshot copies. The LIVE panel does NOT blit from it - it
-     * draws the scene DIRECTLY into the window-sized offscreen below, so the
-     * native display keeps its FULL window resolution (rendering into the
-     * ref-sized native_rtt and upscaling would soften textures and drop fine UI).
-     * So native_rtt is rendered only when actually consumed: on WORLD frames, to
-     * refresh the freeze snapshot (skip menu/freeze frames so the snapshot is the
-     * gameplay frame to freeze, never the menu drawn over it). */
+    /* The live panel draws the scene directly into the window-sized offscreen
+     * below, so the display keeps its full window resolution. */
     /* scene_is_freeze_source reads the selected retained state, so it runs here,
      * on the presenting thread, after frame_select. */
     bool world_frame = scene_is_freeze_source(scene, sn, sfreeze);
+    freeze_bd_world_note(world_frame, true);
     /* OPENPETE_FREEZE_DBG=1: one line per composed present -- which frames
      * qualify as the freeze backdrop and where their terrain came from. */
     static int s_fdbg = -1;
@@ -21796,15 +21845,10 @@ static void compose_variant(void)
     /* --resolution N | WxH: the scene composes into the base image and is
      * resampled into the window's picture area (compose_base). */
     if (rr_live_base()) {
-        compose_base(world_frame);
+        compose_base();
         return;
     }
     s_rr.composes++;
-    /* The freeze backdrop is snapshotted from the clean, correctly-projected
-     * windowed offscreen (rhi_snapshot_offscreen_to_rt after the offscreen pass
-     * below), never from a full-extent render into native_rtt: that skews
-     * window-dependently and squished the pause/inventory freeze at non-native
-     * window sizes. */
     /* SSAA (--ssaa>1, vk mode): render the scene into the supersampled ss_rtt,
      * then a fragment resolve pass box-averages it (in linear light) into the 1×
      * offscreen - a true box filter at every factor and gamma-correct, unlike the
@@ -21825,6 +21869,7 @@ static void compose_variant(void)
         s_pc_cur = drew ? PC_SCENE : PC_VRAM;
         rhi_end_render_target(s_nr.dev, s_nr.ss_rtt);
         rhi_gpu_zone_end(s_nr.dev);
+        freeze_bd_world_note(world_frame, drew);
 
         rhi_begin_offscreen(s_nr.dev, 0.0f, 0.0f, 0.0f, 1.0f);
         if (drew) {
@@ -21840,20 +21885,13 @@ static void compose_variant(void)
             /* Empty scene -> PSX VRAM framebuffer fallback (1× direct, no SSAA). */
             draw_vram_fallback(s_nr.panels_vb);
         }
+        freeze_bd_ref_copy();
         NR_PROF_BEGIN("cmp.chrome");
         scene_postfx_split();                     /* SCENE point: scene->chain->HUD */
         draw_mod_overlay();                       /* mod HUD (content - records too) */
-        /* Freeze snapshot first, chrome after - see chrome_split_capture. */
-        const bool froze = chrome_split_capture(world_frame);
         draw_live_chrome();                       /* on the resolved 1x offscreen, crisp */
         rhi_end_offscreen(s_nr.dev);
-        /* The freeze snapshot lives in the fall-through path below, which this SSAA
-         * branch skips - so capture it here too, from the box-resolved 1× offscreen
-         * (window resolution, matching the non-SSAA snapshot). Without this the
-         * pause/inventory freeze had no captured frame under --ssaa and showed the
-         * clear/cyclorama colour instead of the frozen world. Skipped when the
-         * chrome split already took it. */
-        if (!froze) capture_freeze_from_offscreen(world_frame);
+        freeze_bd_control_copy(world_frame);
         NR_PROF_END();   /* cmp.chrome */
         return;
     }
@@ -21867,19 +21905,21 @@ static void compose_variant(void)
     native_terrain_key_pass(0, s_nr.win_w, s_nr.win_h);
     rhi_begin_offscreen(s_nr.dev, 0.0f, 0.0f, 0.0f, 1.0f);
     s_pc_cur = PC_CLEAR;                 /* no layout yet: the clear is the picture */
+    bool scene_drew = false;
     if (s_nr.layout_ref_w > 0) { /* layout built (needs a known ref size) */
         rhi_gpu_zone_begin(s_nr.dev, "sc.scene");
-        bool scene_drew = draw_scene_with_matview(false);
+        scene_drew = draw_scene_with_matview(false);
         rhi_gpu_zone_end(s_nr.dev);
         s_pc_cur = scene_drew ? PC_SCENE : PC_VRAM;
         if (!scene_drew) draw_vram_fallback(s_nr.panels_vb);
     }
+    freeze_bd_world_note(world_frame, scene_drew);
+    freeze_bd_ref_copy();
 
     /* SCENE point then mod HUD - vk variant, live + record composes. */
     NR_PROF_BEGIN("cmp.chrome");
     scene_postfx_split();
     draw_mod_overlay();
-    bool froze = chrome_split_capture(world_frame);   /* backdrop before chrome */
     /* Chrome - the live present only, never screenshots or dumps, where
      * s_overlay_live is 0. The dev overlay under a live COMPOSITE chain is
      * re-drawn on top of the chain's output (present_native). */
@@ -21887,7 +21927,7 @@ static void compose_variant(void)
 
     rhi_end_offscreen(s_nr.dev);
 
-    if (!froze) capture_freeze_from_offscreen(world_frame);
+    freeze_bd_control_copy(world_frame);
     NR_PROF_END();   /* cmp.chrome */
 }
 
@@ -22251,24 +22291,16 @@ static bool rr_compose_into_base(const openpete_render_res_plan_t *p)
 
 /** @brief Compose one live present through the --resolution base into the window offscreen.
  *
- * The scene composes into the base (rr_compose_into_base); a world present
- * copies the base 1:1 into frozen_tex as the freeze backdrop, before the
- * mod HUD and the chrome exist; the window offscreen then takes the
- * resample into the picture area, or the VRAM framebuffer when the scene is
- * empty, then the SCENE postfx point, the mod HUD and the chrome, as the
- * window path does.
- * @param world_frame True when this present composes a world scene. */
-static void compose_base(bool world_frame)
+ * The scene composes into the base (rr_compose_into_base); the window
+ * offscreen then takes the resample into the picture area, or the VRAM
+ * framebuffer when the scene is empty, then the SCENE postfx point, the mod
+ * HUD and the chrome, as the window path does. */
+static void compose_base(void)
 {
     const openpete_render_res_plan_t *p = &s_rr.plan;
     s_rr.composes++;
     const bool drew = rr_compose_into_base(p);
-    if (drew && world_frame && s_nr.frozen_tex.tex &&
-        s_nr.frozen_tex.w == p->bw && s_nr.frozen_tex.h == p->bh) {
-        rhi_blit_rt_to_rt(s_nr.dev, s_nr.frozen_tex.tex, s_nr.native_rtt);
-        s_nr.frozen_tex.valid = true;
-        s_nr.frozen_tex.wf = p->wf_render;
-    }
+    freeze_bd_world_note(s_bdl.world, drew);
     rhi_begin_offscreen(s_nr.dev, 0.0f, 0.0f, 0.0f, 1.0f);
     if (drew) rr_resample(p, s_nr.native_rtt);
     else draw_vram_fallback(s_nr.panels_vb);
@@ -23592,6 +23624,8 @@ static void shot_teardown(void)
 
 /* ---- eager scene ring: operations (types above, by s_scene) ---- */
 static void render_frame_common(uint64_t record_pts_us, bool have_ref);
+static void freeze_bd_edge(void);
+static void freeze_bd_note_present(int slot, int did);
 static void pt_dump_maybe(int rendered, unsigned frame, uint32_t stamp, uint32_t freeze, int kind,
                           int64_t target_ns, double alpha, int paired, int ntri);
 static int  s_last_frame_presented;
@@ -23863,11 +23897,13 @@ int openpete_native_scene_pick(int64_t at, int *due) {
 }
 /* Called by the present thread right after every rhi_begin_frame: frames
  * RHI_FRAMES_IN_FLIGHT behind the one just begun have had their fence
- * waited, so their scenes' GPU reads are over. */
+ * waited, so their scenes' GPU reads are over. The slot kept as the live
+ * freeze-backdrop source (s_ring_bd_keep) stays PRESENTED until a later
+ * world present replaces it. */
 void openpete_native_scene_retire(uint64_t begun_serial) {
     SDL_LockMutex(ring_mx());
     for (int i = 0; i < SCENE_RING; i++)
-        if (s_ring[i].state == SS_PRESENTED &&
+        if (s_ring[i].state == SS_PRESENTED && i != s_ring_bd_keep &&
             s_ring[i].presented_serial + RHI_FRAMES_IN_FLIGHT <= begun_serial)
             s_ring[i].state = SS_FREE;
     SDL_UnlockMutex(ring_mx());
@@ -23966,10 +24002,12 @@ void openpete_native_render_frame(uint64_t record_pts_us)
      * (gating it off for vk blanked the captured native-intermediate frames). */
     sync_vram_texture();
     bool have_ref = sync_reference_texture();
+    freeze_bd_edge();
     { const uint64_t b0 = rhi_frame_serial(s_nr.dev);
       const scene_slot_t *prev; const int hk = hold_redirect_begin(&prev);
       render_frame_common(record_pts_us, have_ref);
       hold_redirect_end(hk, prev);
+      freeze_bd_note_present(-1, rhi_frame_serial(s_nr.dev) != b0);
       pt_dump_maybe(rhi_frame_serial(s_nr.dev) != b0, s_scene_frame, s_scene_frame, s_scene_freeze, -1, 0, 0.0, 0, s_scene_n); }
 }
 
@@ -24080,6 +24118,7 @@ static int render_scene_impl(int slot, int stage, uint64_t record_pts_us)
     s_ps_slot = sl;
     openpete_mods_material_view_set(&sl->matview);
     s_stage_target = stage;
+    freeze_bd_edge();
     const uint64_t before = rhi_frame_serial(s_nr.dev);
     { const scene_slot_t *prev; const int hk = hold_redirect_begin(&prev);
       render_frame_common(record_pts_us, false);
@@ -24104,6 +24143,7 @@ static int render_scene_impl(int slot, int stage, uint64_t record_pts_us)
     if (did) { sl->state = SS_PRESENTED; sl->presented_serial = after; s_ring_census.presented++; }
     else      sl->state = SS_FREE;
     SDL_UnlockMutex(ring_mx());
+    freeze_bd_note_present(slot, did);
     return did;
 }
 
@@ -24678,38 +24718,48 @@ static int freeze_leg_probe(void) {
     return v;
 }
 
-/* Headless freeze-backdrop source, kept until its render can be read.
+/* Freeze-backdrop source and its renders.
  *
- * shot_frozen is read only by a compose of a freeze scene, and it holds the
- * render of the newest freeze-source present before that compose. A
- * headless run composes only for a capture or a framebuffer-window resolve,
- * so a source present's render is deferred instead of drawn on every
- * present: the present copies its scene and every per-present compose input
- * into sl (the same copy a ring publish makes) and freeze_src_settle renders
- * the copy through the slot compose path, with the kept scene's retained
- * terrain state selected by its stamp. A settle runs
- *  - at the next present, before its device services, when that present is
- *    not a source (openpete_native_render_snapshot_present_begin);
- *  - at the entry of every compose, and before the intermediate capture's
- *    re-extract, while a copy is pending.
- * A newer source replaces a pending copy: no compose ran between the two,
- * so no image read the render it would have made. Between the source
- * present's snapshot call and either settle point no call uploads VRAM to
- * the device (only the present services and the composes sync it), and the
- * source scene's retained terrain state stays selectable and its arena
- * ranges unwritten (the next build promotes it to live), so the deferred
- * render draws the image the per-present render drew.
- * OPENPETE_FREEZE_SRC_VERIFY=1 (diagnostic) also renders every source
- * present on the spot into vtex and compares each settle's image with it. */
+ * The PSX pause entry re-renders the paused state into its current draw
+ * buffer and stores that area into the grayscale scratch the backdrop FT4s
+ * sample (the pause path's D_800758B8 == 0 branch: DrawOTag, PutDispEnv,
+ * StoreImage of g_CurDB's area), so the backdrop is the game's own render
+ * of the last gameplay tick. The canonical capture of every scene that is a
+ * backdrop source pins it in the hold store (hold_retain_canonical: a pool
+ * entry holding the scene, its compose inputs and its retained-terrain
+ * state), replacing the previous pin; a re-extracted scene never pins. The
+ * backdrop source is rendered through the compose path, once per source and
+ * target, at the first present that is not a source:
+ *  - live, on the presenting thread before that present's own frame
+ *    (freeze_bd_edge), into frozen_tex at frozen_live_extent. The source is
+ *    the scene the player last saw: the ring slot of the last world present
+ *    displayed, kept from retiring (freeze_bd_note_present), a sub-tick
+ *    re-extract under eager presentation; the canonical pin stands in when
+ *    the last world present had no ring slot of its own. The render's
+ *    upload applies the VRAM journal up to the source's scene id, so it sees
+ *    the texels the scene was drawn against unless an earlier present
+ *    uploaded past that id (counted as vram_ahead);
+ *  - headless, into shot_frozen at the capture's widen (freeze_src_settle),
+ *    always the canonical pin:
+ *    at the next present that is not a source, before its device services
+ *    (openpete_native_render_snapshot_present_begin), and at the entry of
+ *    every compose and before the intermediate capture's re-extract.
+ * OPENPETE_FREEZE_SRC_VERIFY=1 (diagnostic) also renders every headless
+ * source present on the spot into vt and compares each settle's image with
+ * it. */
 static struct {
-    scene_slot_t sl;          /* the source present's scene and compose inputs */
-    float        wf;          /* the capture widen at the source present */
-    int          pending;     /* sl holds a source present not yet rendered */
-    unsigned     retained, settled, superseded, flips;
-    unsigned     subtick;     /* source presents refused as a sub-tick re-extract */
+    float        wf;          /* the capture widen at the newest source present */
+    unsigned     gen;         /* the pin generation shot_frozen holds */
+    unsigned     settled, flips;
     freeze_target_t vt;       /* OPENPETE_FREEZE_SRC_VERIFY: on-the-spot render */
     unsigned     vmatch, vdiff;
 } s_frz;
+
+static unsigned hold_bd_gen(void);
+static int hold_bd_take(unsigned *gen);
+static void hold_bd_give(int k);
+static const scene_slot_t *hold_bd_slot(int k);
+static void freeze_bd_note_render(int drew, int ahead);
 
 /** @brief Return whether OPENPETE_FREEZE_SRC_VERIFY is set to a non-zero value.
  *
@@ -24721,41 +24771,17 @@ static int freeze_src_verify(void) {
     return v;
 }
 
-/** @brief Return whether the selected scene is a re-extract at a paired phase short of the newest tick.
- *
- * Such a scene is a sub-tick image between the last two ticks. A headless
- * canonical present composes the game's own render, so a re-extracted scene
- * there is the one an intermediate capture leg left in the accumulator: on a
- * present where the game draws no new scene (the pause-entry present) the
- * accumulator still holds it. The phase is the one the re-extract that
- * built the accumulator published (openpete_pace_note_alpha); an unpaired
- * re-extract, or one at phase 1 (the identity instant), draws the newest
- * tick.
- * @return true for a sub-tick scene. */
-static bool freeze_src_subtick(void) {
-    if (!scene_present_replay()) return false;
-    int paired = 0;
-    const double alpha = openpete_pace_extract_alpha(&paired);
-    return paired && alpha < 1.0;
-}
-
 /** @brief Select the composed scene's retained terrain and test whether the scene is a freeze-backdrop source.
  *
  * A freeze scene, a menu scene or a scene whose terrain feed cut out would
- * overwrite the good backdrop with an empty or ground-less one, and a
- * sub-tick scene (freeze_src_subtick) would freeze an in-between image where
- * the PSX freezes the tick's own frame. The verdict reads the selected
- * retained state, so the selection runs first.
- * @param subtick When not NULL, receives whether a sub-tick scene was refused.
+ * overwrite the good backdrop with an empty or ground-less one. The verdict
+ * reads the selected retained state, so the selection runs first.
  * @return true when the scene is a freeze-backdrop source. */
-static bool freeze_src_verdict(int *subtick) {
+static bool freeze_src_verdict(void) {
     int scene_n; uint32_t sbg, sfade, sfreeze;
     const scene_tri_t* sbuf = scene_present_buf(&scene_n, &sbg, &sfade, &sfreeze, NULL, NULL);
     openpete_tercache_frame_select(scene_present_stamp());
-    const bool world = scene_is_freeze_source(sbuf, scene_n, sfreeze);
-    const bool sub = world && freeze_src_subtick();
-    if (subtick) *subtick = sub;
-    const bool src = world && !sub;
+    const bool src = scene_is_freeze_source(sbuf, scene_n, sfreeze);
     if (freeze_leg_probe())
         fprintf(stderr, "[freezeleg f=%u] copies_stamp=%u scene_n=%d twod=%d freeze=%d skip=%d"
                 " has_world=%d has_terrain=%d tc_content=%d\n",
@@ -24794,44 +24820,42 @@ static int freeze_target_fit(freeze_target_t *t, float cap_wf, int w, int h)
     return t->tex != NULL;
 }
 
-/** @brief Render the composed scene into a freeze-backdrop target at the capture's widen.
+/** @brief Render the composed scene into a freeze-backdrop target at a widen, or at a --resolution base's extent and render widen.
  *
  * The target is sized first (freeze_target_fit). The scene is the one
  * scene_present_buf returns, so the caller points s_ps_slot at a kept slot
- * to render that slot. Once rendered the record is valid and holds
- * @p cap_wf as its widen. A headless run with an explicit --resolution base
- * renders the backdrop at the capture's base size and widen instead
- * (rr_capture_plan), so the capture draws it 1:1 over its base.
+ * to render that slot. The render runs in its own offline frame, whose
+ * upload applies the VRAM journal up to that scene. Once rendered the
+ * record is valid and holds the widen.
  * @param t The target record.
- * @param cap_wf The capture widen, at least 1.
+ * @param wf The widen, at least 1; under @p base its render widen is used.
+ * @param base The base the target holds, or NULL.
  * @param sync Nonzero to drain guest VRAM writes into the device texture first.
  * @param nearcut When not NULL, the frame also records the retained cache's
  *        near-cut census (census_nearcut_record) and this receives whether
  *        it armed one. */
-static void freeze_render_into(freeze_target_t *t, float cap_wf, int sync, int *nearcut)
+static void freeze_render_at(freeze_target_t *t, float wf, const openpete_render_res_plan_t *base,
+                             int sync, int *nearcut)
 {
+    if (base) wf = base->wf_render;
+    if (!freeze_target_fit(t, wf, base ? base->bw : 0, base ? base->bh : 0)) return;
     int scene_n; uint32_t sbg, sfade;
     (void)scene_present_buf(&scene_n, &sbg, &sfade, NULL, NULL, NULL);
-    openpete_render_res_plan_t bp;
-    const int base = rr_capture_plan(cap_wf, &bp);
-    if (base) cap_wf = bp.wf_render;
-    if (!freeze_target_fit(t, cap_wf, base ? bp.bw : 0, base ? bp.bh : 0)) return;
-
     if (sync) sync_vram_texture();
     ensure_native_rtt(true);
-    ensure_opaque_depth(od_serve(base ? &bp : NULL));
+    ensure_opaque_depth(od_serve(base));
     ensure_terrain_key_targets();
     uint32_t bg = ps_drawenv_clear() ? ps_drawenv_clear() : sbg;
     const float br  = (float)((bg >>  0) & 0xFF) / 255.0f;
     const float bgc = (float)((bg >>  8) & 0xFF) / 255.0f;
     const float bb  = (float)((bg >> 16) & 0xFF) / 255.0f;
     float prev_wf = s_render_freeze_wf;
-    s_render_freeze_wf = cap_wf;
+    s_render_freeze_wf = wf;
     if (rhi_begin_frame_offline(s_nr.dev)) {
         upload_synced_textures();
         hd_flush_pending();
         openpete_native_hdfold_flush();
-        native_depth_prepass(od_serve(base ? &bp : NULL));
+        native_depth_prepass(od_serve(base));
         if (nearcut) *nearcut = census_nearcut_record();
         { int kw, kh; rhi_texture_extent(t->tex, &kw, &kh);
           native_terrain_key_pass(1, kw, kh); }
@@ -24840,12 +24864,28 @@ static void freeze_render_into(freeze_target_t *t, float cap_wf, int sync, int *
         rhi_end_render_target(s_nr.dev, t->tex);
         rhi_end_frame(s_nr.dev);
         t->valid = true;
-        t->wf = cap_wf;
+        t->wf = wf;
         if (freeze_leg_probe())
             fprintf(stderr, "[freezeleg-render f=%u] stamp=%u kept=%d\n",
                     s_scene_frame, scene_present_stamp(), s_ps_slot ? 1 : 0);
     }
     s_render_freeze_wf = prev_wf;
+}
+
+/** @brief Render the composed scene into a freeze-backdrop target at the capture's widen.
+ *
+ * A headless run with an explicit --resolution base renders the backdrop at
+ * the capture's base size and widen (rr_capture_plan), so the capture draws
+ * it 1:1 over its base; otherwise freeze_render_at at @p cap_wf.
+ * @param t The target record.
+ * @param cap_wf The capture widen, at least 1.
+ * @param sync Nonzero to drain guest VRAM writes into the device texture first.
+ * @param nearcut As freeze_render_at. */
+static void freeze_render_into(freeze_target_t *t, float cap_wf, int sync, int *nearcut)
+{
+    openpete_render_res_plan_t bp;
+    const int base = rr_capture_plan(cap_wf, &bp);
+    freeze_render_at(t, cap_wf, base ? &bp : NULL, sync, nearcut);
 }
 
 /** @brief Read a render target back into a malloc'd RGBA buffer.
@@ -24861,26 +24901,111 @@ static unsigned char *freeze_read_target(rhi_texture *t, int *w, int *h) {
     return b;
 }
 
-/** @brief Render the kept freeze-backdrop source into shot_frozen when one is pending.
+/** @brief Write a rendered freeze backdrop to OPENPETE_FREEZE_BD_DUMP/bd-<tag>-f<VBL>.png when that variable names a directory.
  *
- * The kept slot is composed through s_ps_slot with its material view
- * installed, without a VRAM drain: the device texture still holds the VRAM
- * of the source present. Under OPENPETE_FREEZE_SRC_VERIFY the image is
- * compared with the on-the-spot render of the same present. */
-static void freeze_src_settle(void) {
-    if (!s_frz.pending || !s_nr.enabled || !s_nr.dev) return;
-    s_frz.pending = 0;
-    s_frz.settled++;
-    s_ps_slot = &s_frz.sl;
-    openpete_mods_material_view_set(&s_frz.sl.matview);
+ * Harness instrument: the VBL is the pinned scene's extract VBL, the same
+ * for a live and a headless run of one movie, so the two renders of one
+ * pin are compared by name. Reads the variable on each call; a backdrop
+ * render is rare. Alpha is forced opaque. Prints one `[freeze-bd] dump`
+ * line per image.
+ * @param t The rendered target.
+ * @param tag "live" or "shot".
+ * @param frame The pinned scene's extract VBL. */
+static void freeze_bd_dump(const freeze_target_t *t, const char *tag, unsigned frame)
+{
+    const char *dir = getenv("OPENPETE_FREEZE_BD_DUMP");
+    if (!dir || !*dir || !t->tex || !t->valid) return;
+    int w = 0, h = 0;
+    unsigned char *px = freeze_read_target(t->tex, &w, &h);
+    if (!px) return;
+    for (size_t i = 0; i < (size_t)w * (size_t)h; i++) px[i * 4 + 3] = 0xFF;
+    char path[1024];
+    snprintf(path, sizeof path, "%s/bd-%s-f%u.png", dir, tag, frame);
+    openpete_write_png_rgba(path, px, w, h);
+    fprintf(stderr, "[freeze-bd] dump %s %dx%d wf=%.4f -> %s\n", tag, w, h, (double)t->wf, path);
+    free(px);
+}
+
+/* A render of the pinned source: its generation, whether the device's VRAM
+ * was already uploaded past the pinned scene, and the near-cut census arm. */
+typedef struct { unsigned gen; int ahead; int nearcut; } freeze_bd_render_t;
+
+/** @brief Render a kept scene slot into a freeze-backdrop target, with that scene standing in for the present's.
+ *
+ * The slot is selected as the composed scene (s_ps_slot), with its material
+ * view, geometry and retained terrain state; the caller's selection is
+ * restored after. With @p tally the headless backdrop tally is taken while
+ * the slot is selected (census_backdrop_settle). The caller keeps the slot
+ * from being refilled for the call.
+ * @param t The target record.
+ * @param wf The widen.
+ * @param base The base the target holds, or NULL.
+ * @param sl The kept slot.
+ * @param tally Nonzero to take the headless backdrop tally.
+ * @param out Receives the VRAM-ahead verdict and the near-cut arm. */
+static void freeze_bd_render_slot(freeze_target_t *t, float wf, const openpete_render_res_plan_t *base,
+                                  const scene_slot_t *sl, int tally, freeze_bd_render_t *out)
+{
+    const scene_slot_t *prev = s_ps_slot;
+    s_ps_slot = sl;
+    openpete_mods_material_view_set(&sl->matview);
     ps_apply_geometry();
-    openpete_tercache_frame_select(scene_present_stamp());   /* the kept scene's terrain */
-    const int tc_content = openpete_tercache_frame_content();
-    int nearcut = 0;
-    freeze_render_into(&s_nr.shot_frozen, s_frz.wf, 0, &nearcut);
-    census_backdrop_settle(nearcut, s_frz.wf);
-    openpete_mods_material_view_set(NULL);
-    s_ps_slot = NULL;
+    openpete_tercache_frame_select(sl->stamp);
+    out->ahead = s_nr.vj_applied_set && (int32_t)(s_nr.vj_applied - sl->scene_id) > 0;
+    freeze_render_at(t, wf, base, 0, &out->nearcut);
+    if (tally) census_backdrop_settle(out->nearcut, t->wf);
+    freeze_bd_dump(t, s_nr.headless ? "shot" : "live", sl->frame);
+    s_ps_slot = prev;
+    openpete_mods_material_view_set(prev ? &prev->matview : NULL);
+    ps_apply_geometry();
+}
+
+/** @brief Render the pinned freeze-backdrop source, the newest canonical source scene, into a target.
+ *
+ * The pinned entry is marked busy for the render, so no retain refills it
+ * (freeze_bd_render_slot).
+ * @param t The target record.
+ * @param wf The widen.
+ * @param base The base the target holds, or NULL.
+ * @param tally Nonzero to take the headless backdrop tally.
+ * @param out Receives the pin generation rendered, the VRAM-ahead verdict and the near-cut arm.
+ * @return 1 when a pinned scene was rendered, 0 when none is pinned. */
+static int freeze_bd_render_pin(freeze_target_t *t, float wf, const openpete_render_res_plan_t *base,
+                                int tally, freeze_bd_render_t *out)
+{
+    *out = (freeze_bd_render_t){ 0, 0, 0 };
+    const int k = hold_bd_take(&out->gen);
+    if (k < 0) return 0;
+    freeze_bd_render_slot(t, wf, base, hold_bd_slot(k), tally, out);
+    hold_bd_give(k);
+    return 1;
+}
+
+/** @brief Report whether a pin newer than the one shot_frozen holds awaits its headless render.
+ * @return true when a render is owed. */
+static bool freeze_src_pending(void)
+{
+    return s_nr.headless && hold_bd_gen() != s_frz.gen;
+}
+
+/** @brief Render the pinned freeze-backdrop source into shot_frozen when a headless run owes it.
+ *
+ * The render takes the capture widen of the newest source present, or 1
+ * before any, and the capture's base under an explicit --resolution. No
+ * VRAM drain: the render's upload applies the journal up to the pinned
+ * scene. Under OPENPETE_FREEZE_SRC_VERIFY the image is compared with the
+ * on-the-spot render of the newest source present. */
+static void freeze_src_settle(void) {
+    if (!s_nr.enabled || !s_nr.dev || !freeze_src_pending()) return;
+    const float wf = s_frz.wf >= 1.0f ? s_frz.wf : 1.0f;
+    openpete_render_res_plan_t bp;
+    const int base = rr_capture_plan(wf, &bp);
+    freeze_bd_render_t r;
+    const int drew = freeze_bd_render_pin(&s_nr.shot_frozen, wf, base ? &bp : NULL, 1, &r);
+    freeze_bd_note_render(drew, r.ahead);
+    s_frz.gen = drew ? r.gen : hold_bd_gen();
+    if (!drew) return;
+    s_frz.settled++;
     if (freeze_src_verify() && s_frz.vt.tex && s_nr.shot_frozen.tex) {
         int aw = 0, ah = 0, bw = 0, bh = 0;
         unsigned char *a = freeze_read_target(s_nr.shot_frozen.tex, &aw, &ah);
@@ -24888,43 +25013,11 @@ static void freeze_src_settle(void) {
         const int same = a && b && aw == bw && ah == bh &&
                          memcmp(a, b, (size_t)aw * (size_t)ah * 4u) == 0;
         if (same) s_frz.vmatch++; else s_frz.vdiff++;
-        if (!same || freeze_leg_probe() || tc_content > 0)
-            fprintf(stderr, "[freeze-src-verify] f=%u stamp=%u retained_terrain=%d %s %dx%d\n",
-                    s_scene_frame, s_frz.sl.stamp, tc_content, same ? "match" : "DIFFER", aw, ah);
+        if (!same || freeze_leg_probe())
+            fprintf(stderr, "[freeze-src-verify] f=%u gen=%u %s %dx%d\n",
+                    s_scene_frame, r.gen, same ? "match" : "DIFFER", aw, ah);
         free(a); free(b);
     }
-}
-
-/** @brief Copy the composed scene and its compose inputs into the kept freeze-backdrop source.
- *
- * The scene, its words and its portal openings come from the present
- * selection (scene_present_view, ps_cover), the rest through
- * slot_capture_inputs. The slot's scene id holds back any VRAM journal
- * entry made after the copy, so a settle never applies a later present's
- * texels.
- * @param cap_wf The capture widen at this present.
- * @return true when the copy holds the whole scene. */
-static bool freeze_src_retain(float cap_wf) {
-    scene_slot_t *sl = &s_frz.sl;
-    const scene_view_t v = scene_present_view();
-    const nr_cover_block *cov = ps_cover();
-    if (scene_run_fit(&sl->tri_v, "scene.frzsrc", v.n) < v.n) return false;
-    sl->tri = (scene_tri_t*)sl->tri_v.data;
-    if (v.n > 0) memcpy(sl->tri, v.tri, (size_t)v.n * sizeof(scene_tri_t));
-    sl->n = v.n; sl->bg = v.bg; sl->fade = v.fade; sl->freeze = v.freeze;
-    sl->hud_under = v.hud_under; sl->actor_front = v.actor_front;
-    sl->stamp = v.stamp; sl->replay = v.replay;
-    slot_capture_inputs(sl);
-    sl->frame = scene_present_frame();
-    sl->cover = *cov;
-    snap_copy(&sl->snap, ps_snap());
-    sl->scene_id = s_scene_id_next - 1u;
-    sl->kind = OP_PACE_CANONICAL; sl->alpha = 0.0; sl->paired = 0; sl->target_ns = 0;
-    s_frz.wf = cap_wf;
-    if (s_frz.pending) s_frz.superseded++;
-    s_frz.pending = 1;
-    s_frz.retained++;
-    return true;
 }
 
 /* ---- held scenes per draw area --------------------------------------------
@@ -24995,6 +25088,11 @@ static struct {
     unsigned     retained, nofree, vram_marks, inherits, stale_drops;
     unsigned     c_vram, c_held, c_lost, c_clear;   /* empty composes by branch */
     unsigned     c_vram_area;              /* of c_vram: an area whose writer was VRAM */
+    /* The freeze-backdrop pin (hold_pin_backdrop) and its live render. */
+    int          bd_pin;                   /* pinned entry + 1, 0 none */
+    unsigned     bd_gen;                   /* pins made; the pin's generation */
+    int          bd_mode;                  /* OPENPETE_FREEZE_BD: 0 unread, 1 on, 2 off */
+    unsigned     bd_edges, bd_rendered, bd_lost, bd_nofree, bd_tc_miss, bd_vram_ahead;
 } s_hold;
 
 /** @brief The hold store's lock, created on first use without a creation race. */
@@ -25020,7 +25118,20 @@ static int hold_census(void)
     return on;
 }
 
-/** @brief Drop an area's reference to its kept scene; an entry no area names and no compose reads releases its terrain state.
+/** @brief Drop one reference to a pool entry; an entry nothing names and no compose reads releases its terrain state.
+ *
+ * The caller holds the store's lock.
+ * @param k The entry; negative does nothing. */
+static void hold_entry_unref(int k)
+{
+    if (k < 0) return;
+    if (--s_hold.e[k].refs <= 0) {
+        s_hold.e[k].refs = 0;
+        if (!s_hold.e[k].busy) openpete_tercache_hold_drop(k);
+    }
+}
+
+/** @brief Drop an area's reference to its kept scene (hold_entry_unref).
  *
  * The caller holds the store's lock.
  * @param a The area. */
@@ -25028,11 +25139,190 @@ static void hold_area_release(hold_area_t *a)
 {
     const int k = a->entry;
     a->entry = -1;
-    if (k < 0) return;
-    if (--s_hold.e[k].refs <= 0) {
-        s_hold.e[k].refs = 0;
-        if (!s_hold.e[k].busy) openpete_tercache_hold_drop(k);
+    hold_entry_unref(k);
+}
+
+/** @brief Report whether the rendered freeze backdrop is on, reading OPENPETE_FREEZE_BD once.
+ *
+ * OPENPETE_FREEZE_BD=0 is the negative control: the live present copies
+ * its finished picture into the backdrop on every world present
+ * (freeze_bd_control_copy) and renders no pin. A headless capture renders
+ * the pin either way.
+ * @return 0 under OPENPETE_FREEZE_BD=0, else 1. */
+static int freeze_bd_on(void)
+{
+    if (s_hold.bd_mode == 0) {
+        const char *e = getenv("OPENPETE_FREEZE_BD");
+        s_hold.bd_mode = (e && *e == '0') ? 2 : 1;
     }
+    return s_hold.bd_mode == 1;
+}
+
+/** @brief Pin a pool entry as the freeze-backdrop source, releasing the previous pin.
+ *
+ * The pin is a reference: the entry is not refilled while pinned. Each pin
+ * advances the generation the backdrop targets compare against. The caller
+ * holds the store's lock.
+ * @param k The entry. */
+static void hold_pin_backdrop(int k)
+{
+    const int old = s_hold.bd_pin - 1;
+    s_hold.e[k].refs++;
+    s_hold.bd_pin = k + 1;
+    s_hold.bd_gen++;
+    hold_entry_unref(old);
+}
+
+/** @brief Return the freeze-backdrop pin's generation, 0 before the first pin.
+ * @return The generation. */
+static unsigned hold_bd_gen(void)
+{
+    SDL_LockMutex(hold_mx());
+    const unsigned g = s_hold.bd_gen;
+    SDL_UnlockMutex(hold_mx());
+    return g;
+}
+
+/** @brief Take the pinned entry for a render, marking it busy.
+ * @param gen Receives the pin's generation.
+ * @return The entry, or -1 when nothing is pinned. */
+static int hold_bd_take(unsigned *gen)
+{
+    SDL_LockMutex(hold_mx());
+    const int k = s_hold.bd_pin - 1;
+    *gen = s_hold.bd_gen;
+    if (k >= 0) s_hold.e[k].busy++;
+    SDL_UnlockMutex(hold_mx());
+    return k;
+}
+
+/** @brief Release an entry hold_bd_take marked busy.
+ * @param k The entry. */
+static void hold_bd_give(int k)
+{
+    SDL_LockMutex(hold_mx());
+    if (--s_hold.e[k].busy == 0 && s_hold.e[k].refs == 0) openpete_tercache_hold_drop(k);
+    SDL_UnlockMutex(hold_mx());
+}
+
+/** @brief Return the ring slot kept as the live freeze-backdrop source, -1 none.
+ * @return The slot. */
+static int ring_bd_keep(void)
+{
+    SDL_LockMutex(ring_mx());
+    const int k = s_ring_bd_keep;
+    SDL_UnlockMutex(ring_mx());
+    return k;
+}
+
+/** @brief Size the displayed-world reference to the live backdrop's extent when OPENPETE_FREEZE_BD_DUMP names a directory.
+ *
+ * Runs before a present's frame opens (freeze_target_fit waits idle and
+ * creates the texture); freeze_bd_ref_copy fills it during the compose. */
+static void freeze_bd_ref_fit(void)
+{
+    const char *dir = getenv("OPENPETE_FREEZE_BD_DUMP");
+    if (!dir || !*dir) return;
+    int w = 0, h = 0;
+    const float wf = frozen_live_extent(&w, &h);
+    if (!(s_bdl.ref.tex && s_bdl.ref.w == w && s_bdl.ref.h == h)) s_bdl.ref_id = 0;
+    (void)freeze_target_fit(&s_bdl.ref, wf, w, h);
+}
+
+/** @brief Render the live freeze backdrop at the first present that is not a source since its source changed, or since frozen_tex lost its image.
+ *
+ * Runs on the presenting thread before the present's frame opens, with the
+ * present's scene selected (s_ps_slot on its ring slot, or NULL for the live
+ * scene of an inline present). The source is the scene of the last world
+ * present displayed, its ring slot kept from retiring (s_ring_bd_keep):
+ * its re-extracted scene, alpha, compose inputs and retained-terrain state,
+ * rendered before this present's upload, so the device VRAM is the one that
+ * present composed against. With no kept slot (the last world present was
+ * inline, or showed a held scene) the source falls back to the canonical
+ * pin, the newest canonical source scene. A present that is a source needs
+ * no backdrop and is left alone. The render is at frozen_live_extent,
+ * under a live --resolution base at the base. Clears the world-present
+ * record compose_variant fills for freeze_bd_note_present. At the same
+ * point the displayed-world reference of the kept slot is written
+ * (OPENPETE_FREEZE_BD_DUMP), under OPENPETE_FREEZE_BD=0 too, which renders
+ * nothing. A no-op headless and before the reference size is known. */
+static void freeze_bd_edge(void)
+{
+    s_bdl.world = 0;
+    s_bdl.world_src = NULL;
+    if (!s_nr.enabled || s_nr.headless || !s_nr.dev || s_nr.ref_w <= 0) return;
+    freeze_bd_ref_fit();
+    const int on = freeze_bd_on();
+    const int ds = ring_bd_keep();
+    const unsigned key = ds >= 0 ? (s_bdl.gen << 1) | 1u : hold_bd_gen() << 1;
+    if (key == 0 || (key == s_bdl.key && (s_nr.frozen_tex.valid || !on))) return;
+    const scene_view_t v = scene_present_view();
+    openpete_tercache_frame_select(v.stamp);
+    if (scene_is_freeze_source(v.tri, v.n, v.freeze)) return;
+    s_bdl.key = key;
+    if (ds >= 0 && s_bdl.ref.valid && s_bdl.ref_id == s_ring[ds].scene_id)
+        freeze_bd_dump(&s_bdl.ref, "ref", s_ring[ds].frame);
+    if (!on) return;
+    int w = 0, h = 0;
+    const float wf = frozen_live_extent(&w, &h);
+    const openpete_render_res_plan_t *base = s_rr.plan.active ? &s_rr.plan : NULL;
+    freeze_bd_render_t r = { 0, 0, 0 };
+    int drew = 1;
+    if (ds >= 0) {
+        const scene_slot_t *sl = &s_ring[ds];
+        freeze_bd_render_slot(&s_nr.frozen_tex, wf, base, sl, 0, &r);
+        /* The render's GPU reads retire with the frame after it. */
+        SDL_LockMutex(ring_mx());
+        s_ring[ds].presented_serial = rhi_frame_serial(s_nr.dev) + 1u;
+        SDL_UnlockMutex(ring_mx());
+        s_bdl.disp++;
+    } else {
+        drew = freeze_bd_render_pin(&s_nr.frozen_tex, wf, base, 0, &r);
+        s_bdl.fallback += drew ? 1u : 0u;
+    }
+    freeze_bd_note_render(drew, r.ahead);
+}
+
+/** @brief Keep the ring slot of a displayed world present as the live freeze-backdrop source, or drop the keep for a world present with no slot of its own.
+ *
+ * Called on the presenting thread after each live present with what
+ * compose_variant recorded. A present that went out and composed a world
+ * scene from its own ring slot replaces the kept slot with it; one that
+ * composed a world scene otherwise (inline, or a held scene standing in for
+ * an empty one) clears the keep, so the next backdrop render falls back to
+ * the canonical pin. Any other present leaves the keep. The replaced slot
+ * retires on its own presented serial.
+ * @param slot The present's ring slot, -1 for an inline present.
+ * @param did Nonzero when the present went out. */
+static void freeze_bd_note_present(int slot, int did)
+{
+    if (!did || !s_bdl.world) return;
+    const int keep = slot >= 0 && s_bdl.world_src == &s_ring[slot] ? slot : -1;
+    SDL_LockMutex(ring_mx());
+    const int was = s_ring_bd_keep;
+    s_ring_bd_keep = keep;
+    SDL_UnlockMutex(ring_mx());
+    if (keep < 0 && was < 0) return;
+    s_bdl.gen++;
+    if (keep >= 0) s_bdl.pins++;
+    else s_bdl.drops++;
+}
+
+/** @brief Return a pool entry's kept scene slot.
+ * @param k The entry.
+ * @return The slot. */
+static const scene_slot_t *hold_bd_slot(int k) { return &s_hold.e[k].sl; }
+
+/** @brief Count one backdrop render request: rendered, or lost when nothing was pinned.
+ * @param drew Nonzero when a pinned scene was rendered.
+ * @param ahead Nonzero when the device's VRAM was already uploaded past the pinned scene. */
+static void freeze_bd_note_render(int drew, int ahead)
+{
+    SDL_LockMutex(hold_mx());
+    s_hold.bd_edges++;
+    if (drew) { s_hold.bd_rendered++; s_hold.bd_vram_ahead += ahead ? 1u : 0u; }
+    else s_hold.bd_lost++;
+    SDL_UnlockMutex(hold_mx());
 }
 
 /** @brief Find the live area whose clip rect is exactly a rect.
@@ -25187,39 +25477,21 @@ static void hold_note_put(void)
     if (isbg) hold_note_clear(s_geom_in[4], s_geom_in[5], s_geom_in[6], s_geom_in[7], rgb[0], rgb[1], rgb[2]);
 }
 
-/** @brief Keep the game's canonical scene under the clip of the last PutDrawEnv before the capture.
+/** @brief Copy the open canonical scene and its compose inputs into a pool entry, with its retained-terrain state.
  *
- * Runs at the canonical capture, after the tick's 2D is in. A re-extracted
- * scene keeps nothing; one with neither a game triangle nor retained
- * terrain of its own keeps nothing either, and when its DRAWENV
- * auto-clears it marks the area cleared (hold_note_put). The copy goes
- * into a pool entry no area names and no compose reads; its scene id is the next ring id, the id the VRAM journal
- * tags this tick's image ops with, so a compose of the copy applies the
- * texels the scene was drawn against. Every other area holding a scene ages
- * by one; past HOLD_STALE it drops its scene. */
-static void hold_retain_canonical(void)
+ * The entry is named by no area and pinned by nothing, so no compose can
+ * reach it: it is filled unlocked. Its scene id is the next ring id, the id
+ * the VRAM journal tags this tick's image ops with, so a compose of the copy
+ * applies the texels the scene was drawn against.
+ * @param k The entry.
+ * @param stamp The scene's stamp.
+ * @param tc_miss Receives whether the scene's retained state held content and its copy missed.
+ * @return 1 when the copy holds the whole scene. */
+static int hold_entry_fill(int k, uint32_t stamp, int *tc_miss)
 {
-    if (!hold_on() || !s_nr.enabled || s_scene_replay) return;
-    const uint32_t stamp = scene_live_stamp();
-    const int tc = openpete_tercache_build_content(stamp) > 0;
-    if (!tc && !scene_has_game_tris(s_scene, s_scene_n)) {
-        /* An empty scene leaves the area it is kept under holding the fill
-         * of its auto-clearing DRAWENV (hold_note_put). */
-        hold_note_put();
-        return;
-    }
-    const int g[8] = { s_geom_in[0], s_geom_in[1], s_geom_in[2], s_geom_in[3],
-                       s_geom_in[4], s_geom_in[5], s_geom_in[6], s_geom_in[7] };
-    if (g[6] <= 0 || g[7] <= 0) return;
-    SDL_LockMutex(hold_mx());
-    int k = -1;
-    for (int i = 0; i < HOLD_POOL && k < 0; i++)
-        if (s_hold.e[i].refs == 0 && s_hold.e[i].busy == 0) k = i;
-    SDL_UnlockMutex(hold_mx());
-    if (k < 0) { s_hold.nofree++; return; }
-    /* Entry k is named by no area, so no compose can reach it: fill it unlocked. */
     scene_slot_t *sl = &s_hold.e[k].sl;
-    if (scene_run_fit(&sl->tri_v, "scene.hold", s_scene_n) < s_scene_n) { s_hold.nofree++; return; }
+    *tc_miss = 0;
+    if (scene_run_fit(&sl->tri_v, "scene.hold", s_scene_n) < s_scene_n) return 0;
     sl->tri = (scene_tri_t*)sl->tri_v.data;
     if (s_scene_n > 0) memcpy(sl->tri, s_scene, (size_t)s_scene_n * sizeof(scene_tri_t));
     sl->n = s_scene_n; sl->bg = s_scene_bg; sl->fade = s_scene_fade; sl->freeze = s_scene_freeze;
@@ -25231,8 +25503,22 @@ static void hold_retain_canonical(void)
     snap_copy(&sl->snap, &s_snap_live);
     sl->scene_id = s_scene_id_next;
     sl->kind = OP_PACE_CANONICAL; sl->alpha = 0.0; sl->paired = 0; sl->target_ns = 0;
+    unsigned m0 = 0, m1 = 0;
+    openpete_tercache_hold_counts(NULL, &m0, NULL);
     openpete_tercache_hold_take(k, stamp);
-    SDL_LockMutex(hold_mx());
+    openpete_tercache_hold_counts(NULL, &m1, NULL);
+    *tc_miss = m1 != m0 && openpete_tercache_build_content(stamp) > 0;
+    return 1;
+}
+
+/** @brief File a filled pool entry under a draw area, ageing every other area that holds a scene.
+ *
+ * Past HOLD_STALE scenes retained elsewhere an area drops its scene. The
+ * caller holds the store's lock.
+ * @param k The entry.
+ * @param g The capture geometry (the s_geom_in layout); the area is its clip rect. */
+static void hold_area_file(int k, const int g[8])
+{
     hold_area_t *a = hold_area_claim(g[4], g[5], g[6], g[7]);
     hold_area_release(a);
     a->entry = k; s_hold.e[k].refs++;
@@ -25243,10 +25529,58 @@ static void hold_retain_canonical(void)
         if (++o->stale > HOLD_STALE) { hold_area_release(o); o->writer = HOLD_W_NONE; s_hold.stale_drops++; }
     }
     s_hold.retained++;
+}
+
+/** @brief Keep the game's canonical scene under the clip of the last PutDrawEnv before the capture, and pin it as the freeze-backdrop source when it is one.
+ *
+ * Runs at the canonical capture, after the tick's 2D is in. A re-extracted
+ * scene keeps nothing; one with neither a game triangle nor retained
+ * terrain of its own keeps nothing either, and when its DRAWENV
+ * auto-clears it marks the area cleared (hold_note_put). The copy goes
+ * into a pool entry no area names, no pin holds and no compose reads
+ * (hold_entry_fill). Under OPENPETE_HOLD=0 only a source scene is kept, for
+ * the pin, under no area. A source scene (scene_is_freeze_source_tc with
+ * the content of the state its build wrote) replaces the pin
+ * (hold_pin_backdrop); a source that finds no free entry leaves the older
+ * pin and is counted. */
+static void hold_retain_canonical(void)
+{
+    if (!s_nr.enabled || s_scene_replay) return;
+    const uint32_t stamp = scene_live_stamp();
+    const int tcb = openpete_tercache_build_content(stamp);
+    const bool src = scene_is_freeze_source_tc(s_scene, s_scene_n, s_scene_freeze, tcb);
+    const int area_on = hold_on();
+    if (!area_on && !src) return;
+    if (tcb <= 0 && !scene_has_game_tris(s_scene, s_scene_n)) {
+        /* An empty scene leaves the area it is kept under holding the fill
+         * of its auto-clearing DRAWENV (hold_note_put). */
+        hold_note_put();
+        return;
+    }
+    const int g[8] = { s_geom_in[0], s_geom_in[1], s_geom_in[2], s_geom_in[3],
+                       s_geom_in[4], s_geom_in[5], s_geom_in[6], s_geom_in[7] };
+    const int file = area_on && g[6] > 0 && g[7] > 0;
+    if (!file && !src) return;
+    SDL_LockMutex(hold_mx());
+    int k = -1;
+    for (int i = 0; i < HOLD_POOL && k < 0; i++)
+        if (s_hold.e[i].refs == 0 && s_hold.e[i].busy == 0) k = i;
+    SDL_UnlockMutex(hold_mx());
+    int tc_miss = 0;
+    if (k < 0 || !hold_entry_fill(k, stamp, &tc_miss)) {
+        SDL_LockMutex(hold_mx());
+        s_hold.nofree++;
+        s_hold.bd_nofree += src ? 1u : 0u;
+        SDL_UnlockMutex(hold_mx());
+        return;
+    }
+    SDL_LockMutex(hold_mx());
+    if (file) hold_area_file(k, g);
+    if (src) { hold_pin_backdrop(k); s_hold.bd_tc_miss += tc_miss ? 1u : 0u; }
     SDL_UnlockMutex(hold_mx());
     if (hold_census())
-        fprintf(stderr, "[hold] retain f=%u stamp=%u n=%d tc=%d area=%d,%d %dx%d disp=%d,%d entry=%d\n",
-                s_scene_frame, stamp, s_scene_n, tc, g[4], g[5], g[6], g[7], g[0], g[1], k);
+        fprintf(stderr, "[hold] retain f=%u stamp=%u n=%d tc=%d area=%d,%d %dx%d disp=%d,%d entry=%d pin=%d\n",
+                s_scene_frame, stamp, s_scene_n, tcb > 0, g[4], g[5], g[6], g[7], g[0], g[1], k, (int)src);
 }
 
 void openpete_native_hold_note_vram(int x, int y, int w, int h, int src_x, int src_y)
@@ -25306,11 +25640,20 @@ static int hold_take_for_compose(int area, unsigned stamp)
     return k;
 }
 
-/** @brief Print the held-scene census line at shutdown.
+/** @brief Print the held-scene and freeze-backdrop census lines at shutdown.
  *
  * Printed unconditionally, so a run whose empty composes took no branch is
  * told from one that never had an empty compose: the empty composes by
- * branch, then the store's retains, marks and drops and the terrain holds. */
+ * branch, then the store's retains, marks and drops and the terrain holds.
+ * The `[freeze-bd]` line counts the backdrop renders, the render requests
+ * (a live present that is not a source after a source change or a lost
+ * backdrop, a headless settle), the requests with nothing to render, the
+ * canonical source scenes that found no free entry, the canonical pins whose
+ * terrain copy missed, the renders whose device VRAM was already past the
+ * rendered scene, and the canonical pins; then, live, the renders of a
+ * displayed scene's kept ring slot and of the canonical pin in its place
+ * (fallback), the world presents that kept their slot, and the world
+ * presents with no slot of their own that dropped the keep. */
 static void hold_report(void)
 {
     unsigned tk = 0, tm = 0, td = 0;
@@ -25320,6 +25663,11 @@ static void hold_report(void)
             s_hold.c_vram, s_hold.c_held, s_hold.c_lost, s_hold.c_clear, s_hold.c_vram_area,
             s_hold.retained, s_hold.nofree, s_hold.vram_marks, s_hold.inherits,
             s_hold.stale_drops, tk, tm, td, hold_on() ? "" : " (OPENPETE_HOLD=0)");
+    fprintf(stderr, "[freeze-bd] rendered=%u edges=%u lost=%u nofree=%u tc_miss=%u vram_ahead=%u pins=%u"
+                    " displayed=%u fallback=%u keeps=%u keep_drops=%u%s\n",
+            s_hold.bd_rendered, s_hold.bd_edges, s_hold.bd_lost, s_hold.bd_nofree, s_hold.bd_tc_miss,
+            s_hold.bd_vram_ahead, s_hold.bd_gen, s_bdl.disp, s_bdl.fallback, s_bdl.pins, s_bdl.drops,
+            freeze_bd_on() ? "" : " (OPENPETE_FREEZE_BD=0)");
 }
 
 /* The held scene an empty compose stands in, with its fade composed with
@@ -25451,8 +25799,8 @@ static void hold_redirect_end(int k, const scene_slot_t *prev)
 
 void openpete_native_render_snapshot_present_begin(void)
 {
-    if (!s_nr.enabled || !s_nr.headless || !s_frz.pending) return;
-    if (!freeze_src_verdict(NULL)) freeze_src_settle();
+    if (!s_nr.enabled || !freeze_src_pending()) return;
+    if (!freeze_src_verdict()) freeze_src_settle();
 }
 
 void openpete_native_render_snapshot_settle(void)
@@ -25462,26 +25810,18 @@ void openpete_native_render_snapshot_settle(void)
 
 void openpete_native_render_snapshot_frozen(float cap_wf)
 {
-    if (!s_nr.enabled) return;
+    if (!s_nr.enabled || !s_nr.headless) return;
     ps_apply_geometry();
     if (cap_wf < 1.0f) cap_wf = 1.0f;
-    int subtick = 0;
-    const bool src = freeze_src_verdict(&subtick);
-    s_frz.subtick += subtick ? 1u : 0u;
-    if (!src) {
-        /* The present-begin verdict kept a pending source because this
+    if (!freeze_src_verdict()) {
+        /* The present-begin verdict left a pin unrendered because this
          * present read as a source there; it reads otherwise now, after the
-         * present services, so the kept render is drawn late. Counted: a
-         * nonzero count breaks the settle's exactness. */
-        if (s_nr.headless && s_frz.pending) { s_frz.flips++; freeze_src_settle(); }
+         * present services, so the render is drawn late. Counted. */
+        if (freeze_src_pending()) { s_frz.flips++; freeze_src_settle(); }
         return;
     }
-    if (s_nr.headless && freeze_src_retain(cap_wf)) {
-        if (freeze_src_verify()) freeze_render_into(&s_frz.vt, cap_wf, 1, NULL);
-        return;
-    }
-    s_bdt.valid = 0;   /* shot_frozen now holds a render no settle tallied */
-    freeze_render_into(&s_nr.shot_frozen, cap_wf, 1, NULL);
+    s_frz.wf = cap_wf;
+    if (freeze_src_verify()) freeze_render_into(&s_frz.vt, cap_wf, 1, NULL);
 }
 
 /** @brief Return the largest 24-bit packed depth over a block of an RGBA8 readback.
@@ -26936,11 +27276,9 @@ void openpete_native_render_shutdown(void)
         fprintf(stderr, "held-fade: retained-only composes=%u held-sum captures=%u\n",
                 s_retained_only_draws, s_area_fade_presents);
     hold_report();
-    if (s_frz.retained || s_frz.settled || s_frz.flips || s_frz.subtick)
-        fprintf(stderr, "freeze-src: retained=%u settled=%u superseded=%u flips=%u subtick_refused=%u"
-                        " verify_match=%u verify_differ=%u\n",
-                s_frz.retained, s_frz.settled, s_frz.superseded, s_frz.flips, s_frz.subtick,
-                s_frz.vmatch, s_frz.vdiff);
+    if (s_frz.settled || s_frz.flips)
+        fprintf(stderr, "freeze-src: settled=%u flips=%u verify_match=%u verify_differ=%u\n",
+                s_frz.settled, s_frz.flips, s_frz.vmatch, s_frz.vdiff);
     rhi_depth_report(s_nr.dev);   /* every pipeline compiled over the run */
     /* Sub-tick view engagement. Reported unconditionally because a run that
      * never opened it cannot support any claim about the sub-tick path, and
@@ -27018,6 +27356,7 @@ void openpete_native_render_shutdown(void)
     rhi_destroy_texture(s_nr.dev, s_nr.shot_rtt);
     rhi_destroy_texture(s_nr.dev, s_nr.shot_frozen.tex);
     if (s_frz.vt.tex) rhi_destroy_texture(s_nr.dev, s_frz.vt.tex);
+    if (s_bdl.ref.tex) rhi_destroy_texture(s_nr.dev, s_bdl.ref.tex);
     rhi_destroy_texture(s_nr.dev, s_nr.frozen_tex.tex);
     rhi_destroy_texture(s_nr.dev, s_nr.frozen_prev.tex);
     rhi_destroy_texture(s_nr.dev, s_nr.ss_rtt);

@@ -376,9 +376,9 @@ static void vk_leg(const openpete_options_t *opts, int shot_key)
 /** @brief Return whether this run maintains the capture freeze backdrop at this present.
  *
  * Every headless run with a canonical, intermediate or present-sequence
- * target and a native scene to snapshot. A windowed run composes the live
- * backdrop itself (capture_freeze_from_offscreen), so only a run without a
- * window keeps the capture copy; without it a freeze scene (pause, results,
+ * target and a native scene to snapshot. A windowed run renders the live
+ * backdrop itself (frozen_tex), so only a run without a window keeps the
+ * capture backdrop; without it a freeze scene (pause, results,
  * level exit) and a retained-framebuffer stretch (DRAWENV.isbg = 0) compose
  * over an empty backdrop.
  * @param opts Session options.
@@ -419,14 +419,12 @@ void openpete_capture_canon_native(const openpete_options_t *opts, int shot_key,
 {
     if (presents_owed && openpete_native_scene_enabled())
         presents_write(opts, "native-canonical");
-    /* Maintain the capture freeze backdrop: this present's world scene
-     * becomes the capture freeze texture's source, so a later headless dump
-     * of a freeze tick (pause / flight-results / level-exit, or a
-     * retained-framebuffer stretch) shows the frozen image. The live path
-     * snapshots frozen_tex only with a window, so a headless capture keeps
-     * it itself. A no-op on freeze/empty scenes, so once the game pauses it
-     * holds the last world scene. The scene is kept and rendered only when a
-     * compose or a non-source present follows. */
+    /* Maintain the capture freeze backdrop: the canonical capture pinned
+     * this tick's scene when it is a freeze source, and the pin is rendered
+     * into the capture backdrop when a compose or a non-source present
+     * follows, so a later headless dump of a freeze tick (pause /
+     * flight-results / level-exit, or a retained-framebuffer stretch) shows
+     * the frozen image. A source present records the widen the render takes. */
     if (freeze_backdrop_run(opts))
         openpete_native_render_snapshot_frozen(openpete_native_widescreen_factor());
     if (openpete_native_render_enabled() && opts->screenshot_frame_count > 0)

@@ -10,4 +10,4 @@ A scene render that went out is not counted in the ring census.
 +    if (did) { sl->state = SS_PRESENTED; sl->presented_serial = after; }
      else      sl->state = SS_FREE;
      SDL_UnlockMutex(ring_mx());
-     return did;
+     freeze_bd_note_present(slot, did);

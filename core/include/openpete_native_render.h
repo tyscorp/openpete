@@ -3625,33 +3625,31 @@ void openpete_native_scene_restore(void);
  * @param on Nonzero to compose the current scene. */
 void openpete_native_render_set_capture_nodelay(int on);
 
-/** @brief Render the current world scene into the capture freeze backdrop.
+/** @brief Note a headless present for the capture freeze backdrop: its widen when it is a source, a late render when it is not.
  *
- * A later headless dump of a freeze tick (pause, flight results, level exit)
- * then shows the green frozen-world backdrop; frozen_tex is snapshotted only
- * with a live window, so a headless capture maintains its own. Only a
- * freeze-source scene is rendered: a freeze, menu or terrain-less scene
- * leaves the backdrop unchanged, so once the game pauses it holds the last
- * world scene. The reference shape is derived from game state when no
- * reference exists. Headless, the source scene is kept instead and rendered
- * only when a compose or a non-source present follows it
+ * The canonical capture of every freeze-source scene pins it as the
+ * backdrop source; a headless capture renders the pin into its own backdrop
+ * when a compose or a present that is not a source follows
  * (openpete_native_render_snapshot_present_begin,
- * openpete_native_render_snapshot_settle); with a window it renders at once.
- * Call each present during a freeze-backdrop capture run.
+ * openpete_native_render_snapshot_settle), so a later dump of a freeze tick
+ * (pause, flight results, level exit) shows the green frozen-world
+ * backdrop. A source present records the capture widen the render takes;
+ * a present that reads as a source only before its services renders the
+ * pin here. No-op with a window, where the live present renders the pin
+ * itself. Call each present during a freeze-backdrop capture run.
  * @param cap_wf The capture's widescreen factor
  *        (openpete_native_widescreen_factor); values below 1 read as 1. */
 void openpete_native_render_snapshot_frozen(float cap_wf);
 
-/** @brief Render a kept freeze-backdrop source at the start of a present that is not a source.
+/** @brief Render the pinned freeze-backdrop source at the start of a present that is not a source.
  *
- * Headless only, where openpete_native_render_snapshot_frozen keeps a
- * source present's scene and compose inputs instead of rendering them. A
- * present that is a source leaves the kept copy for its own snapshot call
- * to replace. Call at the start of every present of a freeze-backdrop
- * capture run, before the present's terrain-cache and occlusion services. */
+ * Headless only, when a pin is newer than the capture backdrop's render. A
+ * present that is a source leaves the render for a later present or
+ * compose. Call at the start of every present of a freeze-backdrop capture
+ * run, before the present's terrain-cache and occlusion services. */
 void openpete_native_render_snapshot_present_begin(void);
 
-/** @brief Render the kept freeze-backdrop source now, when one is pending.
+/** @brief Render the pinned freeze-backdrop source into the capture backdrop now, when a headless run owes it.
  *
  * The capture composes call it themselves; a caller that changes the
  * scene or the terrain state before a compose (the intermediate capture's

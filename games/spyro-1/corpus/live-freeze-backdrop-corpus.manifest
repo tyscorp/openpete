@@ -1,0 +1,21 @@
+# Live freeze-backdrop corpus - tests/harness/check_live_freeze_backdrop.sh
+#
+# Per row one headless capture and one windowed eager replay per tick scale,
+# each to the frame limit; the live frozen_tex at the dump VBL is compared
+# with the scene-only image of the last world present the leg displayed; the
+# headless render of the canonical pin, extracted at the pin VBL, is the
+# tick's own frame the displayed reference must differ from on some leg.
+#
+#   <bk2> | <frame-limit> | <dump VBL> | <pin VBL> | <launch tokens>
+#
+# `launch` takes the presentation-corpus convention: a whitespace-separated
+# token spelled KEY=VALUE with an upper-case key is an environment entry,
+# every other token a command-line argument. OPENPETE_TERRAIN_CACHE_FORCE=1
+# puts the retained terrain cache under test on a software rasteriser;
+# OPENPETE_TC_BAKE_BUDGET_US=off bakes without a wall-time budget, so the
+# live and headless legs bake the same sectors on the same ticks.
+#
+# pause-unpause: the pause starts at VBL 1669 after one gameplay tick, the
+# scene extracted at VBL 1667; under eager presentation the presents before
+# the pause are sub-tick re-extracts between the fade-in frame and it.
+pause-unpause.bk2 | 1730 | 1700 | 1667 | --aspect 4:3 --no-card --lod original --render-paths terrain,spyro,ui OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off

@@ -102,5 +102,24 @@ static int hold_redirect_begin(const scene_slot_t **prev)
  * @param k hold_redirect_begin's return value.
  * @param prev The compose source it saved. */
 static void hold_redirect_end(int k, const scene_slot_t *prev) { (void)k; (void)prev; }
+/** @brief Take and drop the hold lock as the engine's freeze_bd_edge does reading the pin; no backdrop is rendered. */
+static void freeze_bd_edge(void)
+{
+    SDL_Mutex *m = openpete_mutex_once(&s_hold_mx);
+    SDL_LockMutex(m);
+    SDL_UnlockMutex(m);
+}
+/* The ring slot kept as the live freeze-backdrop source; the harness never keeps one. */
+static int s_ring_bd_keep = -1;
+/** @brief Take and drop the ring lock as the engine's freeze_bd_note_present does recording the kept slot; no slot is kept.
+ * @param slot The present's ring slot.
+ * @param did Nonzero when the present went out. */
+static void freeze_bd_note_present(int slot, int did)
+{
+    (void)slot; (void)did;
+    SDL_Mutex *m = openpete_mutex_once(&s_ring_mx);
+    SDL_LockMutex(m);
+    SDL_UnlockMutex(m);
+}
 
 #endif
