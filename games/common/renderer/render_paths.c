@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "openpete_fiber.h"   /* openpete_frame: interval and mark VBLs, the ivdump probe */
+#include "openpete_psx.h"     /* openpete_loop_anchor_ticks: interval and mark ticks */
 #include "renderer/env_knob.h"
 #include "game_layout.h"             /* level_id: the level push */
 #include "openpete_mods.h"           /* openpete_mods_set_level */
@@ -99,7 +100,8 @@ bool render_path_enabled(render_path_t p) {
  * The polybuf double-buffers per frame, so the two tables cover disjoint
  * address banks and cannot false-match each other. */
 #define MAX_INTERVALS 1024
-typedef struct { uint32_t start, end; render_path_t path; unsigned vbl; } interval_t;
+/* vbl and tick: openpete_frame and openpete_loop_anchor_ticks() at the record. */
+typedef struct { uint32_t start, end; render_path_t path; unsigned vbl; uint32_t tick; } interval_t;
 static interval_t s_iv[MAX_INTERVALS];
 static int        s_iv_n = 0;
 static interval_t s_iv_prev[MAX_INTERVALS];
@@ -113,6 +115,7 @@ static unsigned   s_iv_dropped = 0;
  * the intervals so they can never leak into the OT-walk addr filter. */
 static uint32_t s_pending_marks = 0;
 static unsigned s_mark_vbl[RP_COUNT];   /* VBL of each path's pending mark */
+static uint32_t s_mark_tick[RP_COUNT];  /* loop-anchor count at each path's pending mark */
 
 void render_paths_frame_reset(void) {
     if (s_iv_dropped) {
@@ -131,6 +134,7 @@ void render_path_mark_drawn(render_path_t p) {
     if (p < 0 || p >= RP_COUNT) return;
     s_pending_marks |= (1u << (unsigned)p);
     s_mark_vbl[p] = openpete_frame;
+    s_mark_tick[p] = openpete_loop_anchor_ticks();
 }
 
 void render_path_record(render_path_t p, uint32_t start, uint32_t end) {
@@ -147,8 +151,9 @@ void render_path_record(render_path_t p, uint32_t start, uint32_t end) {
     /* A range that continues the previous one of the same path extends it:
      * the 2D layer records one range per primitive, and the polybuf allocates
      * them back to back. */
+    const uint32_t tick = openpete_loop_anchor_ticks();
     if (s_iv_n > 0 && s_iv[s_iv_n - 1].path == p && s_iv[s_iv_n - 1].end == start &&
-        s_iv[s_iv_n - 1].vbl == openpete_frame) {
+        s_iv[s_iv_n - 1].vbl == openpete_frame && s_iv[s_iv_n - 1].tick == tick) {
         s_iv[s_iv_n - 1].end = end;
         return;
     }
@@ -164,6 +169,7 @@ void render_path_record(render_path_t p, uint32_t start, uint32_t end) {
     s_iv[s_iv_n].end   = end;
     s_iv[s_iv_n].path  = p;
     s_iv[s_iv_n].vbl   = openpete_frame;
+    s_iv[s_iv_n].tick  = tick;
     s_iv_n++;
 }
 
@@ -183,6 +189,17 @@ void render_paths_canon_snapshot(void) {
     s_canon_mask = m;
 }
 
+/** @brief Test whether an interval or mark belongs to the render opening a scene.
+ *
+ * @param vbl The record's VBL.
+ * @param rec_tick The record's loop-anchor count.
+ * @param frame The VBL stamp of the scene being opened.
+ * @param tick The loop-anchor count of the render opening it.
+ * @return Nonzero for a record of a later VBL, or of that VBL and tick. */
+static int render_mark_current(unsigned vbl, uint32_t rec_tick, unsigned frame, uint32_t tick) {
+    return vbl > frame || (vbl == frame && rec_tick == tick);
+}
+
 /** @brief Drops what a render superseded before any canonical present recorded, when the game's next render first captures or opens its scene.
  *
  * Registered with openpete_native_scene_register_superseded. The canonical
@@ -190,8 +207,11 @@ void render_paths_canon_snapshot(void) {
  * intervals and drawn marks recorded on VBLs before that scene's VBL leave
  * the pending set, and the canonical-render epoch moves past the captures
  * the superseded render stamped (spyro_native_canon_epoch_supersede). A
- * render never spans a VBL boundary, so a path the new scene's render
- * recorded before its first feed opened the scene stays; its producer
+ * render never spans a VBL boundary or a loop-anchor entry, so a path the
+ * new scene's render recorded before its first feed opened the scene stays:
+ * an interval or mark of the new scene's VBL stays when its loop-anchor
+ * count is the current one, and one of an earlier tick rendered at the same
+ * VBL (a render that skipped its VSync wait) leaves. Its producer
  * captures stay with it because the callback runs at the render's first
  * capture, before any is stamped (openpete_native_scene_note_game_capture).
  *
@@ -205,11 +225,13 @@ void render_paths_canon_snapshot(void) {
  * @param frame The VBL stamp of the scene being opened. */
 static void render_paths_superseded(unsigned frame) {
     int w = 0;
+    const uint32_t tick = openpete_loop_anchor_ticks();
     for (int i = 0; i < s_iv_n; i++)
-        if (s_iv[i].vbl >= frame) s_iv[w++] = s_iv[i];
+        if (render_mark_current(s_iv[i].vbl, s_iv[i].tick, frame, tick)) s_iv[w++] = s_iv[i];
     s_iv_n = w;
     for (int p = 0; p < RP_COUNT; p++)
-        if (s_mark_vbl[p] < frame) s_pending_marks &= ~(1u << (unsigned)p);
+        if (!render_mark_current(s_mark_vbl[p], s_mark_tick[p], frame, tick))
+            s_pending_marks &= ~(1u << (unsigned)p);
     if (spyro_native_canon_capture_open()) spyro_native_canon_epoch_supersede();
 }
 

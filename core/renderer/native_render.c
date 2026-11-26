@@ -15,6 +15,7 @@
  */
 
 #include "openpete_fiber.h"  /* openpete_feed_key_now: instrument line labels */
+#include "openpete_psx.h"    /* openpete_loop_anchor_ticks: the game tick a scene's render belongs to */
 #include "openpete_native_render.h"
 #include "openpete_present_thread.h"
 #include "openpete_pace_log.h"
@@ -1622,6 +1623,9 @@ static unsigned s_scene_key = 0xFFFFFFFFu;
 /* Stamp of the last begin_frame made outside the sub-tick view: the game's own
  * render, never a re-extract. 0xFFFFFFFF before the first. */
 static unsigned s_scene_game_frame = 0xFFFFFFFFu;
+/* openpete_loop_anchor_ticks() when the game's render last opened a scene:
+ * the game tick whose render s_scene holds while s_scene_replay is clear. */
+static uint32_t s_scene_game_tick;
 static void (*s_scene_frame_close_cb)(unsigned frame);  /* see the frame-close section */
 static void (*s_scene_superseded_cb)(unsigned frame);  /* see openpete_native_scene_register_superseded */
 /* 1 from the game render's opening of a scene until the canonical capture
@@ -1666,7 +1670,7 @@ static unsigned s_game_scene_opens;
  * scene the game's render fed since the previous capture, and the triangles
  * those fed scenes held. Reported at shutdown as the `native-feed:` line,
  * which a harness reads to prove the native feed ran. */
-static struct { uint64_t captures, fed, tris; } s_feed_census;
+static struct { uint64_t captures, fed, tris, same_vbl_opens, same_vbl_superseded; } s_feed_census;
 /* The canonical present's repeat verdict (openpete_native_scene_canon_repeat),
  * -1 until it is first asked for and again after the capture. */
 static int s_canon_repeat = -1;
@@ -1836,8 +1840,11 @@ static void scene_faceid_debug(int report) {
  * Warns once when the scene store refused triangles, reports a new demand
  * peak under OPENPETE_SCENE_CAPDBG, applies the blend-class drop and the
  * face-identity diagnostics, runs the blend census, then pushes the scene
- * (scene_hist_push). */
-static void scene_close_completed(void) {
+ * (scene_hist_push) unless a later render at its VBL superseded it.
+ * @param push Nonzero pushes the scene into the ring. Zero leaves the ring
+ * as it was: the scene was never presented and holds the stamp of the
+ * scene that replaces it, which a stamp lookup must find alone. */
+static void scene_close_completed(int push) {
     /* Permanent safety net: if the scene cap is ever exceeded, terrain/
      * mobys silently vanish - warn once so the cap can be raised rather
      * than leaving a view-dependent dropout in the wild. */
@@ -1860,7 +1867,8 @@ static void scene_close_completed(void) {
     scene_drop_blend_debug();
     scene_faceid_debug(1);
     alpha_census(s_scene, s_scene_n);  /* census the completed scene (runs even headless) */
-    scene_hist_push();
+    if (push) scene_hist_push();
+    else s_scene_moved = 0;   /* a moved scene's slot stays unnamed by the ring */
 }
 
 /* 1 while the frame-close callback runs: its feeds re-enter begin_frame with
@@ -1901,7 +1909,9 @@ static void scene_early_supersede_census(void) {
 }
 
 void openpete_native_scene_note_game_capture(unsigned frame) {
-    if (!s_game_scene_pending || frame == s_scene_game_frame) return;
+    if (!s_game_scene_pending ||
+        (frame == s_scene_game_frame && openpete_loop_anchor_ticks() == s_scene_game_tick))
+        return;
     if (openpete_subtick_view_active() || !openpete_fiber_in_game()) return;
     if (s_scene_superseded_frame != frame) {
         static int s_cen = -1;
@@ -1913,6 +1923,38 @@ void openpete_native_scene_note_game_capture(unsigned frame) {
         s_scene_early_supersedes++;
     }
     scene_supersede_pending(frame);
+}
+
+/** @brief Test whether a game feed at the open scene's VBL comes from a later game tick than the render that opened the scene.
+ *
+ * A tick whose render skips its VSync wait leaves the next tick to render at
+ * the same VBL (Spyro 1's first gameplay draw after the title: its wait
+ * reads D_80075950.post, which the title draw never wrote). The loop
+ * anchor's entry count names the tick and a render never spans an anchor
+ * entry, so a new count at the open scene's VBL is a new render, which opens
+ * its own scene. A scene a re-extract built (the reclaim) and the feeds of
+ * the frame-close callback, which belong to the closing scene, are excluded.
+ * @param game_feed Nonzero for a feed of the game's render.
+ * @param frame The feed's VBL stamp.
+ * @param tick openpete_loop_anchor_ticks() at the feed.
+ * @return Nonzero when the feed opens a new scene at the same VBL. */
+static int scene_game_retick(int game_feed, unsigned frame, uint32_t tick) {
+    return game_feed && frame == s_scene_frame && !s_scene_replay && !s_scene_close_cb_in &&
+           tick != s_scene_game_tick;
+}
+
+/** @brief Count a scene opened at the open scene's VBL by a later game tick, printing the first eight.
+ *
+ * @param frame The VBL stamp both scenes carry.
+ * @param tick The opening render's loop-anchor count.
+ * @param superseded Nonzero when the closing scene never reached a canonical present. */
+static void scene_same_vbl_note(unsigned frame, uint32_t tick, int superseded) {
+    s_feed_census.same_vbl_opens++;
+    if (superseded) s_feed_census.same_vbl_superseded++;
+    if (s_feed_census.same_vbl_opens <= 8)
+        OPL_INFO_F("native-scene", "same-VBL open vbl=%u key=%u tick %u->%u closing_tris=%d "
+                   "superseded=%d", frame, openpete_feed_key_now(), s_scene_game_tick, tick,
+                   s_scene_n, superseded);
 }
 
 void openpete_native_scene_begin_frame(unsigned frame) {
@@ -1933,7 +1975,13 @@ void openpete_native_scene_begin_frame(unsigned frame) {
      * which is the scene being opened, not the rebuild. */
     const int reclaim = game_feed && frame == s_scene_frame && s_scene_replay &&
                         !s_scene_close_cb_in;
-    if (frame != s_scene_frame || reclaim) {
+    const uint32_t tick = openpete_loop_anchor_ticks();
+    const int retick = scene_game_retick(game_feed, frame, tick);
+    if (frame != s_scene_frame || reclaim || retick) {
+        /* A scene a later tick replaces at its own VBL before any present
+         * took it stays out of the history ring. */
+        const int superseded_same_vbl = retick && s_game_scene_pending;
+        if (retick) scene_same_vbl_note(frame, tick, superseded_same_vbl);
         /* The game opening a scene while its previous scene never reached a
          * canonical present: the present that follows shows this scene only,
          * so what the earlier render recorded for the sub-tick re-extract
@@ -1944,6 +1992,7 @@ void openpete_native_scene_begin_frame(unsigned frame) {
             if (s_game_scene_pending) scene_supersede_pending(frame);
             s_game_scene_pending = 1;
             s_scene_superseded_frame = 0xFFFFFFFFu;
+            s_scene_game_tick = tick;
         }
         if (!reclaim && s_scene_frame != 0xFFFFFFFFu && s_scene_frame_close_cb && !s_scene_close_cb_in) {
             s_scene_close_cb_in = 1;   /* the callback feeds, which re-enters begin_frame */
@@ -1951,7 +2000,7 @@ void openpete_native_scene_begin_frame(unsigned frame) {
             s_scene_close_cb_in = 0;
         }
         if (s_scene_frame != 0xFFFFFFFFu)   /* a completed frame is sitting in s_scene */
-            scene_close_completed();
+            scene_close_completed(!superseded_same_vbl);
         s_scene_epoch++;
 
         s_cur_seq = 0;
@@ -26818,6 +26867,9 @@ void openpete_native_render_shutdown(void)
                (unsigned long long)s_feed_census.captures,
                (unsigned long long)s_feed_census.fed,
                (unsigned long long)s_feed_census.tris, s_nr.headless ? 1 : 0);
+    OPL_INFO_F("native-scene", "same_vbl_opens=%llu superseded=%llu",
+               (unsigned long long)s_feed_census.same_vbl_opens,
+               (unsigned long long)s_feed_census.same_vbl_superseded);
     /* Every thread that drew is joined by now (under the thread split this
      * runs on main after the host-loop thread's join), so the calling thread
      * owns the display for the teardown's pipeline unlinks. */

@@ -1,7 +1,7 @@
 # mutable globals with no form (thread_roles.py census)
 # key-columns: 3
-# written-by: owe
-# head: fd6442950cad32cf68d69761d475882dd19bd400
+# written-by: annotator
+# head: 1bd4b37f55198cc3190ffc37b5f6c804598c49bb
 file	function	name	kind	form	note
 core/config/config.c	-	s_contrib	static	-	
 core/config/config.c	-	s_contrib_n	static	-	
