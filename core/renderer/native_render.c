@@ -24702,6 +24702,7 @@ static struct {
     float        wf;          /* the capture widen at the source present */
     int          pending;     /* sl holds a source present not yet rendered */
     unsigned     retained, settled, superseded, flips;
+    unsigned     subtick;     /* source presents refused as a sub-tick re-extract */
     freeze_target_t vt;       /* OPENPETE_FREEZE_SRC_VERIFY: on-the-spot render */
     unsigned     vmatch, vdiff;
 } s_frz;
@@ -24716,17 +24717,41 @@ static int freeze_src_verify(void) {
     return v;
 }
 
+/** @brief Return whether the selected scene is a re-extract at a paired phase short of the newest tick.
+ *
+ * Such a scene is a sub-tick image between the last two ticks. A headless
+ * canonical present composes the game's own render, so a re-extracted scene
+ * there is the one an intermediate capture leg left in the accumulator: on a
+ * present where the game draws no new scene (the pause-entry present) the
+ * accumulator still holds it. The phase is the one the re-extract that
+ * built the accumulator published (openpete_pace_note_alpha); an unpaired
+ * re-extract, or one at phase 1 (the identity instant), draws the newest
+ * tick.
+ * @return true for a sub-tick scene. */
+static bool freeze_src_subtick(void) {
+    if (!scene_present_replay()) return false;
+    int paired = 0;
+    const double alpha = openpete_pace_extract_alpha(&paired);
+    return paired && alpha < 1.0;
+}
+
 /** @brief Select the composed scene's retained terrain and test whether the scene is a freeze-backdrop source.
  *
  * A freeze scene, a menu scene or a scene whose terrain feed cut out would
- * overwrite the good backdrop with an empty or ground-less one. The verdict
- * reads the selected retained state, so the selection runs first.
+ * overwrite the good backdrop with an empty or ground-less one, and a
+ * sub-tick scene (freeze_src_subtick) would freeze an in-between image where
+ * the PSX freezes the tick's own frame. The verdict reads the selected
+ * retained state, so the selection runs first.
+ * @param subtick When not NULL, receives whether a sub-tick scene was refused.
  * @return true when the scene is a freeze-backdrop source. */
-static bool freeze_src_verdict(void) {
+static bool freeze_src_verdict(int *subtick) {
     int scene_n; uint32_t sbg, sfade, sfreeze;
     const scene_tri_t* sbuf = scene_present_buf(&scene_n, &sbg, &sfade, &sfreeze, NULL, NULL);
     openpete_tercache_frame_select(scene_present_stamp());
-    const bool src = scene_is_freeze_source(sbuf, scene_n, sfreeze);
+    const bool world = scene_is_freeze_source(sbuf, scene_n, sfreeze);
+    const bool sub = world && freeze_src_subtick();
+    if (subtick) *subtick = sub;
+    const bool src = world && !sub;
     if (freeze_leg_probe())
         fprintf(stderr, "[freezeleg f=%u] copies_stamp=%u scene_n=%d twod=%d freeze=%d skip=%d"
                 " has_world=%d has_terrain=%d tc_content=%d\n",
@@ -25423,7 +25448,7 @@ static void hold_redirect_end(int k, const scene_slot_t *prev)
 void openpete_native_render_snapshot_present_begin(void)
 {
     if (!s_nr.enabled || !s_nr.headless || !s_frz.pending) return;
-    if (!freeze_src_verdict()) freeze_src_settle();
+    if (!freeze_src_verdict(NULL)) freeze_src_settle();
 }
 
 void openpete_native_render_snapshot_settle(void)
@@ -25436,7 +25461,9 @@ void openpete_native_render_snapshot_frozen(float cap_wf)
     if (!s_nr.enabled) return;
     ps_apply_geometry();
     if (cap_wf < 1.0f) cap_wf = 1.0f;
-    const bool src = freeze_src_verdict();
+    int subtick = 0;
+    const bool src = freeze_src_verdict(&subtick);
+    s_frz.subtick += subtick ? 1u : 0u;
     if (!src) {
         /* The present-begin verdict kept a pending source because this
          * present read as a source there; it reads otherwise now, after the
@@ -26905,9 +26932,10 @@ void openpete_native_render_shutdown(void)
         fprintf(stderr, "held-fade: retained-only composes=%u held-sum captures=%u\n",
                 s_retained_only_draws, s_area_fade_presents);
     hold_report();
-    if (s_frz.retained || s_frz.settled || s_frz.flips)
-        fprintf(stderr, "freeze-src: retained=%u settled=%u superseded=%u flips=%u verify_match=%u verify_differ=%u\n",
-                s_frz.retained, s_frz.settled, s_frz.superseded, s_frz.flips,
+    if (s_frz.retained || s_frz.settled || s_frz.flips || s_frz.subtick)
+        fprintf(stderr, "freeze-src: retained=%u settled=%u superseded=%u flips=%u subtick_refused=%u"
+                        " verify_match=%u verify_differ=%u\n",
+                s_frz.retained, s_frz.settled, s_frz.superseded, s_frz.flips, s_frz.subtick,
                 s_frz.vmatch, s_frz.vdiff);
     rhi_depth_report(s_nr.dev);   /* every pipeline compiled over the run */
     /* Sub-tick view engagement. Reported unconditionally because a run that
