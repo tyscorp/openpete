@@ -9,6 +9,7 @@
 #include "openpete_native_render.h"  /* isolation toggle */
 #include "openpete_tile_census.h"    /* the tile census names paths through tag_kind_path */
 #include "renderer/orchestrator.h"  /* canonical-render epoch commit */
+#include "renderer/cut_guard.h"     /* cut_canon_commit */
 #include "renderer/terrain.h"       /* deferred terrain feed fallback */
 #include "renderer/moby.h"          /* held overlay-pass feed */
 #include "psyq/psyq_game_hooks.h"   /* the OT walk's view of this filter */
@@ -384,7 +385,8 @@ static void render_paths_census(void) {
  * release it, feeds the held menu overlay moby pass rebuilt from the moby's
  * current state, turns a repeat present the game cleared into an empty one
  * (cyclorama_native_repeat_resolve), latches the canon-drawn mask, prints the census, audits the feed,
- * rolls the intervals, commits the canonical-render epoch (none of these five on
+ * rolls the intervals, commits the canonical-render epoch and records the render
+ * for the camera-cut hold (cut_canon_commit) (none of these six on
  * a repeat present, openpete_native_scene_canon_repeat), then syncs the
  * native background clear and the retained freeze backdrop from the draw
  * environment the next DrawOTag applies. */
@@ -406,6 +408,7 @@ static void render_paths_commit(void) OP_REQUIRES(sim) {
          * the present that just committed become the (only) fresh set for the
          * sub-tick re-extracts that follow. */
         spyro_native_canon_epoch_commit();
+        cut_canon_commit();                  /* the render a held camera cut reads */
     }
     /* Sync the native background clear from g_CurDB->m_DrawEnv (the env the
      * game's DrawOTag will apply to the scene being presented) - the PutDrawEnv

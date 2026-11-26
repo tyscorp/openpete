@@ -2567,6 +2567,7 @@ games/common/renderer/cut_guard.c	-	s_obj_open	static	-
 games/common/renderer/cut_guard.c	-	s_prevq_walked	static	-	
 games/common/renderer/cut_guard.c	cut_census_on	s_on	local	once	= -1, one filler, first reference tests it
 games/common/renderer/cut_guard.c	cut_hold_all_on	s	local	once	= -1, one filler, first reference tests it
+games/common/renderer/cut_guard.c	cut_load_guard_on	s	local	once	= -1, one filler, first reference tests it
 games/common/renderer/cut_guard.c	cut_jump_bound	s	local	-	
 games/common/renderer/cut_guard.c	cut_jump_census_capture	s_min	local	-	
 games/common/renderer/cut_guard.c	cut_jump_markers_on	s	local	once	= -1, one filler, first reference tests it

@@ -3037,6 +3037,8 @@ static const knob_desc_t g_builtin_debug[] = {
         "One line per (func,frame) during level transitions."),
     ENVROW_LATCHED("CUT_HOLD_ALL", "Debug", "1",
         "A held camera cut holds every moby record with it (default 1; 0 = each record keeps its own clock)."),
+    ENVROW_LATCHED("CUT_LOAD_GUARD", "Debug", "1",
+        "A camera cut is not held when tick N-1's canonical render drew no world or a level edge lies between the two ticks, and one verdict holds per tick pair (default 1; 0 = neither)."),
     ENVROW_LATCHED_NOTE("EAGER_POLICY", "Debug", "unset: every level-th slot of the present grid",
         "Eager planner target policy: greedy = evenly spaced targets; any other value = every level-th slot of the present grid."),
     ENVROW_LATCHED("EAGER_COUNT_SPARE", "Debug", "1",

@@ -502,7 +502,7 @@ typedef struct {
 static rx_camera_t rx_stage_camera(uint8_t* cam, int paired,
                                    const openpete_interp_snapshot_t* prev2,
                                    const openpete_interp_snapshot_t* prev,
-                                   const openpete_interp_snapshot_t* curr) {
+                                   const openpete_interp_snapshot_t* curr) OP_REQUIRES(sim) {
     rx_camera_t rc;
     memset(&rc, 0, sizeof rc);
     if (!paired || !cam || !prev || !curr) return rc;

@@ -18,6 +18,7 @@
 
 #include "openpete_interp.h"
 #include "openpete_interp_objs.h"
+#include "openpete_thread_roles.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -366,19 +367,41 @@ int cut_obj_hold(int kind, uint32_t addr, const openpete_interp_obj_t* o,
  * @return 1 when no drawn record refuses, else 0. */
 int cut_scene_holdable(void);
 
+/** @brief Record the canonical render just committed for the camera-cut hold: whether it drew the world and the level edges counted so far.
+ *
+ * Called once per canonical present that commits a render (not on a repeat
+ * present), after the canon-drawn mask is latched. The record of the render
+ * before it moves to the tick N-1 slot. A render draws the world when the
+ * mask holds the terrain or the cyclorama path; the edge count is
+ * openpete_native_level_edges() after the render's terrain walk. */
+void cut_canon_commit(void) OP_REQUIRES(sim);
+
 /** @brief Whether the interval a camera cut ends still has a tick N-1 to show.
  *
- * The alpha is (openpete_interp_present_now() - curr_tick_ns) / period_ns,
+ * The alpha is (openpete_interp_present_now() - curr->tick_ns) / period_ns,
  * or 1 when the period is not positive or the ring's head is stale (its
  * forward endpoint stopped advancing, so there is no open interval). The cut
- * holds while the alpha is below 1 and cut_scene_holdable() passes. The
- * verdict is noted in the census as kind CUT_CAM with reason "hold",
- * "scene" or "stale". A hold records curr_tick_ns as the held stamp
- * cut_held_rolled reads for the rest of the present.
+ * holds while the alpha is below 1 and the pair is holdable. A pair is not
+ * holdable when tick N-1's canonical render drew no world ("noworld"), when
+ * the terrain walk counted a level edge between the canonical renders of
+ * tick N-1 and tick N ("edge"), or when cut_scene_holdable() fails
+ * ("scene"). The holdability verdict is taken on the pair's first present
+ * below alpha 1 and reused on every later present of the same pair (prev and
+ * curr ticks, curr stamp, ring reset generation), so an interval never
+ * switches between showing tick N and tick N-1 before alpha 1.
+ * OPENPETE_CUT_LOAD_GUARD=0 drops the noworld and edge tests and the latch.
+ * The verdict is noted in the census as kind CUT_CAM with reason "hold",
+ * "noworld", "edge", "scene" or "stale"; the census also counts the cut
+ * pairs the noworld or edge test names, the holds over a tick N-1 render
+ * without world, and the pairs whose holdability changed between presents.
+ * A hold records curr->tick_ns as the held stamp cut_held_rolled reads for
+ * the rest of the present.
  * @param period_ns The pair's tick period.
- * @param curr_tick_ns The current snapshot's tick stamp.
+ * @param prev The previous snapshot.
+ * @param curr The current snapshot.
  * @return 1 to hold tick N-1, 0 to show tick N. */
-int cut_camera_hold(double period_ns, op_time_t curr_tick_ns);
+int cut_camera_hold(double period_ns, const openpete_interp_snapshot_t* prev,
+                    const openpete_interp_snapshot_t* curr) OP_REQUIRES(sim);
 
 /** @brief Print a `locate=camcut` line when the ring pair at the present instant is a camera cut.
  *
@@ -435,7 +458,7 @@ void cam_bracket_run(uint8_t* cam, const openpete_interp_snapshot_t* prev2,
                      const openpete_interp_snapshot_t* prev,
                      const openpete_interp_snapshot_t* curr,
                      const cut_cam_desc_t* desc, uint32_t view_off,
-                     cam_bracket_t* out);
+                     cam_bracket_t* out) OP_REQUIRES(sim);
 
 #ifdef __cplusplus
 }

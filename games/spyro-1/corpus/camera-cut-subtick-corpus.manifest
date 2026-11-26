@@ -1,0 +1,14 @@
+# Camera-cut sub-tick corpus - tests/harness/check_camera_cut_subtick.sh
+#
+#   <bk2> | <frame-limit> | <cut VBL>[,...] | <legs> | <launch tokens>
+#
+# A cut VBL is the ctick of the camera-cut pair. Each leg is a windowed eager
+# replay at tick scale 1; `launch` takes the presentation-corpus convention
+# (an upper-case KEY=VALUE token is an environment entry).
+#
+# pause-unpause: the pre-load camera reset (8192,0,8192) cuts to the
+# intro-cutscene castle at ctick 967 (the present at VBL 968 is the second
+# present of that pair) and to the level at ctick 1666; tick N-1 drew no world
+# at both. A hold at VBL 968 presented the empty tick N-1 scene inside the
+# fade-in.
+pause-unpause.bk2 | 1700 | 967,1666 | 6 | --aspect 4:3 --no-card --lod original --render-paths terrain,spyro,ui OPENPETE_TERRAIN_CACHE_FORCE=1 OPENPETE_TC_BAKE_BUDGET_US=off

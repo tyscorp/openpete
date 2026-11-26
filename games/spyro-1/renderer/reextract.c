@@ -2064,7 +2064,7 @@ static void game_reextract_body(void* cpu_v) {
      * (pair_stale) has no open interval to hold and shows the head. */
     const int cam_hold = cam_cut && !pair_stale &&
                          cut_camera_hold(interp_period_ns(prev->tick_ns, curr->tick_ns),
-                                         curr->tick_ns);
+                                         prev, curr);
     const int cam_snap = cam_cut && !cam_hold;
     cut_set_camera_snap(cam_snap);
 

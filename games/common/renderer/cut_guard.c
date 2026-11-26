@@ -6,6 +6,8 @@
 #include "renderer/moby.h"          /* moby_native_canon_drawn_mobys */
 #include "renderer/moby_game.h"     /* moby_game.interp_key */
 #include "renderer/orchestrator.h"   /* spyro_native_canon_epoch_fresh */
+#include "renderer/render_paths.h"   /* render_path_canon_drawn: the world a canonical render drew */
+#include "openpete_native_render.h"  /* openpete_native_level_edges */
 #include "openpete_interp_objs.h"   /* g_openpete_tick_period_ns */
 #include "openpete_psx.h"           /* openpete_psx_to_host_span */
 #include "game_layout.h"
@@ -932,14 +934,111 @@ int cut_scene_holdable(void) {
     return na == 0 && nd == 0 && np == 0;
 }
 
-int cut_camera_hold(double period_ns, op_time_t curr_tick_ns) {
+/* One canonical render as the camera-cut hold reads it. */
+typedef struct cut_canon {
+    int      valid;   /* a canonical commit filled the entry */
+    int      world;   /* the render drew the terrain or the cyclorama */
+    unsigned edges;   /* level edges counted once the render's terrain walk ran */
+    unsigned vbl;     /* the VBL of the commit */
+} cut_canon_t;
+/* [0] the newest committed canonical render (tick N), [1] the one before it
+ * (tick N-1, the render a held cut shows). */
+static cut_canon_t s_canon[2] OP_GUARDED_BY(sim);
+
+/* The holdability verdict of the newest camera-cut pair, and the census
+ * counts of cut_camera_hold. */
+typedef struct cut_pair_latch {
+    int         set;       /* a verdict below alpha 1 was taken for the pair */
+    uint32_t    ptick;     /* prev snapshot's VBL */
+    uint32_t    ctick;     /* curr snapshot's VBL */
+    op_time_t   ctick_ns;  /* curr snapshot's stamp */
+    uint32_t    gen;       /* ring reset generation */
+    const char* why;       /* "hold", "noworld", "edge" or "scene" */
+    long        loadcuts;  /* cut pairs the noworld or edge test names */
+    long        held_noworld; /* holds over a tick N-1 render without world */
+    long        flips;     /* presents whose holdability differs from the pair's previous present */
+} cut_pair_latch_t;
+static cut_pair_latch_t s_pair OP_GUARDED_BY(sim);
+
+void cut_canon_commit(void) OP_REQUIRES(sim) {
+    s_canon[1] = s_canon[0];
+    s_canon[0].valid = 1;
+    s_canon[0].world = render_path_canon_drawn(RP_TERRAIN) || render_path_canon_drawn(RP_CYCLORAMA);
+    s_canon[0].edges = openpete_native_level_edges();
+    s_canon[0].vbl   = openpete_frame;
+}
+
+/** @brief OPENPETE_CUT_LOAD_GUARD: 0 drops the noworld and edge refusals and the per-pair latch; read once.
+ * @return 1 when the guard is on (the default), else 0. */
+static int cut_load_guard_on(void) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_CUT_LOAD_GUARD"); s = (e && *e) ? (*e != '0') : 1; }
+    return s;
+}
+
+/** @brief Which load test refuses holding tick N-1 across a cut: its canonical render drew no world, or a level edge lies between it and tick N's.
+ * @return "noworld", "edge", or NULL when neither applies. */
+static const char* cut_load_refusal(void) OP_REQUIRES(sim) {
+    if (!s_canon[1].valid || !s_canon[1].world) return "noworld";
+    if (s_canon[0].edges != s_canon[1].edges) return "edge";
+    return NULL;
+}
+
+/** @brief The holdability verdict of a cut pair at a present below alpha 1, taken once per pair while the load guard is on.
+ *
+ * A pair other than the latched one opens a new latch and counts in the
+ * census when a load test names it. With the guard on, the latched verdict
+ * of the same pair is returned without re-testing; with it off every present
+ * re-tests and a verdict that differs from the pair's previous one counts as
+ * a flip.
+ * @param prev The previous snapshot.
+ * @param curr The current snapshot.
+ * @return "hold", "noworld", "edge" or "scene". */
+static const char* cut_pair_verdict(const openpete_interp_snapshot_t* prev,
+                                    const openpete_interp_snapshot_t* curr) OP_REQUIRES(sim) {
+    const int guard = cut_load_guard_on();
+    const uint32_t gen = openpete_interp_reset_generation();
+    const int same = s_pair.set && s_pair.ptick == prev->tick && s_pair.ctick == curr->tick &&
+                     s_pair.ctick_ns == curr->tick_ns && s_pair.gen == gen;
+    if (same && guard) return s_pair.why;
+    const char* load = cut_load_refusal();
+    const char* why = (guard && load) ? load : (cut_scene_holdable() ? "hold" : "scene");
+    if (!same) {
+        if (load) s_pair.loadcuts++;
+        if (cut_census_on())
+            fprintf(stderr, "[cut-census vbl=%u] camcut-pair ptick=%u ctick=%u canon=%u/%u "
+                            "world=%d/%d edges=%u/%u load=%s verdict=%s\n",
+                    openpete_frame, prev->tick, curr->tick, s_canon[1].vbl, s_canon[0].vbl,
+                    s_canon[1].world, s_canon[0].world, s_canon[1].edges, s_canon[0].edges,
+                    load ? load : "none", why);
+    } else if ((why[0] == 'h') != (s_pair.why[0] == 'h')) {
+        s_pair.flips++;
+        if (cut_census_on())
+            fprintf(stderr, "[cut-census vbl=%u] camcut-flip ptick=%u ctick=%u was=%s now=%s\n",
+                    openpete_frame, prev->tick, curr->tick, s_pair.why, why);
+    }
+    s_pair.set = 1;
+    s_pair.ptick = prev->tick;
+    s_pair.ctick = curr->tick;
+    s_pair.ctick_ns = curr->tick_ns;
+    s_pair.gen = gen;
+    s_pair.why = why;
+    return why;
+}
+
+int cut_camera_hold(double period_ns, const openpete_interp_snapshot_t* prev,
+                    const openpete_interp_snapshot_t* curr) OP_REQUIRES(sim) {
     double a = (period_ns > 0.0)
-             ? (double)(openpete_interp_present_now() - curr_tick_ns) / period_ns : 1.0;
+             ? (double)(openpete_interp_present_now() - curr->tick_ns) / period_ns : 1.0;
     if (openpete_interp_curr_is_stale()) a = 1.0;
-    const char* why = (a < 1.0) ? (cut_scene_holdable() ? "hold" : "scene") : "stale";
+    const char* why = (a < 1.0) ? cut_pair_verdict(prev, curr) : "stale";
     const int hold = (why[0] == 'h');
-    s_held_ns = (hold && cut_hold_all_on()) ? curr_tick_ns : 0;
+    if (hold && (!s_canon[1].valid || !s_canon[1].world)) s_pair.held_noworld++;
+    s_held_ns = (hold && cut_hold_all_on()) ? curr->tick_ns : 0;
     cut_census_note(CUT_CAM, 0u, hold, why, NULL, NULL);
+    if (cut_census_on())
+        fprintf(stderr, "[cut-census vbl=%u] loadcut pairs=%ld held_noworld=%ld flips=%ld\n",
+                openpete_frame, s_pair.loadcuts, s_pair.held_noworld, s_pair.flips);
     return hold;
 }
 
@@ -996,7 +1095,7 @@ void cam_bracket_run(uint8_t* cam, const openpete_interp_snapshot_t* prev2,
                      const openpete_interp_snapshot_t* prev,
                      const openpete_interp_snapshot_t* curr,
                      const cut_cam_desc_t* desc, uint32_t view_off,
-                     cam_bracket_t* out) {
+                     cam_bracket_t* out) OP_REQUIRES(sim) {
     cam_bracket_t r = { 0, 0, 0, 0, 0.0, NULL, { 0.0, 0.0, 0.0 }, 0.0 };
     s_cam_snap = 0;
     s_held_ns = 0;
@@ -1015,7 +1114,7 @@ void cam_bracket_run(uint8_t* cam, const openpete_interp_snapshot_t* prev2,
                           / (double)g_openpete_tick_period_ns;
     r.stale = pair_age > CUT_PAIR_STALE_TICKS;
     r.hold = r.cut && !r.stale &&
-             cut_camera_hold(period, curr->tick_ns);
+             cut_camera_hold(period, prev, curr);
     if (r.cut && !r.hold) { s_cam_snap = 1; if (out) *out = r; return; }
 
     r.alpha = (double)(openpete_interp_present_now() - curr->tick_ns) / period;
