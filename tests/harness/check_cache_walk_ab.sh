@@ -5,11 +5,11 @@
 # The retained cache draws a static sector from a persistent vertex buffer and
 # re-derives the per-face decisions (LOD tier, near/HQ subdivision, far cull,
 # the CLUT-ladder fog row) in its own vertex stage in fp32; the CPU walk takes
-# the same decisions on the host in double and feeds the scene stages. The
-# two feeds are one scene up to the fp32 rounding of the cache's position
-# chain: a vertex may cross a raster snap boundary the walk's does not, which
-# moves an edge pixel or takes the neighbouring texel at a texel boundary.
-# llvmpipe is deterministic, so the count is a fixed number per row.
+# the same decisions on the host and feeds the scene stages, its vertex
+# positions through the same float chain (terrain.c tn_vert_project). A vertex
+# the two chains round differently crosses a raster snap boundary, which moves
+# an edge pixel or takes the neighbouring texel at a texel boundary. llvmpipe
+# is deterministic, so the count is a fixed number per row.
 #
 # Instrument: two legs of one build on one device at the same pose and the
 # same pinned VBL, differing only in the feed.

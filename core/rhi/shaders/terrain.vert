@@ -47,10 +47,11 @@
  * are evaluated (redundantly but face-uniformly) per vertex; a culled face
  * collapses all of its vertices to a degenerate point.
  *
- * Precision against the walk: the CPU walk does this math in double and
- * rounds each screen coordinate to float once. This stage runs the same
- * ops in the same order (`precise` - no FMA contraction) in fp32, so it
- * matches the walk within the fp32 rounding of the chain, not bit for bit.
+ * Precision against the walk: the CPU walk runs this chain in fp32 through
+ * the same camera split (openpete_tercache_cam_split) and the same ops in
+ * the same order (tn_vert_project, proj_screen, cv_mid, tn_clip_lerp), and
+ * this stage is `precise` (no FMA contraction), so walk and cache produce
+ * the same screen coordinates and W.
  * HQ sub-quad nodes are built by averaging the TRANSFORMED
  * corner values (cv_mid mirrors), never by transforming baked midpoints -
  * the CPU's float rounding differs between the two.

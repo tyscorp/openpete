@@ -479,27 +479,61 @@ static void terrain_dump(CPUState* cpu) {
 /* Projection params (file-static so the clip/emit path can re-project clipped
  * vertices). Set per frame in terrain_build. */
 static double s_ofx, s_ofy, s_H;
+/* The walk's float camera: the retained vertex stage's matrix rows and split
+ * camera (terrain.vert cam_rel, mac_of), built from the walk's own matrix and
+ * camera by the conversion the cache's globals block takes (int16 matrix
+ * entries are exact in float; the camera splits through
+ * openpete_tercache_cam_split). Every walked corner projects through it
+ * (tn_vert_project), so a corner the walk and the cache both draw reaches
+ * the same float view position. Latched per walk in tn_wcfg. */
+typedef struct {
+    float   m[3][3];
+    int32_t ci[3];   /* floor(cam x4) */
+    float   cf[3];   /* cam x4 - ci, in [0, 1) */
+} tn_f32view;
+
+/** @brief Builds the walk's float camera from its matrix and camera, as the cache's globals block converts them.
+ * @param F Receives the float camera.
+ * @param M The walk's projection matrix.
+ * @param camx The camera's x, world/16.
+ * @param camy Its y.
+ * @param camz Its z. */
+static void tn_f32view_set(tn_f32view* F, const int (*M)[3], double camx, double camy, double camz) {
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++) F->m[r][c] = (float)M[r][c];
+    openpete_tercache_cam_split(camx, &F->ci[0], &F->cf[0]);
+    openpete_tercache_cam_split(camy, &F->ci[1], &F->cf[1]);
+    openpete_tercache_cam_split(camz, &F->ci[2], &F->cf[2]);
+}
 /* Displayed frame bounds in PSX screen pixels: x lo, x hi, y lo, y hi. Set per
  * walk in terrain_build. */
 static double s_frame_b[4];
 
-/** @brief Projects a camera-space point to the screen: the float mirror of RTPS with TR = 0.
+/** @brief Projects a camera-space point to the screen in float: the retained vertex stage's proj_of.
  *
- * The camera-space MAC = (M*V)>>12 is ngte_mac (shared); SX/SY = OFX/OFY +
- * MAC1/2 * H / MAC3. The LP-world/16 vs HP-world/4 scale cancels in the
- * MAC1/MAC3 ratio, so V can be built in any consistent unit (world/16).
- * MAC3 is clamped to at least 1e-9, so a point at or behind the eye
- * projects to a finite, far off-screen position.
+ * SX/SY = OFX/OFY + MAC1/2 * H / MAC3, each operation one float rounding in
+ * proj_of's order: OFX, OFY, H and the camera-space inputs round to float
+ * first (the cache's globals block rounds the same doubles once),
+ * MAC3 is clamped to at least 1e-9 (a point at or behind the eye projects to
+ * a finite, far off-screen position), then (MAC * H) / z + OF. A corner
+ * from tn_vert_project is already float, and a midpoint of two (the HQ and
+ * near subdivides' (a + b) * 0.5 in double) rounds to the float the stage's
+ * single float add and halving give.
  * @param m1 Camera-space X (MAC1).
  * @param m2 Camera-space Y (MAC2).
  * @param m3 Camera-space depth (MAC3).
  * @param sx Receives the screen X.
  * @param sy Receives the screen Y. */
-
 static void proj_screen(double m1, double m2, double m3, float* sx, float* sy) {
-    double z = (m3 > 1e-9) ? m3 : 1e-9;
-    *sx = (float)(s_ofx + m1 * s_H / z);
-    *sy = (float)(s_ofy + m2 * s_H / z);
+    const float mz = (float)m3;
+    const float z = mz > 1e-9f ? mz : 1e-9f;
+    const float H = (float)s_H;
+    float px = (float)m1 * H;
+    float py = (float)m2 * H;
+    px = px / z;
+    py = py / z;
+    *sx = (float)s_ofx + px;
+    *sy = (float)s_ofy + py;
 }
 
 /** @brief Tests whether a point lies inside or on the edge of a screen triangle, by edge-function signs.
@@ -1451,12 +1485,47 @@ static void tn_hqfog_nodes(const tn_wctx* W, ngte_cvert v[3]) {
     }
 }
 
+/** @brief Cuts edge a-b at the near plane in float: the retained vertex stage's cv_lerp_n.
+ *
+ * The endpoint behind the plane (m3 < zc) is taken as a, so two faces that
+ * share the edge cut it by one rounding sequence; t = (zc - a.m3) /
+ * (b.m3 - a.m3) clamped to [0, 1], and the camera-space x and y, the UV and
+ * the face-local coordinate lerp at t, every operation a float rounding as
+ * the stage takes it. The colour and its residual mix at t through
+ * ngte_rgb_mix. The cut carries no screen override and no far colour.
+ * @param a One endpoint.
+ * @param b The other; exactly one of the two lies behind zc.
+ * @param zc The near plane's view-Z.
+ * @return The cut vertex, at m3 = zc. */
+static ngte_cvert tn_clip_lerp(ngte_cvert a, ngte_cvert b, double zc) {
+    if (a.m3 >= zc) { const ngte_cvert sw = a; a = b; b = sw; }
+    const float z = (float)zc, az = (float)a.m3, bz = (float)b.m3;
+    const float num = z - az, den = bz - az;
+    float t = num / den;
+    t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+    const float a1 = (float)a.m1, a2 = (float)a.m2;
+    const float d1 = (float)b.m1 - a1, d2 = (float)b.m2 - a2;
+    const float p1 = t * d1, p2 = t * d2;
+    ngte_cvert r;
+    r.osx = r.osy = 0.0f; r.oflag = 0;
+    r.m1 = a1 + p1;
+    r.m2 = a2 + p2;
+    r.m3 = z;
+    const float du = b.u - a.u, dv = b.v - a.v, dfx = b.fx - a.fx, dfy = b.fy - a.fy;
+    const float tu = t * du, tv = t * dv, tfx = t * dfx, tfy = t * dfy;
+    r.u = a.u + tu; r.v = a.v + tv;
+    r.fx = a.fx + tfx; r.fy = a.fy + tfy;
+    r.rgb = ngte_rgb_mix(a.rgb, a.rgbq, b.rgb, b.rgbq, (double)t, &r.rgbq);
+    r.rgbf = 0;
+    return r;
+}
+
 /** @brief Near-plane clips a camera-space triangle and pushes the result.
  *
  * ngte_near_clip_tri against the plane m3 >= s_nearz: 0 vertices behind
  * gives 1 triangle, 1 gives a quad (2 triangles, fanned from corner 0), 2
  * give 1 triangle, 3 drop the face and count dbg_behind. A crossing corner is
- * ngte_clip_lerp of its edge. A clipped push counts dbg_clipped. A crossing
+ * tn_clip_lerp of its edge. A clipped push counts dbg_clipped. A crossing
  * far off screen is clipped to the view by the rasterizer (op_scene_clip:
  * clip w is the view-Z on the perspective path, 1 on the screen-affine UV
  * path, where the clip runs in screen space). Under emit_hqfog_on each vertex first takes
@@ -1478,7 +1547,7 @@ static void clip_push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, 
     if (nout < 3) { W->dbg_behind++; return; } /* fully behind the near plane */
     ngte_cvert out[4];
     for (int i = 0; i < nout; i++)
-        out[i] = ref[i].cross ? ngte_clip_lerp(in[ref[i].a], in[ref[i].b], s_nearz) : in[ref[i].a];
+        out[i] = ref[i].cross ? tn_clip_lerp(in[ref[i].a], in[ref[i].b], s_nearz) : in[ref[i].a];
     if (clipped) W->dbg_clipped++;
     push_tri(W, out[0], out[1], out[2], m, clipped);   /* fan the clipped polygon */
     if (nout == 4) push_tri(W, out[0], out[2], out[3], m, clipped);
@@ -1523,16 +1592,21 @@ static uint32_t tn_rgb_mid(uint32_t a, uint32_t b) {
 }
 /** @brief Camera-space midpoint of two cverts.
  *
- * Position and the fx/fy terms are averaged, each channel of the near (rgb)
- * and far (rgbf) colours is (a + b) >> 1 (tn_rgb_mid), and UV, the screen position and the outcode flag are zeroed
- * for the caller to fill. Mirrors the near pass's `(a+b)>>1` grid build.
+ * Position and the fx/fy terms are averaged, the position rounded to float
+ * (the retained vertex stage's NODE_MID, (a + b) * 0.5 in float, for float
+ * endpoints), each channel of the near (rgb) and far (rgbf) colours is
+ * (a + b) >> 1 (tn_rgb_mid), and UV, the screen position and the outcode
+ * flag are zeroed for the caller to fill. Mirrors the near pass's `(a+b)>>1`
+ * grid build.
  * @param a The first vertex.
  * @param b The second vertex.
  * @return The midpoint. */
 static ngte_cvert cv_mid(ngte_cvert a, ngte_cvert b) {
     ngte_cvert r;
     r.osx = r.osy = 0.0f; r.oflag = 0;
-    r.m1 = (a.m1 + b.m1) * 0.5; r.m2 = (a.m2 + b.m2) * 0.5; r.m3 = (a.m3 + b.m3) * 0.5;
+    r.m1 = (float)((a.m1 + b.m1) * 0.5);
+    r.m2 = (float)((a.m2 + b.m2) * 0.5);
+    r.m3 = (float)((a.m3 + b.m3) * 0.5);
     r.u = 0; r.v = 0;
     r.fx = (a.fx + b.fx) * 0.5f; r.fy = (a.fy + b.fy) * 0.5f;
     r.rgb  = tn_rgb_mid(a.rgb, b.rgb);
@@ -16911,6 +16985,7 @@ typedef struct {
     CPUState* cpu;
     int M[3][3], Mbin[3][3];
     double camx, camy, camz;
+    tn_f32view fv;                      /* M and the camera in float (tn_vert_project) */
     int fogRefBase, cullRefS2, texTblMode;
     double cull_wx, cull_wy;            /* sphere-cull half-width scales (1.0 = 4:3) */
     int tier_faithful, lod_handoff;
@@ -18669,22 +18744,46 @@ static int tn_pass_runs(const tn_secverd* SV, const tscache_t* SC, int pass) {
     return 1;
 }
 
-/** @brief Project one sector vertex through the walk camera into a projected-vertex record.
- * @param M The walk's projection matrix.
- * @param s4 The sector origin's x minus the camera's.
- * @param s5 The camera's y minus the sector origin's.
- * @param s6 The camera's z minus the sector origin's.
+/** @brief Projects one sector vertex through the walk's float view into a projected-vertex record.
+ *
+ * The retained vertex stage's chain (terrain.vert cam_rel, mac_of, proj_of)
+ * over F: per axis, the vertex's world position in x4 units against
+ * floor(cam x4), rounded to float once (exact for an integer vertex, whose
+ * difference is under 2^24), then the camera fraction added in float, then
+ * the exact * 0.25; MAC = ((M0 v0 + M1 v1) + M2 v2) * 2^-12 with every
+ * product and sum a float rounding; then proj_screen. A poly-anim
+ * sub-tick vertex (fractional X, Y, Z) takes the same chain, its x4
+ * difference rounded once.
+ * @param F The walk's float camera.
+ * @param ox The sector origin's x, world/16.
+ * @param oy Its y.
+ * @param oz Its z.
  * @param X The vertex's x relative to the sector origin.
  * @param Y Its y.
  * @param Z Its z.
  * @param o Receives the view position (m1, m2, m3; vz = m3), ok (m3 > 0) and the screen position. */
-static void tn_vert_project(const int (*M)[3], double s4, double s5, double s6,
+static void tn_vert_project(const tn_f32view* F, int ox, int oy, int oz,
                             double X, double Y, double Z, lvert* o) {
-    double m1, m2, m3;
-    ngte_mac(M, s5 - Y, s6 - Z, X + s4, &m1, &m2, &m3);
-    o->m1 = m1; o->m2 = m2; o->m3 = m3; o->vz = m3; o->ok = (m3 > 0.0);
-    proj_screen(m1, m2, m3, &o->sx, &o->sy);
+    float v[3];
+    v[0] = (float)((double)(F->ci[1] - 4 * oy) - 4.0 * Y);
+    v[1] = (float)((double)(F->ci[2] - 4 * oz) - 4.0 * Z);
+    v[2] = (float)(4.0 * X - (double)(F->ci[0] - 4 * ox));
+    v[0] = v[0] + F->cf[1];
+    v[1] = v[1] + F->cf[2];
+    v[2] = v[2] - F->cf[0];
+    float m[3];
+    for (int r = 0; r < 3; r++) {
+        float a = F->m[r][0] * (v[0] * 0.25f);
+        float b = F->m[r][1] * (v[1] * 0.25f);
+        float c = F->m[r][2] * (v[2] * 0.25f);
+        float t = a + b;
+        t = t + c;
+        m[r] = t * (1.0f / 4096.0f);
+    }
+    o->m1 = m[0]; o->m2 = m[1]; o->m3 = m[2]; o->vz = m[2]; o->ok = (m[2] > 0.0f);
+    proj_screen(m[0], m[1], m[2], &o->sx, &o->sy);
 }
+
 
 /** @brief Walks one visible sector's faces into W's triangle run.
  *
@@ -18702,7 +18801,6 @@ static void tn_vert_project(const int (*M)[3], double s4, double s5, double s6,
 static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
     CPUState* cpu = G->cpu;
     int (*M)[3] = G->M; int (*Mbin)[3] = G->Mbin;
-    double camx = G->camx, camy = G->camy, camz = G->camz;
     int fogRefBase = G->fogRefBase, cullRefS2 = G->cullRefS2, texTblMode = G->texTblMode;
     int tier_faithful = G->tier_faithful;
     const uint32_t hqTableScene = G->hqTable;
@@ -18717,7 +18815,6 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
     (void)tier_faithful;
         int flags   = SC->flags;
         int originX = SC->originX, originY = SC->originY, originZ = SC->originZ;
-        double s4 = originX - camx, s5 = camy - originY, s6 = camz - originZ;
 
         int nLpV = SC->nLpV, nLpF = SC->nLpF;
         int nHpV = SC->nHpV, nHpF = SC->nHpF;
@@ -18911,7 +19008,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
             double Xf, Yf, Zf;
             if (cvF) { Xf = cvF[k*3]; Yf = cvF[k*3+1]; Zf = cvF[k*3+2]; }
             else     { Xf = cverts[k].x; Yf = cverts[k].y; Zf = cverts[k].z; }
-            tn_vert_project((const int (*)[3])M, s4, s5, s6, Xf, Yf, Zf, &sv[k]);
+            tn_vert_project(&G->fv, originX, originY, originZ, Xf, Yf, Zf, &sv[k]);
             const double m3 = sv[k].m3;
             if (m3 > 0.0) {
                 sd_vfront++;
@@ -20010,12 +20107,11 @@ static int tn_face_verdict_at(int vi, int pass, int face) {
     if (!s_pok || face >= P.nf) return TERRAIN_FACE_DROPPED;
     const tsface_t* F = &P.F[face];
     const int ci[4] = { F->i0, F->i1, F->i2, F->i3 };
-    const double s4 = SC->originX - G->camx, s5 = G->camy - SC->originY, s6 = G->camz - SC->originZ;
     for (int q = 0; q < 4; q++) {
         if (ci[q] >= P.nv || ci[q] >= 256) return TERRAIN_FACE_DROPPED;
         double x, y, z;
         tn_pass_xyz(&P, ci[q], &x, &y, &z);
-        tn_vert_project((const int (*)[3])G->M, s4, s5, s6, x, y, z, &sv[ci[q]]);
+        tn_vert_project(&G->fv, SC->originX, SC->originY, SC->originZ, x, y, z, &sv[ci[q]]);
     }
     tn_wctx bank;
     const uint32_t hqTable = tn_pass_bank(&bank, pass == 3, SC, G->hqTable);
@@ -21269,6 +21365,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) OP_REQUIRES(sim) {
     G.cpu = cpu;
     memcpy(G.M, M, sizeof(G.M)); memcpy(G.Mbin, Mbin, sizeof(G.Mbin));
     G.camx = camx; G.camy = camy; G.camz = camz;
+    tn_f32view_set(&G.fv, (const int (*)[3])M, camx, camy, camz);
     {   /* OPENPETE_TERRAIN_CAMDBG=1 (temp): per-build game-camera pose in
          * --freecam-pose form, for replanting a movie frame's view. */
         static int s_camdbg = -1;
@@ -24597,6 +24694,7 @@ int terrain_preview_build(const terrain_host_level* L, const terrain_preview_vie
     G.cpu = &cpu;
     tpv_matrices(V, G.Mbin, G.M);
     G.camx = (double)V->pos[0] / 16.0; G.camy = (double)V->pos[1] / 16.0; G.camz = (double)V->pos[2] / 16.0;
+    tn_f32view_set(&G.fv, (const int (*)[3])G.M, G.camx, G.camy, G.camz);
     G.fogRefBase = (int)(V->lod_dist >> 2);
     G.cullRefS2 = (int)(V->cull_dist >> 7);
     /* The sphere cull at the displayed half-widths, as the walk widens it

@@ -4,13 +4,13 @@
 # (tools/terrain_hole_census.py split) at the count the cap holds.
 # A row whose count falls prints TIGHTEN; lower its cap to the new count.
 # game	row	cap	edge	face	maxdelta
-spyro-1	dream_weavers-9dace6	503	334	169	1
-spyro-1	gnastys_loot-ca95bd	3516	976	2540	33
-spyro-1	magic_crafters-fa5245	5	0	5	10
-spyro-2	crushs_dungeon-f167d0	20	14	6	30
-spyro-2	crushs_dungeon-5feea7-inter	33	31	2	18
-spyro-2	metro_speedway-464858-inter	389	374	15	16
-spyro-2	mystic_marsh-6241c8	31	16	15	10
-spyro-3	molten_crater-43eca3	5	1	4	7
-spyro-3	sunny_villa-b803cb-inter	2735	831	1904	24
-spyro-3	spooky_swamp-be04ca-inter	5125	2028	3097	44
+spyro-1	dream_weavers-9dace6	0	0	0	0
+spyro-1	gnastys_loot-ca95bd	0	0	0	0
+spyro-1	magic_crafters-fa5245	0	0	0	0
+spyro-2	crushs_dungeon-f167d0	0	0	0	0
+spyro-2	crushs_dungeon-5feea7-inter	0	0	0	0
+spyro-2	metro_speedway-464858-inter	0	0	0	0
+spyro-2	mystic_marsh-6241c8	0	0	0	0
+spyro-3	molten_crater-43eca3	0	0	0	0
+spyro-3	sunny_villa-b803cb-inter	0	0	0	0
+spyro-3	spooky_swamp-be04ca-inter	0	0	0	0

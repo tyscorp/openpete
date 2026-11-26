@@ -3362,24 +3362,16 @@ static void tc_f32_copy(float *dst, const double *src, int n)
 
 /** @brief Fill the globals block's camera, projection and rim fields from the published globals.
  *
- * The camera is split per axis in x4 units (the baked corners' scale) into
- * floor(cam x4) and the fraction cam x4 - floor(cam x4); a fraction that
- * rounds up to 1.0f moves into the integer part, so the fraction stays in
- * [0, 1). The scalars and the rim frames are the double fields rounded to
- * float, each once.
+ * The camera is split per axis in x4 units (the baked corners' scale) by
+ * openpete_tercache_cam_split. The scalars and the rim frames are the double
+ * fields rounded to float, each once.
  * @param gu The block, zeroed by the caller.
  * @param g The published globals. */
 static void tc_globals_f32(tc_globals_ubo *gu, const openpete_tercache_globals *g)
 {
     const double cam[3] = { g->camx, g->camy, g->camz };
-    for (int k = 0; k < 3; k++) {
-        const double c4 = cam[k] * 4.0;
-        double fl = floor(c4);
-        float fr = (float)(c4 - fl);
-        if (fr >= 1.0f) { fl += 1.0; fr = 0.0f; }
-        gu->cam_int_x4[k] = (int32_t)fl;
-        gu->cam_frac_x4[k] = fr;
-    }
+    for (int k = 0; k < 3; k++)
+        openpete_tercache_cam_split(cam[k], &gu->cam_int_x4[k], &gu->cam_frac_x4[k]);
     const double ofH[4] = { g->ofx, g->ofy, g->H, g->vanim_alpha };
     const double aux[4] = { g->nearz, g->H_canon, g->canim_alpha, g->fogscale };
     tc_f32_copy(gu->ofH, ofH, 4);

@@ -3,10 +3,9 @@
 # per-pose differing-pixel count against a committed baseline.
 #
 # The walk and the cache are one scene by contract; where they draw different
-# pixels at a pose (the cache's fp32 position chain rounding a vertex across a
-# raster snap boundary the walk's double chain does not, depth ties under the
-# stored depth encoding, a blended-face draw order the two feeds emit
-# differently), the count of those pixels is the
+# pixels at a pose (a vertex position the two chains round differently, depth
+# ties under the stored depth encoding, a blended-face draw order the two feeds
+# emit differently), the count of those pixels is the
 # measured residual of that pose. The freecam golden captures the walk only, so
 # it cannot see a residual whose walk image is already right; this check holds
 # one row per such pose and fails on any change of its count. A drop is a fix

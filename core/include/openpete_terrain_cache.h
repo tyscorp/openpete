@@ -19,6 +19,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <math.h>
 
 /* Forward decls only (full definitions in rhi.h) - this header is included
  * by targets that don't carry the RHI include path (knob registry test), so
@@ -280,6 +281,25 @@ typedef struct {
     float   cov_bbox[6][4];           /* outline screen bbox x0, y0, x1, y1 */
     float   cov_pxy[6][16][2];        /* outline polygon, screen px/py      */
 } openpete_tercache_globals;
+
+/** @brief Split one camera coordinate (world/16) into the globals block's x4 integer and fractional parts.
+ *
+ * c4 = cam x 4 splits as floor(c4) and c4 - floor(c4) rounded to float; a
+ * fraction that rounds up to 1.0f moves into the integer part, so the
+ * fraction stays in [0, 1). The retained vertex stage and the CPU walk read
+ * the camera through this one split (terrain.vert cam_rel).
+ * @param cam The camera coordinate, world/16.
+ * @param ci Receives floor(cam x 4).
+ * @param cf Receives the fraction, in [0, 1). */
+static inline void openpete_tercache_cam_split(double cam, int32_t *ci, float *cf)
+{
+    const double c4 = cam * 4.0;
+    double fl = floor(c4);
+    float fr = (float)(c4 - fl);
+    if (fr >= 1.0f) { fl += 1.0; fr = 0.0f; }
+    *ci = (int32_t)fl;
+    *cf = fr;
+}
 
 /** @brief Create the terrain cache's pipelines, arena buffers and uniform buffer on a device.
  *
