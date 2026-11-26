@@ -64,6 +64,9 @@ static void snap_copy(nr_snap_table *d, const nr_snap_table *s) { *d = *s; }
 /** @brief Stub: no present-trace census.
  * @param sl The slot. */
 static void slot_note_census(scene_slot_t *sl) { (void)sl; }
+/** @brief Stub: the harness never holds a compose.
+ * @param frame Unused. */
+static void hold_stall_for(unsigned frame) { (void)frame; }
 /** @brief Stub: no queued pipeline variant change. */
 static void variant_apply_pending(void) {}
 /** @brief Stub: no material view.
@@ -105,6 +108,24 @@ static void hold_redirect_end(int k, const scene_slot_t *prev) { (void)k; (void)
 /** @brief Take and drop the hold lock as the engine's freeze_bd_edge does reading the pin; no backdrop is rendered. */
 static void freeze_bd_edge(void)
 {
+    SDL_Mutex *m = openpete_mutex_once(&s_hold_mx);
+    SDL_LockMutex(m);
+    SDL_UnlockMutex(m);
+}
+/** @brief Take and drop the hold lock as the engine's hold_slot_verdict does taking a slot's verdict; the slot references no held scene.
+ * @param sl The slot. */
+static void hold_slot_verdict(scene_slot_t *sl)
+{
+    (void)sl;
+    SDL_Mutex *m = openpete_mutex_once(&s_hold_mx);
+    SDL_LockMutex(m);
+    SDL_UnlockMutex(m);
+}
+/** @brief Take and drop the hold lock as the engine's hold_slot_release does, nested under the ring lock when a slot goes free.
+ * @param sl The slot. */
+static void hold_slot_release(scene_slot_t *sl)
+{
+    (void)sl;
     SDL_Mutex *m = openpete_mutex_once(&s_hold_mx);
     SDL_LockMutex(m);
     SDL_UnlockMutex(m);

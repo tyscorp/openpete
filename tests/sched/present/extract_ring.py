@@ -18,6 +18,7 @@ import sys
 
 RING_FUNCTIONS = [
     "ring_mx",
+    "ring_slot_free",
     "openpete_native_scene_publish",
     "openpete_native_scene_next_target",
     "openpete_native_scene_pick",

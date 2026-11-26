@@ -1,0 +1,19 @@
+# Live empty-compose corpus - tests/harness/check_live_empty_compose.sh
+#
+# Per row one headless capture of the guest reference at the og VBL and,
+# per tick scale and repeat, one windowed eager replay to the frame limit
+# that dumps the present of the empty scene at the dump frame; the dump is
+# compared with the reference, and the hold census must count no lost
+# empty compose.
+#
+#   <bk2> | <frame-limit> | <dump frame> | <og VBL> | <launch tokens>
+#
+# `launch` takes the presentation-corpus convention: a whitespace-separated
+# token spelled KEY=VALUE with an upper-case key is an environment entry,
+# every other token a command-line argument.
+#
+# start-new-game: scene frame 412 (VBL 985) is empty; the game then
+# ClearImages both display buffers, after the scene's ring slot took its
+# verdict and before the present thread composes it. The reference is
+# black; the VRAM framebuffer still holds the boot logo upload.
+start-new-game.bk2 | 1046 | 412 | 985 | --aspect 4:3 --lod original

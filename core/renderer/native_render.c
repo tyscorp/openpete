@@ -804,9 +804,15 @@ typedef struct {
                                     * scene shows, -1 for the VRAM framebuffer, HOLD_V_CLEAR
                                     * for an area auto-cleared since (hold_verdict) */
     uint32_t  hold_fill;           /* HOLD_V_CLEAR: the area's fill colour at the capture */
+    int       hold_ref;            /* pool entry + 1 holding the scene hold_area held at the
+                                    * capture, referenced by the slot until it goes free
+                                    * (hold_slot_verdict); 0 none */
 } scene_slot_t;
 static scene_slot_t s_ring[SCENE_RING];
 static int          s_ring_head = -1;          /* last published */
+static void hold_slot_verdict(scene_slot_t *sl);
+static void hold_slot_release(scene_slot_t *sl);
+static void hold_stall_for(unsigned frame);
 static void        *s_ring_mx;   /* SDL_Mutex, openpete_mutex_once */
 static int pc_trace_on(void);
 static const scene_slot_t *s_ps_slot;          /* compose source: NULL = live */
@@ -846,7 +852,7 @@ static void material_fade_fill(psx_material_hd* mh, uint32_t w) {
 }
 
 static void     ps_apply_geometry(void);
-static int      hold_verdict(const int geom[8], uint32_t *fill);
+static int      hold_verdict(const int geom[8], uint32_t *fill, int *ref);
 static void     hold_retain_canonical(void);
 static void     hold_note_clear(int x, int y, int w, int h, int r, int g, int b);
 /* The clear colour an empty compose of an auto-cleared area draws
@@ -23812,7 +23818,15 @@ static void slot_capture_inputs(scene_slot_t *sl) {
     openpete_mods_present_ctx(&sl->pctx_tick, &sl->pctx_alpha, &sl->pctx_canonical);
     openpete_mods_material_view_capture(&sl->matview);
     pack_fog_capture(&sl->pack_fog);
-    sl->hold_area = hold_verdict(s_geom_in, &sl->hold_fill);
+}
+/** @brief Return a ring slot to the free pool, releasing its reference on a held scene (hold_slot_release).
+ *
+ * The caller holds the ring's lock; the store's lock nests inside it.
+ * @param sl The slot. */
+static void ring_slot_free(scene_slot_t *sl)
+{
+    sl->state = SS_FREE;
+    hold_slot_release(sl);
 }
 /* Publish into any free ring slot; see the header. */
 int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int paired) {
@@ -23841,6 +23855,7 @@ int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int
     sl->hud_under = s_scene_hud_under; sl->actor_front = s_scene_actor_front;
     sl->stamp = s_eager_stamp ? s_eager_stamp : s_scene_frame;
     slot_capture_inputs(sl);
+    hold_slot_verdict(sl);
     sl->cover = s_cover_live;
     snap_copy(&sl->snap, &s_snap_live);
     slot_note_census(sl);
@@ -23887,7 +23902,7 @@ int openpete_native_scene_pick(int64_t at, int *due) {
         for (int i = 0; i < SCENE_RING; i++)
             if (i != best && s_ring[i].state == SS_PENDING &&
                 (int32_t)(s_ring[i].scene_id - s_ring[best].scene_id) < 0) {
-                s_ring[i].state = SS_FREE; s_ring_census.superseded++;
+                ring_slot_free(&s_ring[i]); s_ring_census.superseded++;
             }
         s_ring[best].state = SS_PRESENTING;
     }
@@ -23905,7 +23920,7 @@ void openpete_native_scene_retire(uint64_t begun_serial) {
     for (int i = 0; i < SCENE_RING; i++)
         if (s_ring[i].state == SS_PRESENTED && i != s_ring_bd_keep &&
             s_ring[i].presented_serial + RHI_FRAMES_IN_FLIGHT <= begun_serial)
-            s_ring[i].state = SS_FREE;
+            ring_slot_free(&s_ring[i]);
     SDL_UnlockMutex(ring_mx());
 }
 /* True while any unretired scene carries this build stamp. */
@@ -23922,7 +23937,7 @@ int openpete_native_scene_stamp_live(uint32_t stamp) {
 void openpete_native_scene_ring_flush(void) {
     SDL_LockMutex(ring_mx());
     for (int i = 0; i < SCENE_RING; i++)
-        if (s_ring[i].state == SS_PENDING) { s_ring[i].state = SS_FREE; s_ring_census.superseded++; }
+        if (s_ring[i].state == SS_PENDING) { ring_slot_free(&s_ring[i]); s_ring_census.superseded++; }
     SDL_UnlockMutex(ring_mx());
 }
 int openpete_native_scene_ring_pending(void) {
@@ -24119,6 +24134,7 @@ static int render_scene_impl(int slot, int stage, uint64_t record_pts_us)
     openpete_mods_material_view_set(&sl->matview);
     s_stage_target = stage;
     freeze_bd_edge();
+    hold_stall_for(sl->frame);
     const uint64_t before = rhi_frame_serial(s_nr.dev);
     { const scene_slot_t *prev; const int hk = hold_redirect_begin(&prev);
       render_frame_common(record_pts_us, false);
@@ -24141,7 +24157,7 @@ static int render_scene_impl(int slot, int stage, uint64_t record_pts_us)
      * frame went to the swapchain or to a stage image. */
     SDL_LockMutex(ring_mx());
     if (did) { sl->state = SS_PRESENTED; sl->presented_serial = after; s_ring_census.presented++; }
-    else      sl->state = SS_FREE;
+    else      ring_slot_free(sl);
     SDL_UnlockMutex(ring_mx());
     freeze_bd_note_present(slot, did);
     return did;
@@ -25040,9 +25056,13 @@ static void freeze_src_settle(void) {
  * op, and otherwise composes that area's kept scene through the ordinary
  * compose, at the present's own window, aspect, widen and postfx, as if it
  * were the present's scene. The verdict is taken when the scene is captured
- * into a ring slot (slot_capture_inputs) or, for a compose of the live scene,
+ * into a ring slot (hold_slot_verdict) or, for a compose of the live scene,
  * at the compose; both read the guest's state as of the scene, so the VRAM
- * journal the compose applies agrees with it.
+ * journal the compose applies agrees with it. A ring slot whose scene holds
+ * no game triangle references the pool entry its verdict names until it
+ * goes free, so an image op or retain into the area between the publish and
+ * the compose, a tick later on the present thread, does not take the scene
+ * from it.
  *
  * A game that puts its envs after the capture (the DRAWENV put before it
  * belongs to an earlier scene, s_drawenv_put_scene) has both keys name the
@@ -25088,11 +25108,15 @@ static struct {
     unsigned     retained, nofree, vram_marks, inherits, stale_drops;
     unsigned     c_vram, c_held, c_lost, c_clear;   /* empty composes by branch */
     unsigned     c_vram_area;              /* of c_vram: an area whose writer was VRAM */
+    unsigned     c_slot_ref, c_moved;      /* of c_held: by a slot's reference; of those, the
+                                            * area no longer naming the entry at the compose */
     /* The freeze-backdrop pin (hold_pin_backdrop) and its live render. */
     int          bd_pin;                   /* pinned entry + 1, 0 none */
     unsigned     bd_gen;                   /* pins made; the pin's generation */
     int          bd_mode;                  /* OPENPETE_FREEZE_BD: 0 unread, 1 on, 2 off */
     unsigned     bd_edges, bd_rendered, bd_lost, bd_nofree, bd_tc_miss, bd_vram_ahead;
+    int          slot_ref_mode;            /* OPENPETE_HOLD_SLOT_REF: 0 unread, 1 on, 2 off */
+    long         stall_frame;              /* OPENPETE_HOLD_STALL_FRAME: 0 unread, frame + 1, -1 off */
 } s_hold;
 
 /** @brief The hold store's lock, created on first use without a creation race. */
@@ -25106,6 +25130,39 @@ static int hold_on(void)
     static int on = -1;
     if (on < 0) { const char *e = getenv("OPENPETE_HOLD"); on = !(e && *e == '0'); }
     return on;
+}
+
+/** @brief Report whether ring slots reference their held scene, reading OPENPETE_HOLD_SLOT_REF once.
+ *
+ * OPENPETE_HOLD_SLOT_REF=0 is the negative control: a slot keeps only its
+ * verdict's area index, and its empty compose looks the area up as it is
+ * at the compose.
+ * @return 0 under OPENPETE_HOLD_SLOT_REF=0, else 1. */
+static int hold_slot_ref_on(void)
+{
+    if (s_hold.slot_ref_mode == 0) {
+        const char *e = getenv("OPENPETE_HOLD_SLOT_REF");
+        s_hold.slot_ref_mode = (e && *e == '0') ? 2 : 1;
+    }
+    return s_hold.slot_ref_mode == 1;
+}
+
+/** @brief Hold the present thread before composing the scene of frame OPENPETE_HOLD_STALL_FRAME until the guest has begun a later scene.
+ *
+ * Harness knob: the guest runs the tick after the scene, with its image ops,
+ * before the scene's compose, the order a loaded present thread produces.
+ * Waits at most 500 ms; unset does nothing. Read once, on the presenting
+ * thread.
+ * @param frame The slot's scene frame. */
+static void hold_stall_for(unsigned frame)
+{
+    if (s_hold.stall_frame == 0) {
+        const char *e = getenv("OPENPETE_HOLD_STALL_FRAME");
+        s_hold.stall_frame = (e && *e) ? atol(e) + 1 : -1;
+    }
+    if (s_hold.stall_frame <= 0 || frame != (unsigned)(s_hold.stall_frame - 1)) return;
+    for (int i = 0; i < 500 && (int32_t)(__atomic_load_n(&s_scene_frame, __ATOMIC_RELAXED) - frame) < 1; i++)
+        SDL_Delay(1);
 }
 
 /** @brief Report whether the held-scene census is on, reading OPENPETE_HOLD_CENSUS once.
@@ -25385,20 +25442,58 @@ static int hold_area_shown(const int geom[8])
  * scene and still holds it; HOLD_V_CLEAR when an auto-clearing draw of
  * an empty OT wrote it last (hold_note_clear), with the fill colour as of
  * now in @p fill; -1 (the VRAM framebuffer) when an image op wrote it last,
- * no scene was ever captured into it, or the store is off.
+ * no scene was ever captured into it, or the store is off. With @p ref the
+ * area's pool entry gains a reference in the same locked section, so the
+ * entry stays the scene the verdict names whatever later writes the area.
  * @param geom Display x, y, w, h then clip x, y, w, h at the scene's capture.
  * @param fill Receives the fill colour (s_drawenv_clear layout) for HOLD_V_CLEAR, else 0.
+ * @param ref NULL, or receives the referenced entry + 1 for an area index, else 0.
  * @return The area index, HOLD_V_CLEAR, or -1. */
-static int hold_verdict(const int geom[8], uint32_t *fill)
+static int hold_verdict(const int geom[8], uint32_t *fill, int *ref)
 {
     *fill = 0;
+    if (ref) *ref = 0;
     if (!hold_on()) return -1;
     SDL_LockMutex(hold_mx());
     int i = hold_area_shown(geom);
     if (i >= 0 && s_hold.a[i].writer == HOLD_W_CLEAR) { *fill = s_hold.a[i].clear; i = HOLD_V_CLEAR; }
     else if (i >= 0 && (s_hold.a[i].writer != HOLD_W_SCENE || s_hold.a[i].entry < 0)) i = -1;
+    if (ref && i >= 0) { const int k = s_hold.a[i].entry; s_hold.e[k].refs++; *ref = k + 1; }
     SDL_UnlockMutex(hold_mx());
     return i;
+}
+
+/** @brief Take a ring slot's held-scene verdict at its publish, with a reference on the pool entry it names.
+ *
+ * A slot whose scene holds no game triangle can compose empty. Its verdict
+ * (hold_verdict, as of the scene) names an area; the slot references that
+ * area's pool entry, so an image op, retain or stale drop that releases the
+ * area's own reference before the compose leaves the entry filled, and the
+ * compose shows the scene the area held at the capture
+ * (hold_take_for_compose). A slot with a game triangle composes its own
+ * scene (hold_redirect_begin) and references nothing. The reference lives
+ * until the slot goes free (ring_slot_free). Under OPENPETE_HOLD_SLOT_REF=0
+ * no slot references an entry.
+ * @param sl The slot being published, its scene and geometry filled. */
+static void hold_slot_verdict(scene_slot_t *sl)
+{
+    hold_slot_release(sl);
+    const int want = hold_slot_ref_on() && !scene_has_game_tris(sl->tri, sl->n);
+    sl->hold_area = hold_verdict(sl->geom, &sl->hold_fill, want ? &sl->hold_ref : NULL);
+}
+
+/** @brief Release a ring slot's reference on its held scene's pool entry (hold_entry_unref).
+ *
+ * Takes the store's lock; callable under the ring's lock.
+ * @param sl The slot; one holding no reference is left alone. */
+static void hold_slot_release(scene_slot_t *sl)
+{
+    const int k = sl->hold_ref - 1;
+    if (k < 0) return;
+    sl->hold_ref = 0;
+    SDL_LockMutex(hold_mx());
+    hold_entry_unref(k);
+    SDL_UnlockMutex(hold_mx());
 }
 
 /** @brief Record that an auto-clearing draw of an empty OT left a draw area holding only the fill.
@@ -25498,7 +25593,7 @@ static int hold_entry_fill(int k, uint32_t stamp, int *tc_miss)
     sl->hud_under = s_scene_hud_under; sl->actor_front = s_scene_actor_front;
     sl->stamp = stamp; sl->replay = 0;
     slot_capture_inputs(sl);
-    sl->hold_area = -1;
+    sl->hold_area = -1; sl->hold_fill = 0; sl->hold_ref = 0;
     sl->cover = s_cover_live;
     snap_copy(&sl->snap, &s_snap_live);
     sl->scene_id = s_scene_id_next;
@@ -25612,31 +25707,61 @@ void openpete_native_hold_note_vram(int x, int y, int w, int h, int src_x, int s
     SDL_UnlockMutex(hold_mx());
 }
 
+/* The branch an empty compose took (hold_pick_entry), as the census names it. */
+enum { HOLD_B_VRAM = 0, HOLD_B_LOST, HOLD_B_HELD, HOLD_B_REF, HOLD_B_MOVED };
+static const char *const k_hold_branch[] = { "vram", "lost", "held", "held-ref", "held-ref-moved" };
+
+/** @brief Pick the pool entry an empty compose shows and the branch that names it.
+ *
+ * A ring slot that referenced its verdict's entry at the publish
+ * (hold_slot_verdict) takes that entry: HOLD_B_REF while the area still
+ * names it, HOLD_B_MOVED once an image op, retain or stale drop has moved
+ * the area off it. Otherwise the area is looked up as it is now: its
+ * entry (HOLD_B_HELD), or none, HOLD_B_LOST for an area verdict whose area
+ * no longer holds a scene and HOLD_B_VRAM for a VRAM verdict. The caller
+ * holds the store's lock.
+ * @param area The verdict: an area index, or -1 for the VRAM framebuffer.
+ * @param branch Receives the HOLD_B_* branch.
+ * @return The pool entry, or -1 for the VRAM framebuffer. */
+static int hold_pick_entry(int area, int *branch)
+{
+    const int ref = s_ps_slot ? s_ps_slot->hold_ref - 1 : -1;
+    const int named = area >= 0 && s_hold.a[area].writer == HOLD_W_SCENE ? s_hold.a[area].entry : -1;
+    if (ref >= 0) { *branch = ref == named ? HOLD_B_REF : HOLD_B_MOVED; return ref; }
+    if (named >= 0) { *branch = HOLD_B_HELD; return named; }
+    *branch = area >= 0 ? HOLD_B_LOST : HOLD_B_VRAM;
+    return -1;
+}
+
 /** @brief Take the held scene an empty compose's verdict names, counting the compose by branch.
  *
- * The area's entry is marked busy, so no retain refills it while the
- * compose reads it. An area that no longer holds a scene counts as lost
- * and composes the VRAM framebuffer.
+ * The entry hold_pick_entry picks is marked busy, so no retain refills it
+ * while the compose reads it. Without an entry the compose shows the VRAM
+ * framebuffer.
  * @param area The verdict: an area index, or -1 for the VRAM framebuffer.
  * @param stamp The empty scene's stamp, for the census line.
  * @return The pool entry, or -1 for the VRAM framebuffer. */
 static int hold_take_for_compose(int area, unsigned stamp)
 {
-    int k = -1;
+    int branch = HOLD_B_VRAM;
     SDL_LockMutex(hold_mx());
-    if (area >= 0 && s_hold.a[area].writer == HOLD_W_SCENE) k = s_hold.a[area].entry;
-    if (k >= 0) { s_hold.e[k].busy++; s_hold.c_held++; }
-    else {
+    const int k = hold_pick_entry(area, &branch);
+    if (k >= 0) {
+        s_hold.e[k].busy++;
+        s_hold.c_held++;
+        s_hold.c_slot_ref += branch >= HOLD_B_REF;
+        s_hold.c_moved += branch == HOLD_B_MOVED;
+    } else {
         const int shown = hold_area_shown(s_ps_slot ? s_ps_slot->geom : s_geom_in);
         s_hold.c_vram++;
-        s_hold.c_lost += area >= 0;
+        s_hold.c_lost += branch == HOLD_B_LOST;
         s_hold.c_vram_area += area < 0 && shown >= 0 && s_hold.a[shown].writer == HOLD_W_VRAM;
     }
     SDL_UnlockMutex(hold_mx());
     if (hold_census())
-        fprintf(stderr, "[hold] empty f=%u stamp=%u slot=%d area=%d -> %s\n",
-                s_scene_frame, stamp, s_ps_slot ? 1 : 0, area,
-                k >= 0 ? "held" : (area >= 0 ? "lost" : "vram"));
+        fprintf(stderr, "[hold] empty f=%u scene=%u stamp=%u slot=%d area=%d -> %s\n",
+                s_scene_frame, s_ps_slot ? s_ps_slot->frame : s_scene_frame, stamp, s_ps_slot ? 1 : 0, area,
+                k_hold_branch[branch]);
     return k;
 }
 
@@ -25658,11 +25783,14 @@ static void hold_report(void)
 {
     unsigned tk = 0, tm = 0, td = 0;
     openpete_tercache_hold_counts(&tk, &tm, &td);
-    fprintf(stderr, "hold-scene: empty composes vram=%u held=%u lost=%u clear=%u (vram by an image op=%u); "
-            "retained=%u nofree=%u vram_marks=%u inherits=%u stale_drops=%u tc_takes=%u tc_misses=%u tc_drops=%u%s\n",
+    fprintf(stderr, "hold-scene: empty composes vram=%u held=%u lost=%u clear=%u (vram by an image op=%u)"
+            " slot_ref=%u moved=%u; "
+            "retained=%u nofree=%u vram_marks=%u inherits=%u stale_drops=%u tc_takes=%u tc_misses=%u tc_drops=%u%s%s\n",
             s_hold.c_vram, s_hold.c_held, s_hold.c_lost, s_hold.c_clear, s_hold.c_vram_area,
+            s_hold.c_slot_ref, s_hold.c_moved,
             s_hold.retained, s_hold.nofree, s_hold.vram_marks, s_hold.inherits,
-            s_hold.stale_drops, tk, tm, td, hold_on() ? "" : " (OPENPETE_HOLD=0)");
+            s_hold.stale_drops, tk, tm, td, hold_on() ? "" : " (OPENPETE_HOLD=0)",
+            hold_slot_ref_on() ? "" : " (OPENPETE_HOLD_SLOT_REF=0)");
     fprintf(stderr, "[freeze-bd] rendered=%u edges=%u lost=%u nofree=%u tc_miss=%u vram_ahead=%u pins=%u"
                     " displayed=%u fallback=%u keeps=%u keep_drops=%u%s\n",
             s_hold.bd_rendered, s_hold.bd_edges, s_hold.bd_lost, s_hold.bd_nofree, s_hold.bd_tc_miss,
@@ -25749,7 +25877,7 @@ static int hold_redirect_begin(const scene_slot_t **prev)
     int retained_only = 0;
     if (scene_content_test(v.tri, v.n, v.freeze, bg, &retained_only)) return -1;
     uint32_t fill = 0;
-    const int area = s_ps_slot ? s_ps_slot->hold_area : hold_verdict(s_geom_in, &fill);
+    const int area = s_ps_slot ? s_ps_slot->hold_area : hold_verdict(s_geom_in, &fill, NULL);
     if (s_ps_slot) fill = s_ps_slot->hold_fill;
     if (area == HOLD_V_CLEAR) {
         /* The buffer holds the fill alone: the present composes it, under

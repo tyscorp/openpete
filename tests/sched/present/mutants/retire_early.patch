@@ -2,12 +2,12 @@ Ring slots retire one render serial early: a slot is freed while the GPU may sti
 
 --- a/core/renderer/native_render.c
 +++ b/core/renderer/native_render.c
-@@ -23614,7 +23614,7 @@
+@@ -23918,7 +23918,7 @@
      SDL_LockMutex(ring_mx());
      for (int i = 0; i < SCENE_RING; i++)
          if (s_ring[i].state == SS_PRESENTED && i != s_ring_bd_keep &&
 -            s_ring[i].presented_serial + RHI_FRAMES_IN_FLIGHT <= begun_serial)
 +            s_ring[i].presented_serial + RHI_FRAMES_IN_FLIGHT - 1 <= begun_serial)
-             s_ring[i].state = SS_FREE;
+             ring_slot_free(&s_ring[i]);
      SDL_UnlockMutex(ring_mx());
  }
