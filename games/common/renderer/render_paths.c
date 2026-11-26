@@ -189,17 +189,6 @@ void render_paths_canon_snapshot(void) {
     s_canon_mask = m;
 }
 
-/** @brief Test whether an interval or mark belongs to the render opening a scene.
- *
- * @param vbl The record's VBL.
- * @param rec_tick The record's loop-anchor count.
- * @param frame The VBL stamp of the scene being opened.
- * @param tick The loop-anchor count of the render opening it.
- * @return Nonzero for a record of a later VBL, or of that VBL and tick. */
-static int render_mark_current(unsigned vbl, uint32_t rec_tick, unsigned frame, uint32_t tick) {
-    return vbl > frame || (vbl == frame && rec_tick == tick);
-}
-
 /** @brief Drops what a render superseded before any canonical present recorded, when the game's next render first captures or opens its scene.
  *
  * Registered with openpete_native_scene_register_superseded. The canonical
@@ -227,10 +216,10 @@ static void render_paths_superseded(unsigned frame) {
     int w = 0;
     const uint32_t tick = openpete_loop_anchor_ticks();
     for (int i = 0; i < s_iv_n; i++)
-        if (render_mark_current(s_iv[i].vbl, s_iv[i].tick, frame, tick)) s_iv[w++] = s_iv[i];
+        if (openpete_native_render_stamp_current(s_iv[i].vbl, s_iv[i].tick, frame, tick)) s_iv[w++] = s_iv[i];
     s_iv_n = w;
     for (int p = 0; p < RP_COUNT; p++)
-        if (!render_mark_current(s_mark_vbl[p], s_mark_tick[p], frame, tick))
+        if (!openpete_native_render_stamp_current(s_mark_vbl[p], s_mark_tick[p], frame, tick))
             s_pending_marks &= ~(1u << (unsigned)p);
     if (spyro_native_canon_capture_open()) spyro_native_canon_epoch_supersede();
 }

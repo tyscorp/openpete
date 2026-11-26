@@ -1670,8 +1670,9 @@ static unsigned s_game_scene_opens;
 /* Feed engagement over the run: canonical captures taken, the captures whose
  * scene the game's render fed since the previous capture, and the triangles
  * those fed scenes held. Reported at shutdown as the `native-feed:` line,
- * which a harness reads to prove the native feed ran. */
-static struct { uint64_t captures, fed, tris, same_vbl_opens, same_vbl_superseded; } s_feed_census;
+ * which a harness reads to prove the native feed ran; the same-VBL opens and
+ * the per-tick 2D signals a supersede dropped go on the `native-scene:` line. */
+static struct { uint64_t captures, fed, tris, same_vbl_opens, same_vbl_superseded, signals_dropped; } s_feed_census;
 /* The canonical present's repeat verdict (openpete_native_scene_canon_repeat),
  * -1 until it is first asked for and again after the capture. */
 static int s_canon_repeat = -1;
@@ -1882,13 +1883,21 @@ static unsigned s_scene_superseded_frame = 0xFFFFFFFFu;
 static unsigned s_scene_early_supersedes;   /* census: supersedes taken at a capture */
 static unsigned s_scene_early_unopened;     /* census: of those, renders presented with no scene opened */
 
+int openpete_native_render_stamp_current(unsigned vbl, uint32_t rec_tick, unsigned frame, uint32_t tick) {
+    return vbl > frame || (vbl == frame && rec_tick == tick);
+}
+
+static void game_signals_supersede(unsigned frame);   /* the per-tick 2D signals, defined below */
+
 /** @brief Retires the pending game scene for the game's render at a newer VBL, running the superseded callback once for that render.
  *
  * The env a DrawOTag drew the superseded scene with is not the env of the
- * render's scene, which the next capture presents.
+ * render's scene, which the next capture presents, and the per-tick 2D
+ * signals the superseded render set leave the commit (game_signals_supersede).
  * @param frame VBL of the superseding render. */
 static void scene_supersede_pending(unsigned frame) {
     s_drawenv_drawn_valid = 0;
+    game_signals_supersede(frame);
     if (s_scene_superseded_frame == frame) return;
     s_scene_superseded_frame = frame;
     if (s_scene_superseded_cb) s_scene_superseded_cb(frame);
@@ -2904,14 +2913,40 @@ int openpete_native_drawn_env(uint8_t env[4]) {
  * on and simply STOPS when it ends (no explicit clear). The re-extract's own
  * apply_overlay writes s_scene_fade, which would otherwise feed back into
  * commit_fade and freeze the last transition's fade on screen forever. */
+/* A per-tick 2D signal the game's render sets (the fade, the freeze backdrop,
+ * the letterbox): on from the set until the canonical commit takes it, with
+ * the VBL and loop-anchor count of the render that set it. */
+typedef struct { int on; unsigned vbl; uint32_t tick; } game_signal_t;
+
+/** @brief Mark a per-tick 2D signal as set by the game's render running now.
+ *
+ * @param s The signal. */
+static void game_signal_note(game_signal_t* s) {
+    s->on = 1;
+    s->vbl = openpete_frame;
+    s->tick = openpete_loop_anchor_ticks();
+}
+
+/** @brief Clear a per-tick 2D signal a superseded render set.
+ *
+ * @param s The signal.
+ * @param frame The VBL stamp of the superseding render's scene.
+ * @param tick openpete_loop_anchor_ticks() of the superseding render.
+ * @return 1 when the signal was on and is now cleared, else 0. */
+static int game_signal_supersede(game_signal_t* s, unsigned frame, uint32_t tick) {
+    if (!s->on || openpete_native_render_stamp_current(s->vbl, s->tick, frame, tick)) return 0;
+    s->on = 0;
+    return 1;
+}
+
 static uint32_t s_game_fade = 0;
-static int      s_game_fade_seen = 0;
+static game_signal_t s_game_fade_seen;
 /* Same "active only if the game set it this tick" tracking for the freeze backdrop
  * (pause/inventory/flight-results). Without it the carry fed back into itself
  * (apply_overlay re-set s_scene_freeze from the carry, capture read it back) and the
  * freeze never cleared when the menu closed -> the world stayed hidden on unpause. */
 static uint32_t s_game_freeze = 0;
-static int      s_game_freeze_seen = 0;
+static game_signal_t s_game_freeze_seen;
 /* Freeze-backdrop production mode (see openpete_native_scene_set_freeze_retained):
  * 0 = the game emits a grayscale+tinted quad, 1 = the game suppresses the
  * framebuffer clear and the snapshot is drawn unaltered. */
@@ -2933,7 +2968,7 @@ void openpete_native_scene_set_fade(int mode, int r, int g, int b) {
           | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
     }
     s_scene_fade = v;                       /* raw (no-interp) present path */
-    s_game_fade = v; s_game_fade_seen = 1;  /* the game set the fade this tick */
+    s_game_fade = v; game_signal_note(&s_game_fade_seen);  /* the game set the fade this tick */
     /* Held for the next DrawOTag (area_fade_fold), which keeps it only for
      * an area put with auto-clear off. */
     if (mode == 2) {
@@ -2953,7 +2988,7 @@ void openpete_native_scene_set_freeze_backdrop(int r, int g, int b, int fade) {
     if (fade > 127) fade = 127;   /* 7-bit fade shift in bits 24-30 */
     s_scene_freeze = (1u << 31) | ((uint32_t)fade << 24)
                    | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
-    s_game_freeze = s_scene_freeze; s_game_freeze_seen = 1;  /* the game set it this tick */
+    s_game_freeze = s_scene_freeze; game_signal_note(&s_game_freeze_seen);  /* the game set it this tick */
 }
 
 void openpete_native_scene_set_seq(uint32_t seq) { s_cur_seq = seq; }
@@ -3233,11 +3268,11 @@ static uint32_t s_fade_prev, s_fade_curr;
  * rolled into s_lb_prev. The emitted bars are not fed, so the height that
  * moves one row per tick is lerped instead of a carry pair that the box
  * height keys apart. */
-typedef struct { int set; float top, bottom, h; int over_fade; } letterbox_rec_t;
+typedef struct { game_signal_t set; float top, bottom, h; int over_fade; } letterbox_rec_t;
 static letterbox_rec_t s_lb_accum, s_lb_prev, s_lb_curr;
 
 void openpete_native_scene_set_letterbox(float top_y, float bottom_y, float h, int over_fade) {
-    s_lb_accum.set = 1; s_lb_accum.top = top_y; s_lb_accum.bottom = bottom_y; s_lb_accum.h = h;
+    game_signal_note(&s_lb_accum.set); s_lb_accum.top = top_y; s_lb_accum.bottom = bottom_y; s_lb_accum.h = h;
     s_lb_accum.over_fade = over_fade ? 1 : 0;
 }
 
@@ -3247,9 +3282,25 @@ void openpete_native_scene_set_letterbox(float top_y, float bottom_y, float h, i
  * so the bars lerp out to nothing on the presents after it. */
 static void letterbox_commit(void) {
     s_lb_prev = s_lb_curr;
-    if (s_lb_accum.set) s_lb_curr = s_lb_accum;
-    else { s_lb_curr.h = 0.0f; s_lb_curr.set = 0; }
-    s_lb_accum.set = 0;
+    if (s_lb_accum.set.on) s_lb_curr = s_lb_accum;
+    else { s_lb_curr.h = 0.0f; s_lb_curr.set.on = 0; }
+    s_lb_accum.set.on = 0;
+}
+
+/** @brief Drop the fade, freeze backdrop and letterbox a superseded render set, keeping those of the render superseding it.
+ *
+ * The canonical commit takes each signal the game set since the last commit
+ * (openpete_native_scene_commit_fade, letterbox_commit), and the sub-tick
+ * re-extract composes what it took. A render that ends a tick by stopping a
+ * fade sets nothing, so a signal left by the render it superseded would reach
+ * the sub-tick presents while the canonical present, drawn from the newer
+ * render's scene, shows none.
+ * @param frame The VBL stamp of the superseding render's scene. */
+static void game_signals_supersede(unsigned frame) {
+    const uint32_t tick = openpete_loop_anchor_ticks();
+    s_feed_census.signals_dropped += (uint64_t)(game_signal_supersede(&s_game_fade_seen, frame, tick) +
+                                                game_signal_supersede(&s_game_freeze_seen, frame, tick) +
+                                                game_signal_supersede(&s_lb_accum.set, frame, tick));
 }
 
 /** @brief Append the letterbox bars at the height lerped between the previous and current tick.
@@ -3327,7 +3378,7 @@ void openpete_native_scene_commit_fade(void) {
     if (openpete_native_scene_canon_repeat()) {
         s_fade_prev = s_fade_curr;
         s_overlay_prev_freeze = s_overlay_carry_freeze;
-        s_game_fade_seen = 0; s_game_freeze_seen = 0;
+        s_game_fade_seen.on = 0; s_game_freeze_seen.on = 0;
         s_after_repeat = 1;
         return;
     }
@@ -3335,14 +3386,14 @@ void openpete_native_scene_commit_fade(void) {
     s_fade_prev = s_fade_curr;
     /* The fade is active this tick only if the game actually called set_fade
      * since the last commit; else it ended (the game stopped calling) -> off. */
-    s_fade_curr = s_game_fade_seen ? s_game_fade : 0;
-    s_game_fade_seen = 0;
+    s_fade_curr = s_game_fade_seen.on ? s_game_fade : 0;
+    s_game_fade_seen.on = 0;
     /* Same one-tick liveness for the freeze backdrop carry: held while the game keeps
      * emitting the freeze FT4, cleared the tick it stops (menu closed -> unpause), so
      * the spine's apply_overlay turns the backdrop off and the world reappears. (This
      * replaces capturing it from s_scene_freeze, which fed back into itself.) */
     uint32_t prev_freeze = s_overlay_carry_freeze;
-    uint32_t new_freeze  = s_game_freeze_seen ? s_game_freeze : 0;
+    uint32_t new_freeze  = s_game_freeze_seen.on ? s_game_freeze : 0;
     /* Bridge a 1-frame freeze gap at the GS_Paused -> GS_ExitLevel handoff: the pause
      * menu stops emitting its freeze FT4 the frame it closes, but GS_ExitLevel's
      * func_8001C694 hasn't drawn its own freeze yet - so for exactly one canonical
@@ -3382,10 +3433,10 @@ void openpete_native_scene_commit_fade(void) {
     if ((held || new_freeze != prev_freeze) && load_census_on())
         fprintf(stderr, "[census f=%u FREEZE] prev=%08x new=%08x held=%d ter=%d game=%08x\n",
                 s_scene_frame, prev_freeze, new_freeze, held, ter_fed,
-                s_game_freeze_seen ? s_game_freeze : 0u);
+                s_game_freeze_seen.on ? s_game_freeze : 0u);
     s_overlay_prev_freeze  = prev_freeze;
     s_overlay_carry_freeze = new_freeze;
-    s_game_freeze_seen = 0;
+    s_game_freeze_seen.on = 0;
 }
 
 /** @brief Interpolate two packed freeze words at a sub-tick fraction.
@@ -3863,7 +3914,7 @@ int openpete_native_scene_canon_repeat(void) {
         /* The 2D feeder's deferred primitive belongs to this present's tick:
          * flush it first, as the capture does. */
         if (s_overlay_precapture) s_overlay_precapture();
-        s_canon_repeat = !s_game_fed && s_overlay_accum_n == 0 && !s_lb_accum.set;
+        s_canon_repeat = !s_game_fed && s_overlay_accum_n == 0 && !s_lb_accum.set.on;
     }
     return s_canon_repeat;
 }
@@ -26881,9 +26932,10 @@ void openpete_native_render_shutdown(void)
                (unsigned long long)s_feed_census.captures,
                (unsigned long long)s_feed_census.fed,
                (unsigned long long)s_feed_census.tris, s_nr.headless ? 1 : 0);
-    OPL_INFO_F("native-scene", "same_vbl_opens=%llu superseded=%llu",
+    OPL_INFO_F("native-scene", "same_vbl_opens=%llu superseded=%llu signals_dropped=%llu",
                (unsigned long long)s_feed_census.same_vbl_opens,
-               (unsigned long long)s_feed_census.same_vbl_superseded);
+               (unsigned long long)s_feed_census.same_vbl_superseded,
+               (unsigned long long)s_feed_census.signals_dropped);
     /* Every thread that drew is joined by now (under the thread split this
      * runs on main after the host-loop thread's join), so the calling thread
      * owns the display for the teardown's pipeline unlinks. */

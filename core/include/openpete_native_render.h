@@ -1953,6 +1953,20 @@ void openpete_native_scene_register_frame_close(void (*fn)(unsigned frame));
  * @param fn Callback taking the VBL stamp of the scene being opened, or NULL. */
 void openpete_native_scene_register_superseded(void (*fn)(unsigned frame));
 
+/** @brief Test whether a record a game render stamped belongs to the render that supersedes the pending scene.
+ *
+ * A render never spans a VBL boundary or a loop-anchor entry, so a record of
+ * a later VBL than @p frame, or of that VBL at the loop-anchor count @p tick,
+ * is that render's; any other belongs to a render it superseded. Every
+ * supersede (the native scene's per-tick 2D signals, the render-path
+ * intervals and marks) drops records by this test.
+ * @param vbl The record's VBL (openpete_frame when it was stamped).
+ * @param rec_tick openpete_loop_anchor_ticks() when it was stamped.
+ * @param frame The VBL stamp of the superseding render's scene.
+ * @param tick openpete_loop_anchor_ticks() of the superseding render.
+ * @return Nonzero when the record belongs to the superseding render. */
+int openpete_native_render_stamp_current(unsigned vbl, uint32_t rec_tick, unsigned frame, uint32_t tick);
+
 /** @brief Supersede the pending game scene when the game's render at a newer VBL captures producer state before its first feed opens its scene.
  *
  * A producer hook may stamp a capture with the canonical-render epoch before
