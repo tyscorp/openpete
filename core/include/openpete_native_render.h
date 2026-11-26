@@ -1887,8 +1887,9 @@ void openpete_native_scene_mark_replay(void);
  * Starts a new scene when @p frame differs from the last call's, or when a
  * call from the game's render (outside the sub-tick view) finds a
  * re-extract's rebuild under the same stamp, or finds the scene of an
- * earlier game tick's render under the same stamp (a render that skipped
- * its VSync wait; the tick is openpete_loop_anchor_ticks); otherwise it is a no-op, so
+ * earlier game tick's render under the same stamp after that render
+ * submitted its OT or a capture took it (a render that skipped its VSync
+ * wait; the tick is openpete_loop_anchor_ticks); otherwise it is a no-op, so
  * independent feeders (cyclorama, world, mobys, in any order) compose into
  * one scene: the first feeder of a VBL clears and the rest append, and a
  * feeder absent on a level breaks nothing. The game's render of a tick thus
@@ -1960,7 +1961,8 @@ void openpete_native_scene_register_superseded(void (*fn)(unsigned frame));
  * then runs here, so the epoch moves before the capture is stamped and the
  * capture belongs to the render of its VBL, as a render path's interval
  * does. A no-op off the game fiber, inside the sub-tick view, with no
- * pending game scene, or at the pending scene's own VBL and game tick.
+ * pending game scene, or at the pending scene's own VBL while its render
+ * has not submitted its OT or the loop anchor has not been entered since.
  * @param frame The VBL the capture runs on (openpete_frame). */
 void openpete_native_scene_note_game_capture(unsigned frame);
 

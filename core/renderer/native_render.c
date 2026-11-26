@@ -1623,9 +1623,10 @@ static unsigned s_scene_key = 0xFFFFFFFFu;
 /* Stamp of the last begin_frame made outside the sub-tick view: the game's own
  * render, never a re-extract. 0xFFFFFFFF before the first. */
 static unsigned s_scene_game_frame = 0xFFFFFFFFu;
-/* openpete_loop_anchor_ticks() when the game's render last opened a scene:
- * the game tick whose render s_scene holds while s_scene_replay is clear. */
-static uint32_t s_scene_game_tick;
+/* The game tick of the scene the game's render last opened: open is
+ * openpete_loop_anchor_ticks() at the open, and otag_fed is 1 once a DrawOTag
+ * submitted that scene's primitives (openpete_native_note_draw_otag). */
+static struct { uint32_t open; int otag_fed; } s_scene_game_tick;
 static void (*s_scene_frame_close_cb)(unsigned frame);  /* see the frame-close section */
 static void (*s_scene_superseded_cb)(unsigned frame);  /* see openpete_native_scene_register_superseded */
 /* 1 from the game render's opening of a scene until the canonical capture
@@ -1908,9 +1909,21 @@ static void scene_early_supersede_census(void) {
             s_scene_early_supersedes, s_scene_early_unopened);
 }
 
+/** @brief Test whether the game's render of the open scene ended before a later game tick began.
+ *
+ * The render ended when a DrawOTag submitted the scene, or a canonical
+ * capture took it, and the loop anchor has been entered since the scene
+ * opened. A tick that submits no OT (a pause menu drawing its mobys and its
+ * 2D in successive anchor passes of one VBL) keeps one render.
+ * @param tick openpete_loop_anchor_ticks() now.
+ * @return Nonzero when a game feed at the scene's VBL begins a new render. */
+static int scene_game_render_ended(uint32_t tick) {
+    return tick != s_scene_game_tick.open && (s_scene_game_tick.otag_fed || !s_game_scene_pending);
+}
+
 void openpete_native_scene_note_game_capture(unsigned frame) {
     if (!s_game_scene_pending ||
-        (frame == s_scene_game_frame && openpete_loop_anchor_ticks() == s_scene_game_tick))
+        (frame == s_scene_game_frame && !scene_game_render_ended(openpete_loop_anchor_ticks())))
         return;
     if (openpete_subtick_view_active() || !openpete_fiber_in_game()) return;
     if (s_scene_superseded_frame != frame) {
@@ -1929,10 +1942,9 @@ void openpete_native_scene_note_game_capture(unsigned frame) {
  *
  * A tick whose render skips its VSync wait leaves the next tick to render at
  * the same VBL (Spyro 1's first gameplay draw after the title: its wait
- * reads D_80075950.post, which the title draw never wrote). The loop
- * anchor's entry count names the tick and a render never spans an anchor
- * entry, so a new count at the open scene's VBL is a new render, which opens
- * its own scene. A scene a re-extract built (the reclaim) and the feeds of
+ * reads D_80075950.post, which the title draw never wrote). A feed at the
+ * open scene's VBL after that render ended (scene_game_render_ended) is a
+ * new render, which opens its own scene. A scene a re-extract built (the reclaim) and the feeds of
  * the frame-close callback, which belong to the closing scene, are excluded.
  * @param game_feed Nonzero for a feed of the game's render.
  * @param frame The feed's VBL stamp.
@@ -1940,7 +1952,7 @@ void openpete_native_scene_note_game_capture(unsigned frame) {
  * @return Nonzero when the feed opens a new scene at the same VBL. */
 static int scene_game_retick(int game_feed, unsigned frame, uint32_t tick) {
     return game_feed && frame == s_scene_frame && !s_scene_replay && !s_scene_close_cb_in &&
-           tick != s_scene_game_tick;
+           scene_game_render_ended(tick);
 }
 
 /** @brief Count a scene opened at the open scene's VBL by a later game tick, printing the first eight.
@@ -1953,7 +1965,7 @@ static void scene_same_vbl_note(unsigned frame, uint32_t tick, int superseded) {
     if (superseded) s_feed_census.same_vbl_superseded++;
     if (s_feed_census.same_vbl_opens <= 8)
         OPL_INFO_F("native-scene", "same-VBL open vbl=%u key=%u tick %u->%u closing_tris=%d "
-                   "superseded=%d", frame, openpete_feed_key_now(), s_scene_game_tick, tick,
+                   "superseded=%d", frame, openpete_feed_key_now(), s_scene_game_tick.open, tick,
                    s_scene_n, superseded);
 }
 
@@ -1992,7 +2004,8 @@ void openpete_native_scene_begin_frame(unsigned frame) {
             if (s_game_scene_pending) scene_supersede_pending(frame);
             s_game_scene_pending = 1;
             s_scene_superseded_frame = 0xFFFFFFFFu;
-            s_scene_game_tick = tick;
+            s_scene_game_tick.open = tick;
+            s_scene_game_tick.otag_fed = 0;
         }
         if (!reclaim && s_scene_frame != 0xFFFFFFFFu && s_scene_frame_close_cb && !s_scene_close_cb_in) {
             s_scene_close_cb_in = 1;   /* the callback feeds, which re-enters begin_frame */
@@ -2864,6 +2877,7 @@ void openpete_native_note_draw_otag(void) {
     const int fed_tris = s_game_fed && scene_has_game_tris(s_scene, s_scene_n);
     const int fed = s_overlay_accum_n > 0 || fed_tris;
     otag_area_note_draw(fed);
+    if (fed) s_scene_game_tick.otag_fed = 1;
     /* A fed scene is the one the next capture presents; an unfed one means
      * the game submits the OT of the scene the last capture presented. */
     s_otag_scene = s_capture_seq + (unsigned)fed;
