@@ -108,6 +108,27 @@ void sector_pvs_pairs(const uint8_t nb[SECTOR_PVS_RING][256], const uint8_t open
 int sector_pvs_column(const uint8_t* b, uint32_t len, uint32_t tree, const int32_t p[3], uint32_t n,
                       uint8_t out[256]);
 
+/** @brief Admits what the opposite pairs of the ring at the camera leaf's size list, when the leaf spans more than one cell.
+ *
+ * A tree may end its descent above depth 0: the node that decides `p`'s
+ * cell then spans 2x2x2 cells or more, every cell of it shares one list,
+ * and the one-cell ring sees that same list on the sides that fall inside
+ * it. This ring takes, in each of the 26 directions, the cell just past
+ * the leaf on each axis the direction steps along and the camera's own
+ * cell on the others; a sector one of the 13 opposite pairs admits
+ * (sector_pvs_pairs, an open partner agreeing) is set in `out`. Points
+ * outside the 128-cell lattice are open. `out` is only set, never cleared.
+ * @param b The bytes holding the tree.
+ * @param len Their length.
+ * @param tree The offset of the root node in b.
+ * @param p The position, world units.
+ * @param n The sector count to test, at most 256.
+ * @param out The set to add to, 0xFF per admitted sector.
+ * @return The sectors set that `out` did not hold, -1 when the position's
+ *         leaf is one cell, its lookup is open or it lies outside the lattice. */
+int sector_pvs_leaf_ring(const uint8_t* b, uint32_t len, uint32_t tree, const int32_t p[3], uint32_t n,
+                         uint8_t out[256]);
+
 struct CPUState;
 
 /* A host copy of one PVS tree and the key it was taken under. */
@@ -146,6 +167,8 @@ typedef struct {
     int cur_ok, prev_ok;
     int column;                   /* nonzero: C' also takes sector_pvs_column */
     int col_added;                /* the sectors the column added to C' at the last recompute (-1: gate closed) */
+    int leaf;                     /* nonzero: C' also takes sector_pvs_leaf_ring */
+    int leaf_added;               /* the sectors the leaf ring added to C' at the last recompute (-1: one-cell leaf) */
 } sector_pvs_filled_t;
 
 /* sector_pvs_filled_step's result bits. */
@@ -155,7 +178,8 @@ typedef struct {
 /** @brief Advances the filled set one tick: C' at the tick camera's cell, U over two ticks.
  *
  * C' (`base` plus the opposite-pair admissions, an open partner agreeing,
- * plus sector_pvs_column's admissions when F->column is set) is recomputed
+ * plus sector_pvs_column's admissions when F->column is set and
+ * sector_pvs_leaf_ring's when F->leaf is set) is recomputed
  * when the cell or the tree generation changed, else the previous tick's C'
  * carries over. U is C' united with the previous tick's
  * C' when the two cells are within Chebyshev distance 1 and the generation

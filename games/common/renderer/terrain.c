@@ -9679,7 +9679,9 @@ static void tvis_calibrate(CPUState* cpu, const tvis_sphere* S, uint32_t list, u
  * present between the two tick cameras has both cells' sets
  * (sector_pvs_filled_step). C' also holds what the 1 to 4 cells straight
  * below the camera's cell list when a cell 1 or 2 straight above it is open
- * (sector_pvs_column). U also holds every second-walk sector
+ * (sector_pvs_column), and, when the camera's leaf spans more than one cell,
+ * what the opposite pairs of the ring at that leaf's size admit
+ * (sector_pvs_leaf_ring). U also holds every second-walk sector
  * (sf_admit_second_walk) at every camera position. The sky draw applies the
  * same rule to the sky tree (cyclorama.c) and reports into this file's load
  * windows (terrain_sector_filled_note_sky). Everything here runs on the sim
@@ -9704,6 +9706,7 @@ static unsigned long s_sf_ticks OP_GUARDED_BY(sim), s_sf_computes OP_GUARDED_BY(
                      s_sf_added OP_GUARDED_BY(sim), s_sf_unions OP_GUARDED_BY(sim);
 static unsigned long s_sf_water OP_GUARDED_BY(sim);   /* the sectors sf_admit_second_walk added to U, run total */
 static unsigned long s_sf_col OP_GUARDED_BY(sim);     /* the sectors sector_pvs_column added to C', run total */
+static unsigned long s_sf_leaf OP_GUARDED_BY(sim);    /* the sectors sector_pvs_leaf_ring added to C', run total */
 
 /* One load window: the canonical walks between two changes of (level,
  * sub-area). `notree` counts the walks that ran frustum because the level
@@ -9712,12 +9715,15 @@ static unsigned long s_sf_col OP_GUARDED_BY(sim);     /* the sectors sector_pvs_
  * the sectors sf_admit_second_walk added to U and `water_walks` counts the
  * walks where it added one; `col` sums the sectors sector_pvs_column added
  * to C' at a recompute, `col_walks` counts the recomputes where it added one
- * and `col_gates` those where a cell above the camera's was open. */
+ * and `col_gates` those where a cell above the camera's was open; `leaf`,
+ * `leaf_walks` and `leaf_gates` count sector_pvs_leaf_ring the same way, its
+ * gate being a camera leaf of more than one cell. */
 typedef struct {
     int32_t level, area;
     unsigned long walks, notree, ticks, computes, walks_differ, added, pred, pred_rej;
     unsigned long water, water_walks;   /* second-walk sectors added to U */
     unsigned long col, col_walks, col_gates;   /* column sectors added to C' */
+    unsigned long leaf, leaf_walks, leaf_gates;   /* leaf-ring sectors added to C' */
     unsigned long sky, sky_computes, sky_differ, sky_added;   /* filled sky draws */
     unsigned long contain, contain_rej;   /* terrain_point_admitted answers and rejections */
 } sf_window_t;
@@ -9738,11 +9744,12 @@ static void sf_window_close(void) OP_REQUIRES(sim) {
     fprintf(stderr, "[sector-filled-window] frame=%u level=%d area=%d walks=%lu notree=%lu ticks=%lu "
                     "computes=%lu walks_differ=%lu added=%lu pred=%lu pred_rejected=%lu sky=%lu "
                     "sky_computes=%lu sky_differ=%lu sky_added=%lu contain=%lu contain_rejected=%lu water=%lu "
-                    "water_walks=%lu col=%lu col_walks=%lu col_gates=%lu engaged=%d\n",
+                    "water_walks=%lu col=%lu col_walks=%lu col_gates=%lu leaf=%lu leaf_walks=%lu leaf_gates=%lu "
+                    "engaged=%d\n",
             openpete_frame, w->level, w->area, w->walks, w->notree, w->ticks, w->computes,
             w->walks_differ, w->added, w->pred, w->pred_rej, w->sky, w->sky_computes, w->sky_differ,
             w->sky_added, w->contain, w->contain_rej, w->water, w->water_walks, w->col, w->col_walks,
-            w->col_gates, engaged);
+            w->col_gates, w->leaf, w->leaf_walks, w->leaf_gates, engaged);
     s_sf_windows++;
     s_sf_windows_engaged += (unsigned long)engaged;
     s_sf_total.walks += w->walks; s_sf_total.notree += w->notree; s_sf_total.ticks += w->ticks;
@@ -9752,6 +9759,7 @@ static void sf_window_close(void) OP_REQUIRES(sim) {
     s_sf_total.sky_differ += w->sky_differ; s_sf_total.sky_added += w->sky_added;
     s_sf_total.water += w->water; s_sf_total.water_walks += w->water_walks;
     s_sf_total.col += w->col; s_sf_total.col_walks += w->col_walks; s_sf_total.col_gates += w->col_gates;
+    s_sf_total.leaf += w->leaf; s_sf_total.leaf_walks += w->leaf_walks; s_sf_total.leaf_gates += w->leaf_gates;
     s_sf_win_open = 0;
 }
 
@@ -9765,12 +9773,13 @@ static void sf_exit_report(void) {
     fprintf(stderr, "sector-filled: windows=%lu engaged=%lu walks=%lu notree=%lu ticks=%lu computes=%lu "
                     "refreshes=%lu unions=%lu walks_differ=%lu added=%lu pred=%lu pred_rejected=%lu sky=%lu "
                     "sky_computes=%lu sky_differ=%lu sky_added=%lu water=%lu water_walks=%lu col=%lu col_walks=%lu "
-                    "col_gates=%lu\n",
+                    "col_gates=%lu leaf=%lu leaf_walks=%lu leaf_gates=%lu\n",
             s_sf_windows, s_sf_windows_engaged, s_sf_total.walks, s_sf_total.notree, s_sf_total.ticks,
             s_sf_total.computes, s_sf_refreshes, s_sf_unions, s_sf_total.walks_differ, s_sf_total.added,
             s_sf_total.pred, s_sf_total.pred_rej, s_sf_total.sky, s_sf_total.sky_computes,
             s_sf_total.sky_differ, s_sf_total.sky_added, s_sf_total.water, s_sf_total.water_walks,
-            s_sf_total.col, s_sf_total.col_walks, s_sf_total.col_gates);
+            s_sf_total.col, s_sf_total.col_walks, s_sf_total.col_gates, s_sf_total.leaf,
+            s_sf_total.leaf_walks, s_sf_total.leaf_gates);
 }
 
 /** @brief Opens a new load window when the level or sub-area differs from the open one's, closing that first; counts the walk.
@@ -9843,14 +9852,19 @@ static int sf_admit_second_walk(CPUState* cpu, uint32_t n) OP_REQUIRES(sim) {
     return added;
 }
 
-/** @brief Counts one recompute's column admissions into the run and window totals.
- * @param added The sectors sector_pvs_column added to C', -1 when no cell above was open. */
-static void sf_note_column(int added) OP_REQUIRES(sim) {
+/** @brief Counts one recompute's admissions by one C' rule into its run and window totals.
+ * @param added The sectors the rule added to C', -1 when its gate was closed.
+ * @param run The rule's run total.
+ * @param sum The window's sector total.
+ * @param walks The window's recomputes where the rule added a sector.
+ * @param gates The window's recomputes where its gate was open. */
+static void sf_note_rule(int added, unsigned long* run, unsigned long* sum, unsigned long* walks,
+                         unsigned long* gates) OP_REQUIRES(sim) {
     if (added < 0) return;
-    s_sf_win.col_gates++;
-    s_sf_col += (unsigned long)added;
-    s_sf_win.col += (unsigned long)added;
-    s_sf_win.col_walks += added > 0;
+    (*gates)++;
+    *run += (unsigned long)added;
+    *sum += (unsigned long)added;
+    *walks += added > 0;
 }
 
 /** @brief Advances the filled set on a canonical walk: snapshot refresh, C' of the tick, U over two ticks.
@@ -9875,6 +9889,7 @@ static void sf_tick(CPUState* cpu, uint32_t sectorCnt) OP_REQUIRES(sim) {
     s_sf_ticks++;
     s_sf_win.ticks++;
     s_sf.column = 1;
+    s_sf.leaf = 1;
     const int r = sector_pvs_filled_step(&s_sf, &s_sf_tree, p, n, v);
     const int water = sf_admit_second_walk(cpu, n);
     s_sf_water += (unsigned long)water;
@@ -9883,7 +9898,8 @@ static void sf_tick(CPUState* cpu, uint32_t sectorCnt) OP_REQUIRES(sim) {
     if (r & SECTOR_PVS_COMPUTED) {
         s_sf_computes++;
         s_sf_win.computes++;
-        sf_note_column(s_sf.col_added);
+        sf_note_rule(s_sf.col_added, &s_sf_col, &s_sf_win.col, &s_sf_win.col_walks, &s_sf_win.col_gates);
+        sf_note_rule(s_sf.leaf_added, &s_sf_leaf, &s_sf_win.leaf, &s_sf_win.leaf_walks, &s_sf_win.leaf_gates);
     }
     if (r & SECTOR_PVS_UNIONED) s_sf_unions++;
     int added = 0;
@@ -9896,9 +9912,9 @@ static void sf_tick(CPUState* cpu, uint32_t sectorCnt) OP_REQUIRES(sim) {
     const char* e = getenv("OPENPETE_SECTOR_FILLED_CENSUS");
     if (e && *e && *e != '0' && (s_sf_ticks % 300u) == 1u)
         fprintf(stderr, "[sector-filled] frame=%u ticks=%lu computes=%lu refreshes=%lu "
-                        "unions=%lu walks_differ=%lu added=%lu water=%lu water_now=%d col=%lu gen=%u\n",
+                        "unions=%lu walks_differ=%lu added=%lu water=%lu water_now=%d col=%lu leaf=%lu gen=%u\n",
                 openpete_frame, s_sf_ticks, s_sf_computes, s_sf_refreshes, s_sf_unions,
-                s_sf_walks_differ, s_sf_added, s_sf_water, water, s_sf_col, s_sf_tree.gen);
+                s_sf_walks_differ, s_sf_added, s_sf_water, water, s_sf_col, s_sf_leaf, s_sf_tree.gen);
 }
 
 void terrain_sector_filled_note_sky(int computed, int added) OP_REQUIRES(sim) {
@@ -9961,7 +9977,8 @@ int terrain_sector_admitted(uint32_t i) OP_REQUIRES(sim) {
  * the nearest listing point and, for a sector only D1 admits, the listing
  * neighbours' direction. =cal prints a [secvis-cal] line per walk instead.
  * OPENPETE_SECTOR_VIS_SWEEP=<vbl> prices V, C, C', D1 and the column rule
- * (sector_pvs_column: cells changed, sectors added) over every cell of
+ * (sector_pvs_column) and the leaf ring (sector_pvs_leaf_ring), each as cells
+ * changed and sectors added, over every cell of
  * the level's tree once ([secvis-sweep], [secvis-edge]). OPENPETE_SECVIS_OWNER=1
  * keys the effect pools ([secvis-owner]). Reads guest RAM only; never
  * changes what draws. */
@@ -10143,6 +10160,8 @@ typedef struct {
     long col_cells;               /* cells where sector_pvs_column adds to V, C' and the water */
     double col_added;             /* the sectors it adds there */
     int col_max;
+    long leaf_cells;              /* cells where sector_pvs_leaf_ring adds to those and the column's */
+    double leaf_added;            /* the sectors it adds there */
 } secvis_sweep_sums_t;
 
 /** @brief Returns the id of `vis` in the interned lists, adding it when new (0 when the table is full).
@@ -10220,7 +10239,7 @@ static void secvis_sweep_rank(secvis_sweep_sums_t* S, int no, int sec, const int
     }
 }
 
-/** @brief Counts what sector_pvs_column adds at a cell beyond V, the pair admissions and the water sectors.
+/** @brief Counts what sector_pvs_column adds at a cell beyond V, the pair admissions and the water sectors, then what sector_pvs_leaf_ring adds beyond those.
  * @param c The cell.
  * @param v The cell's list.
  * @param cp The cell's pair admissions, an open partner agreeing.
@@ -10233,10 +10252,14 @@ static void secvis_sweep_column(const int c[3], const uint8_t v[256], const uint
     const int32_t q[3] = { c[0] * SECTOR_PVS_CELL + 1024, c[1] * SECTOR_PVS_CELL + 1024,
                            c[2] * SECTOR_PVS_CELL + 1024 };
     const int added = sector_pvs_column(s_sf_tree.b, s_sf_tree.len, 0, q, n, b);
-    if (added <= 0) return;
-    S->col_cells++;
-    S->col_added += added;
-    if (added > S->col_max) S->col_max = added;
+    if (added > 0) {
+        S->col_cells++;
+        S->col_added += added;
+        if (added > S->col_max) S->col_max = added;
+    }
+    const int leaf = sector_pvs_leaf_ring(s_sf_tree.b, s_sf_tree.len, 0, q, n, b);
+    S->leaf_cells += leaf > 0;
+    S->leaf_added += leaf > 0 ? leaf : 0;
 }
 
 /** @brief Prices one non-open cell: |V| and C, C', D1 minus V, the open-only admissions, the edge rank.
@@ -10320,10 +10343,11 @@ static void secvis_sweep(CPUState* cpu, const tvis_sphere* T, uint32_t sectorCnt
         fprintf(stderr, "[secvis-sweep] level=0 sectors=%u tree=%u lists=%d%s maxidx=%d points=%ld open=%ld "
                         "cells=%ld mean|V|=%.2f mean|C\\V|=%.3f mean|C'\\V|=%.3f mean|D1\\V|=%.3f "
                         "mean_open_only=%.3f cells_C'>C=%ld cells_D1>V=%ld col_cells=%ld col_added=%.0f "
-                        "col_max=%d\n",
+                        "col_max=%d leaf_cells=%ld leaf_added=%.0f\n",
                 sectorCnt, s_sf_tree.len, L.nl - 1, L.nl >= SW_MAXL ? "(cap)" : "", L.maxidx,
                 (long)SW_N * SW_N * SW_N, L.open, S.cells, S.v / cells, S.c / cells, S.c2 / cells,
-                S.d1 / cells, S.open_only / cells, S.cells_c2, S.cells_d1, S.col_cells, S.col_added, S.col_max);
+                S.d1 / cells, S.open_only / cells, S.cells_c2, S.cells_d1, S.col_cells, S.col_added, S.col_max,
+                S.leaf_cells, S.leaf_added);
         secvis_sweep_edges(cpu, T, &S);
     }
     free(L.id); free(L.lists); free(L.hash);
