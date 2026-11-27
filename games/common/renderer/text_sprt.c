@@ -13,12 +13,15 @@
 //
 // Reproducing the glyph walk would mean re-implementing the emitters' escape
 // handling, per-colour line heights and clip range. Instead this module runs
-// the real emitter and reads the chain it just left in the primitive buffer:
-// the packets are final when the emitter returns, so one linear walk over the
-// bytes the primitive cursor advanced past yields every glyph exactly as the
-// GPU will see it. An SPRT carries no texture page, so the walk tracks the
-// DR_MODE that precedes it (the per-glyph-DR_MODE variant rewrites that page
-// inside every packet, which the same tracking picks up).
+// the real emitter and walks the chain it just left in the primitive buffer:
+// one linear walk over the bytes the primitive cursor advanced past finds
+// every glyph packet, and each is claimed into the chokepoint's batch, whose
+// release reads the packet's words. The words are not final when the emitter
+// returns: Spyro 2's pause panel page turn (func_800145AC) rewrites the xy of
+// every primitive it emitted, glyphs included, through func_8004BF94. An SPRT
+// carries no texture page, so the walk tracks the DR_MODE that precedes it
+// (the per-glyph-DR_MODE variant rewrites that page inside every packet,
+// which the same tracking picks up).
 //
 // Display-only: the hook reads the primitive buffer and the real emitter runs
 // unchanged, so no gameplay-readable byte moves.
@@ -38,8 +41,8 @@
 #include "openpete_profile.h"       /* the guest call's profiler region */
 #include "openpete_thread_roles.h"
 
-/* Chains walked and glyphs fed since boot: the engagement counters a capture
- * reads to tell "no text drew" from "text drew identically". */
+/* Chains walked and glyphs claimed since boot: the engagement counters a
+ * capture reads to tell "no text drew" from "text drew identically". */
 static unsigned s_chains, s_glyphs;
 
 /** @brief Reports whether the text chain census is enabled by OPENPETE_TEXT_SPRT_CENSUS.
@@ -53,24 +56,24 @@ static int census_on(void) {
     return v;
 }
 
-/** @brief Walks a primitive-buffer range as contiguous packets and feeds each glyph packet to the native UI sprite feeder.
+/** @brief Walks a primitive-buffer range as contiguous packets and claims each glyph packet for the UI sprite batch release.
  *
  * A packet's tag word holds its length in words in the top byte, so the
  * next packet starts (len + 1) * 4 bytes on; the command byte is the top
  * byte of word 1. A DR_MODE (0xE1) sets the texture page for the SPRTs
- * (0x64..0x67) after it; a SPRT before any DR_MODE is skipped. A POLY_FT4
- * (0x2C..0x2F) carries its own page. The walk stops at a zero length or a
- * packet that overruns the range. Counts the chain and each glyph fed.
- * A chain the emitter linked itself is one link appended to the 2D entry
- * when the emitter returns, so each glyph is recorded there for the link
- * rank, in chain order, before it is fed.
+ * (0x64..0x67) after it, which are claimed with that packet's address; a
+ * SPRT before any DR_MODE is skipped. A POLY_FT4 (0x2C..0x2F) carries its
+ * own page. The walk stops at a zero length or a packet that overruns the
+ * range. Counts the chain and each glyph claimed. A chain the emitter
+ * linked itself is one link appended to the 2D entry when the emitter
+ * returns, so each glyph is recorded there for the link rank, in chain
+ * order, before it is claimed.
  * @param cpu The guest CPU state.
  * @param start The first packet's guest address.
  * @param end The primitive cursor after the emitter ran.
  * @param self_linked 1 when no hooked insert linked any of the chain. */
 static void feed_chain(CPUState* cpu, uint32_t start, uint32_t end, int self_linked) OP_REQUIRES(sim) {
-    unsigned tpage = 0;                 /* set by the chain's own DR_MODE */
-    int have_tpage = 0;
+    uint32_t dr_mode = 0;               /* the chain's own DR_MODE packet */
     uint32_t p = start;
     while (p + 8u <= end) {
         uint32_t w0 = cpu->read_word(p);
@@ -80,15 +83,14 @@ static void feed_chain(CPUState* cpu, uint32_t start, uint32_t end, int self_lin
         if (p + size > end) break;
         unsigned code = (cpu->read_word(p + 4) >> 24) & 0xFFu;
         if (code == 0xE1u) {            /* DR_MODE: bits 0-10 are the draw mode */
-            tpage = cpu->read_word(p + 4) & 0x7FFu;
-            have_tpage = 1;
-        } else if ((code & 0xFCu) == 0x64u && have_tpage) {   /* SPRT 0x64..0x67 */
+            dr_mode = p;
+        } else if ((code & 0xFCu) == 0x64u && dr_mode) {   /* SPRT 0x64..0x67 */
             if (self_linked) ui_sprite_link_note(p, -1);
-            ui_sprite_feed_sprt(cpu, p, tpage);
+            ui_sprite_claim_glyph_sprt(cpu, p, dr_mode);
             s_glyphs++;
         } else if ((code & 0xFCu) == 0x2Cu) {   /* POLY_FT4 0x2C..0x2F, len 9 -> 0x28 bytes */
             if (self_linked) ui_sprite_link_note(p, -1);
-            ui_sprite_feed_ft4(cpu, p);         /* the packet carries its own tpage */
+            ui_sprite_claim_glyph_ft4(cpu, p);  /* the packet carries its own tpage */
             s_glyphs++;
         }
         p += size;
@@ -96,7 +98,7 @@ static void feed_chain(CPUState* cpu, uint32_t start, uint32_t end, int self_lin
     s_chains++;
 }
 
-/** @brief Dispatch hook for a glyph chain emitter: runs it, then feeds the chain it left in the primitive buffer.
+/** @brief Dispatch hook for a glyph chain emitter: runs it, then claims the chain it left in the primitive buffer.
  *
  * Inert (returns 0, so the normal dispatch runs the emitter) while the native
  * scene is disabled and no render-path selection is active, and on re-entry

@@ -160,33 +160,32 @@ typedef struct ui_game {
  * the registered descriptor's table here before any feeder runs. */
 extern ui_game_t ui_game;
 
-/** @brief Feeds one glyph SPRT into the native HUD layer at emission.
+/** @brief Claims one glyph SPRT of a self-linked glyph chain for the batch release.
  *
- * The glyph emitters link their SPRT chains with an inlined insert, so the
- * chokepoint never sees them; text_sprt hands each glyph here. The SPRT is
- * 0x14 bytes: colour|code at +0x04, x0/y0 at +0x08/+0x0A, u/v at
- * +0x0C/+0x0D, CLUT at +0x0E, and (height << 16) | width at +0x10. It is fed
- * at once, tagged with its address, so the next batch release ranks it
- * against the chokepoint's primitives by the ordering-table traversal.
- * Refused, and counted, on a speculative tick; a no-op with the native
- * scene off.
+ * The glyph emitters link their chains with an inlined insert, so the
+ * chokepoint never sees a glyph; text_sprt hands each glyph packet here. The
+ * SPRT is 0x14 bytes: colour|code at +0x04, x0/y0 at +0x08/+0x0A, u/v at
+ * +0x0C/+0x0D, CLUT at +0x0E, and (height << 16) | width at +0x10. Its words
+ * are read at the batch release, as the chokepoint's primitives are: the
+ * game may rewrite a glyph's xy after the emitter returns (Spyro 2's pause
+ * panel page turn folds every primitive it emitted, func_8004BF94). Refused,
+ * and counted, on a speculative tick.
  * @param cpu The guest CPU state.
  * @param prim The SPRT's guest address.
- * @param tpage The GPU texture-page word in effect, which the SPRT packet
- *        does not carry; it comes from the DR_MODE that heads the chain. */
-void ui_sprite_feed_sprt(CPUState* cpu, uint32_t prim, unsigned tpage) OP_REQUIRES(sim);
+ * @param dr_mode The guest address of the chain's DR_MODE packet preceding
+ *        the SPRT, whose draw-mode word sets the texture page the SPRT
+ *        packet does not carry. */
+void ui_sprite_claim_glyph_sprt(CPUState* cpu, uint32_t prim, uint32_t dr_mode) OP_REQUIRES(sim);
 
-/** @brief Feeds one glyph POLY_FT4 into the native HUD layer at emission.
+/** @brief Claims one glyph POLY_FT4 of a self-linked glyph chain for the batch release.
  *
- * The quad form of the self-linking glyph chains: a glyph emitted as one
- * 0x28-byte POLY_FT4 (colour|code at +0x04, then four xy/uv word pairs)
- * instead of a DR_MODE plus an SPRT. The packet carries its own texture page
- * and CLUT, so no draw mode is passed. Decoded by the chokepoint's FT4
- * decoder and tagged with its address for the release's ranking. A no-op
- * with the native scene off.
+ * The quad form of the glyph chains: one 0x28-byte POLY_FT4 per glyph
+ * (colour|code at +0x04, then four xy/uv word pairs) carrying its own
+ * texture page and CLUT. Read at the batch release and decoded by the
+ * chokepoint's FT4 decoder. Refused, and counted, on a speculative tick.
  * @param cpu The guest CPU state.
  * @param prim The POLY_FT4's guest address. */
-void ui_sprite_feed_ft4(CPUState* cpu, uint32_t prim) OP_REQUIRES(sim);
+void ui_sprite_claim_glyph_ft4(CPUState* cpu, uint32_t prim) OP_REQUIRES(sim);
 
 /** @brief Records one 2D primitive's link into the game's ordering table for the link rank.
  *
@@ -215,8 +214,8 @@ uint64_t ui_sprite_link_count(void);
 
 /** @brief Returns the SPRTs fed into the native HUD layer since boot.
  *
- * Counts both the glyph SPRTs from ui_sprite_feed_sprt and the SPRTs claimed
- * at the chokepoint: the engagement counter a harness reads to tell "no text
+ * Counts both the glyph SPRTs from ui_sprite_claim_glyph_sprt and the SPRTs
+ * claimed at the chokepoint: the engagement counter a harness reads to tell "no text
  * drew" from "text drew identically".
  * @return The count. */
 unsigned ui_sprite_sprt_count(void);
@@ -240,8 +239,8 @@ void ui_freeze_retain_commit(void) OP_REQUIRES(sim);
 unsigned ui_freeze_retain_count(void);
 /** @brief Returns the 2D primitives fed into the native scene since boot.
  *
- * Counts every primitive the module fed, from batch releases and from glyph
- * feeds at emission, including freeze-backdrop claims.
+ * Counts every primitive the module fed from batch releases, including
+ * freeze-backdrop claims.
  * @return The count. */
 unsigned ui_sprite_prim_count(void);
 
@@ -264,7 +263,7 @@ void ui_sprite_ot_draw_begin(void) OP_REQUIRES(sim);
  * early. OPENPETE_UISPRITE_TRACE prints each stale primitive;
  * OPENPETE_XY3_PROBE=<VBL> prints each primitive's y at link, release and
  * walk within three VBLs of it. */
-void ui_sprite_ot_verify(void);
+void ui_sprite_ot_verify(void) OP_REQUIRES(sim);
 
 /** @brief Return one of the most recent ordering-table bases handed to DrawOTag.
  *

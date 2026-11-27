@@ -58,7 +58,7 @@ static unsigned s_presented_scene = 0xFFFFFFFFu;
 static unsigned s_presented_reopen;         /* 2D feeds that opened a new scene because the
                                              * live one was already captured (engagement) */
 static int s_last_abr;                      /* the tracked draw-mode ABR (defined with the dispatch state) */
-static unsigned s_post_claim, s_post_sprt, s_post_fade;
+static unsigned s_post_claim, s_post_fade;
 
 /* Primitives fed, by class: the engagement counters a harness reads to tell
  * "the layer drew nothing" from "the layer drew identically" (a zero count is
@@ -600,7 +600,7 @@ static int feed_hud_tex_quad(const openpete_scene_tri in[2]) OP_REQUIRES(sim) {
  *
  * A claimed primitive is fed from a batch release (the canonical capture,
  * the frame close or the ordering-table walk), where openpete_frame may
- * already be the next VBL, and a glyph is fed at emission. Beginning the
+ * already be the next VBL. Beginning the
  * scene of openpete_frame at a late release would push the finished scene
  * into the history ring a VBL early and start a new scene holding only this
  * primitive, and the lagged headless compose would read the wrong slot. The
@@ -612,8 +612,7 @@ static int feed_hud_tex_quad(const openpete_scene_tri in[2]) OP_REQUIRES(sim) {
  * A live scene whose stamp equals the one the last capture took
  * (s_presented_scene) was therefore already presented, and the feed belongs
  * to a later VBL whose render opened no scene of its own: a tick that draws
- * 2D alone with no 3D producer and no claim, such as Spyro 3's loading
- * picture (func_80059358, SPRTs fed at emission). Appending there would put
+ * 2D alone with no 3D producer. Appending there would put
  * the primitive into the presented scene, under that scene's fade and over
  * its world, so the scene of openpete_frame is opened instead. */
 static void scene_begin_for_feed(void) OP_REQUIRES(sim) {
@@ -916,9 +915,7 @@ static void feed_sprt_now(CPUState* cpu, uint32_t prim, unsigned tpage) OP_REQUI
     float su[4] = { (float)u0, (float)(u0 + w), (float)u0, (float)(u0 + w) };
     float sv[4] = { (float)v0, (float)v0, (float)(v0 + h), (float)(v0 + h) };
 
-    scene_begin_for_feed();   /* the live scene: this runs both at emission (the
-                               * self-linking glyph chains) and from a released
-                               * batch (a HUD sprite linked through the chokepoint) */
+    scene_begin_for_feed();   /* the live scene of the released batch */
     static const int idx[2][3] = { {0,1,2}, {1,3,2} };
     openpete_scene_tri quad[2]; memset(quad, 0, sizeof(quad));
     for (int t = 0; t < 2; t++) {
@@ -1000,7 +997,8 @@ static void unclaimed_note(CPUState* cpu, uint32_t prim) {
  * triangle by the table traversal (build_ot_rank_map) keeps the native
  * layering equal to the OT walk order. The chokepoint is the clean 2D-vs-3D discriminator (the 3D
  * renderers inline the insert). */
-enum { QK_FT4 = 0, QK_FREEZE, QK_DR_MODE, QK_F4_BAR, QK_F4_PANEL, QK_LINE_G2, QK_SPRT, QK_POLY_G, QK_LINE_F2 };
+enum { QK_FT4 = 0, QK_FREEZE, QK_DR_MODE, QK_F4_BAR, QK_F4_PANEL, QK_LINE_G2, QK_SPRT, QK_POLY_G, QK_LINE_F2,
+       QK_GLYPH_SPRT, QK_GLYPH_FT4 };
 typedef struct { uint32_t addr; uint32_t sum; uint32_t seq; uint32_t aux; uint32_t xy_link; uint32_t xy_rel; uint8_t kind; } ui_claim_t;
 
 /* One drawn tick's 2D. The claim run grows with the screen (a page turn of
@@ -1032,8 +1030,8 @@ static unsigned s_claim_late;         /* batches released at the frame close rat
 /** @brief Prints and resets the counts of 2D emissions that arrived after their VBL's canonical capture.
  *
  * The capture is the release point on the assumption that it follows the
- * VBL's last 2D emission; s_post_claim, s_post_sprt and s_post_fade count
- * chokepoint claims, glyph feeds and fade emissions stamped with the VBL of
+ * VBL's last 2D emission; s_post_claim and s_post_fade count claims
+ * (chokepoint and glyph chain) and fade emissions stamped with the VBL of
  * the batch the capture released (s_cap_frame). An emission stamped with a
  * later VBL belongs to the next batch and is not counted. Under
  * OPENPETE_UISPRITE_TRACE one line is printed per capture while s_cap_frame
@@ -1042,9 +1040,9 @@ static void post_capture_report(void) {
     static int tr = -1;
     ENV_FLAG_LATCH(tr, "OPENPETE_UISPRITE_TRACE");
     if (tr && s_cap_frame != 0xFFFFFFFFu)
-        fprintf(stderr, "[uipost built=%u] claim=%u sprt=%u fade=%u reopen=%u\n",
-                s_cap_frame, s_post_claim, s_post_sprt, s_post_fade, s_presented_reopen);
-    s_post_claim = s_post_sprt = s_post_fade = 0;
+        fprintf(stderr, "[uipost built=%u] claim=%u fade=%u reopen=%u\n",
+                s_cap_frame, s_post_claim, s_post_fade, s_presented_reopen);
+    s_post_claim = s_post_fade = 0;
 }
 
 static unsigned s_claim_at_capture;   /* batches released at their own frame's canonical capture:
@@ -1595,6 +1593,63 @@ static int f4_spans_frame_width(CPUState* cpu, uint32_t prim) {
     return hi - lo >= UI_FRAME_W;
 }
 
+/* Glyph census (OPENPETE_TEXT_SPRT_CENSUS). Each glyph packet the native
+ * scene draws is recorded with the xy words it was decoded from, and the
+ * next DrawOTag walk, where the GPU reads the packet, re-reads them: a glyph
+ * whose xy words changed in between was drawn where the GPU does not draw
+ * it. The record holds one xy word for an SPRT and four for a POLY_FT4. */
+#define UI_GLYPH_LEDGER 1024
+typedef struct { uint32_t addr; uint32_t xy[4]; uint8_t n; } ui_glyph_rec_t;
+static ui_glyph_rec_t s_glyph_rec[UI_GLYPH_LEDGER] OP_GUARDED_BY(sim);
+static unsigned s_glyph_rec_n OP_GUARDED_BY(sim);
+static unsigned s_glyph_rec_over OP_GUARDED_BY(sim);
+static int s_glyph_census OP_GUARDED_BY(sim) = -1;   /* OPENPETE_TEXT_SPRT_CENSUS, latched */
+
+/** @brief Reports whether the glyph census is on, reading OPENPETE_TEXT_SPRT_CENSUS once.
+ *
+ * @return 1 when the variable is set to a non-empty value not starting with '0'. */
+static int glyph_census_on(void) OP_REQUIRES(sim) {
+    ENV_FLAG_LATCH(s_glyph_census, "OPENPETE_TEXT_SPRT_CENSUS");
+    return s_glyph_census;
+}
+
+/** @brief Records a glyph packet's xy words as the native scene decodes them, for the walk's re-read.
+ *
+ * Inert with the census off. A record past UI_GLYPH_LEDGER is counted in
+ * s_glyph_rec_over and dropped.
+ * @param cpu The guest CPU state.
+ * @param prim The packet's guest address.
+ * @param nxy 1 for an SPRT (xy at +0x08), 4 for a POLY_FT4 (xy at +0x08, +0x10, +0x18, +0x20). */
+static void glyph_census_note(CPUState* cpu, uint32_t prim, int nxy) OP_REQUIRES(sim) {
+    if (!glyph_census_on()) return;
+    if (s_glyph_rec_n >= UI_GLYPH_LEDGER) { s_glyph_rec_over++; return; }
+    ui_glyph_rec_t* r = &s_glyph_rec[s_glyph_rec_n++];
+    r->addr = prim; r->n = (uint8_t)nxy;
+    for (int k = 0; k < nxy; k++) r->xy[k] = cpu->read_word(prim + 0x08u + 8u * (uint32_t)k);
+}
+
+/** @brief Re-reads the recorded glyphs' xy words at the walk and prints the fed and stale counts.
+ *
+ * One line per walk with at least one glyph recorded:
+ * `[census f=<openpete_frame> TEXT-STALE] fed=N stale=M over=K`, stale
+ * counting the glyphs with any xy word changed since their decode. The
+ * ledger is emptied.
+ * @param cpu The guest CPU state. */
+static void glyph_census_walk(CPUState* cpu) OP_REQUIRES(sim) {
+    const unsigned n = s_glyph_rec_n;
+    if (!n && !s_glyph_rec_over) return;
+    unsigned stale = 0;
+    for (unsigned i = 0; i < n; i++) {
+        const ui_glyph_rec_t* r = &s_glyph_rec[i];
+        int moved = 0;
+        for (int k = 0; k < r->n; k++) moved |= cpu->read_word(r->addr + 0x08u + 8u * (uint32_t)k) != r->xy[k];
+        stale += (unsigned)moved;
+    }
+    fprintf(stderr, "[census f=%u TEXT-STALE] fed=%u stale=%u over=%u\n",
+            openpete_frame, n, stale, s_glyph_rec_over);
+    s_glyph_rec_n = 0; s_glyph_rec_over = 0;
+}
+
 /** @brief Decodes one claimed 2D primitive by its claim kind and feeds it into the native scene.
  *
  * QK_FT4, QK_SPRT, QK_LINE_G2, QK_POLY_G and QK_LINE_F2 go to their
@@ -1606,11 +1661,15 @@ static int f4_spans_frame_width(CPUState* cpu, uint32_t prim) {
  * width, as a menu-box backing on the panel layer, stamped with the
  * framebuffer cell key in its auxiliary word;
  * QK_F4_PANEL feeds a dark panel on the panel layer at the tracked ABR.
+ * QK_GLYPH_SPRT and QK_GLYPH_FT4 are a self-linked glyph chain's packets:
+ * the SPRT takes the draw-mode word of the chain's DR_MODE packet at aux,
+ * leaving the tracked draw mode untouched, and the FT4 carries its own page.
  * @param cpu The guest CPU state.
  * @param prim The primitive's guest address.
  * @param kind The claim kind (QK_*).
  * @param aux The claim's auxiliary word: for QK_F4_BAR the framebuffer cell
- *        key of a grid border (grid_elem_key), else 0. */
+ *        key of a grid border (grid_elem_key), for QK_GLYPH_SPRT the guest
+ *        address of the DR_MODE packet setting its page, else 0. */
 static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux) OP_REQUIRES(sim) {
     const uint32_t w1 = cpu->read_word(prim + 4);
     switch (kind) {
@@ -1682,6 +1741,12 @@ static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux)
         feed_f4(cpu, prim, w1, OPENPETE_SCENE_HUD_PANEL, b.alpha, b.blend, UI_WIDEN_NONE);
         break; }
     case QK_SPRT:    feed_sprt_now(cpu, prim, s_last_tpage); break;
+    case QK_GLYPH_SPRT:                     /* the page from the chain's own DR_MODE at aux */
+        glyph_census_note(cpu, prim, 1);
+        feed_sprt_now(cpu, prim, cpu->read_word(aux + 4) & 0x7FFu); break;
+    case QK_GLYPH_FT4:
+        glyph_census_note(cpu, prim, 4);
+        feed_ft4(cpu, prim, w1); break;
     case QK_LINE_G2: feed_line_g2(cpu, prim, w1); break;
     case QK_POLY_G:  feed_poly_g(cpu, prim, w1); break;
     case QK_LINE_F2: feed_line_f2(cpu, prim, w1); break;
@@ -1839,8 +1904,7 @@ static uint32_t* collect_scene_2d_sorted(mod_fvec* v, uint32_t extra, int* kn_ou
 
 /** @brief Marks the scene's 2D the game draws before the avatar when no claimed batch is released to rank it.
  *
- * A VBL whose 2D is fed at emission alone (the loading picture's SPRT chain)
- * releases no batch, so rank_scene_2d does not run; the link map is built
+ * A VBL that releases no batch does not run rank_scene_2d; the link map is built
  * over the scene's 2D and the under-player marks are set from it
  * (prim_under_player). Inert on a game ranked by the DrawOTag walk. */
 static void mark_unranked_under_player(void) OP_REQUIRES_SHARED(sim) {
@@ -1854,8 +1918,7 @@ static void mark_unranked_under_player(void) OP_REQUIRES_SHARED(sim) {
 
 /** @brief Ranks every 2D triangle of the scene by the draw order of the primitive it was decoded from.
  *
- * The scene's 2D primitive addresses, the released batch's and the glyphs
- * fed at emission alike, are sorted and mapped to ranks once: by
+ * The scene's 2D primitive addresses are sorted and mapped to ranks once: by
  * build_link_rank_map on a link-rank game (rank_by_link_on), by
  * build_ot_rank_map otherwise; on a link-rank game a table still being
  * linked at a mid-table VSync wait is first held back (defer_open_period_2d);
@@ -1915,8 +1978,8 @@ static void rank_scene_2d(CPUState* cpu) OP_REQUIRES(sim) {
  * call and must find nothing pending, or it releases the same claims a second
  * time. Each released primitive is re-summed (a changed sum counts in
  * s_mutated), recorded for ui_sprite_ot_verify and fed through
- * feed_one_claim, tagged with its address. Every 2D triangle in the scene, the
- * batch's and the glyphs fed at emission, is then ranked by rank_scene_2d.
+ * feed_one_claim, tagged with its address. Every 2D triangle in the scene is
+ * then ranked by rank_scene_2d.
  * With no CPU or the native scene off, the claims are dropped unfed, as they
  * are while a render-path selection leaves RP_UI out. */
 static void release_batch(void) OP_REQUIRES(sim) {
@@ -1999,10 +2062,11 @@ static void on_overlay_precapture(void) OP_REQUIRES(sim) {
 }
 
 /* Re-sums the primitives released since the last walk against their fed sums. */
-void ui_sprite_ot_verify(void) {
+void ui_sprite_ot_verify(void) OP_REQUIRES(sim) {
     CPUState* cpu = s_cpu;
     unsigned n = s_verify_pending;
     s_verify_pending = 0;
+    if (cpu) glyph_census_walk(cpu);
     if (!cpu || !n) return;
     static int s_tr = -1;
     ENV_FLAG_LATCH(s_tr, "OPENPETE_UISPRITE_TRACE");
@@ -2094,37 +2158,14 @@ static uint32_t grid_elem_key(unsigned ord) {
     return h | 1u;
 }
 
-/** @brief Opens the scene an emission feed appends to before its primitive address is set.
- *
- * Opening a scene clears the sticky primitive address, so a feed that opens
- * the VBL's scene inside its decoder would add its triangles with address 0
- * and the release could not rank them. Under OPENPETE_UI_RANK_WALK the
- * scene is left to the decoder, as the DrawOTag-walk rank always did. */
-static void prim_scene_open(void) OP_REQUIRES(sim) {
-    if (rank_by_link_on()) scene_begin_for_feed();
+void ui_sprite_claim_glyph_sprt(CPUState* cpu, uint32_t prim, uint32_t dr_mode) OP_REQUIRES(sim) {
+    if (!s_cpu) s_cpu = cpu;
+    claim_aux(cpu, prim, QK_GLYPH_SPRT, dr_mode);
 }
 
-/* Feeds one glyph SPRT at emission, tagged with its address for the release's ranking. */
-void ui_sprite_feed_sprt(CPUState* cpu, uint32_t prim, unsigned tpage) OP_REQUIRES(sim) {
-    if (!spyro_native_canon_capture_open()) { s_claim_spec_refused++; return; }
-    if (openpete_frame == s_cap_frame) s_post_sprt++;
-    if (!openpete_native_scene_enabled() || !render_path_enabled(RP_UI)) return;
+void ui_sprite_claim_glyph_ft4(CPUState* cpu, uint32_t prim) OP_REQUIRES(sim) {
     if (!s_cpu) s_cpu = cpu;
-    prim_scene_open();
-    openpete_native_scene_set_prim(prim);   /* ranked at the release */
-    feed_sprt_now(cpu, prim, tpage);
-    openpete_native_scene_set_prim(0u);
-}
-
-/* Feeds one glyph POLY_FT4 at emission through the chokepoint's FT4 decoder. */
-void ui_sprite_feed_ft4(CPUState* cpu, uint32_t prim) OP_REQUIRES(sim) {
-    if (openpete_frame == s_cap_frame) s_post_sprt++;
-    if (!openpete_native_scene_enabled() || !render_path_enabled(RP_UI)) return;
-    if (!s_cpu) s_cpu = cpu;
-    prim_scene_open();
-    openpete_native_scene_set_prim(prim);   /* ranked at the release */
-    feed_ft4(cpu, prim, cpu->read_word(prim + 4));
-    openpete_native_scene_set_prim(0u);
+    claim(cpu, prim, QK_GLYPH_FT4);
 }
 
 /** @brief Record a 2D primitive's polybuf range as RP_UI while a render-path selection is active.
