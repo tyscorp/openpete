@@ -164,7 +164,10 @@ static void fast_case(disc_image_t* img) {
         if (openpete_disc_cache_active()) flipped_at = i;
     }
     printf("disc_cache_auto_test: watchdog attached the cache on cold read %d\n", flipped_at);
-    check(flipped_at == 2, "the third 3 ms read in one tick attaches the cache");
+    /* A sleep never returns early, so three 3 ms reads always pass the 8.36 ms
+     * quarter tick; under load a sleep overruns, and one read can pass it alone.
+     * The exact read count is asserted on synthetic timings in disc_fs_probe_test. */
+    check(flipped_at >= 0 && flipped_at <= 2, "the cache attaches by the third 3 ms read in one tick");
     SDL_SetAtomicInt(&s_delay_us, 0);
     check(wait_hit(img, cold, 10000), "the missed chunk becomes resident");
     check(wait_hit(img, 10, 20000), "the whole image becomes resident");
