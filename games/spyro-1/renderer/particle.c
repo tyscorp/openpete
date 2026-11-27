@@ -1264,7 +1264,7 @@ static int part_sel_layer(int sel) {
  * @param blend The native blend code, 0 for opaque.
  * @param layer The OPENPETE_SCENE_* layer. */
 static void part_feed_line_quad(float ax, float ay, float bx, float by, uint32_t rgb0,
-                                uint32_t rgb1, float depth, int blend, int layer) OP_REQUIRES_SHARED(sim) {
+                                uint32_t rgb1, float depth, int blend, int layer) OP_REQUIRES(sim) {
     static const int split[2][3] = { {0,1,2}, {1,3,2} };
     float cx[4], cy[4];
     ngte_line_quad(ax, ay, bx, by, 0.0f, cx, cy);

@@ -31,6 +31,7 @@
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 #ifdef OPENPETE_HAS_PSYCROSS
 
@@ -219,7 +220,7 @@ void host_pause_step(bool *paused, bool *step_one)
 }
 
 /* Documented at the declaration in host_hotkeys.h. */
-void host_paused_repaint(const openpete_options_t *opts)
+void host_paused_repaint(const openpete_options_t *opts) OP_REQUIRES(sim)
 {
     s_pause_at.idle++;
     if (opts->headless || openpete_skip_present_until_level || eager_active())

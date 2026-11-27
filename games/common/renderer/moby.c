@@ -4160,14 +4160,14 @@ static int occl_record_culled(CPUState* cpu, uint32_t moby) OP_REQUIRES(sim);
 static void occl_cache_update(CPUState* cpu, uint32_t moby, const proj_xy* p, int n,
                               const double tr[3], uint32_t header);
 static int occl_confirm(CPUState* cpu, uint32_t moby, const proj_xy* p, int n,
-                        const double tr[3], uint32_t header);
+                        const double tr[3], uint32_t header) OP_REQUIRES_SHARED(sim);
 static uint32_t s_occl_prov_moby;   /* defined with the occlusion cache */
 static int occl_confirm_on(void);
 /* OPENPETE_MOBY_OCCL_VERIFY bracket for cull sites ahead of the occlusion
  * block: begin() returns 1 when the audit wants the record extracted anyway,
  * end() re-queries the freshly refreshed bounds and reports a wrong verdict. */
 static int  occl_verify_begin(uint32_t moby);
-static void occl_verify_end(uint32_t moby, const proj_xy* p, int n);
+static void occl_verify_end(uint32_t moby, const proj_xy* p, int n) OP_REQUIRES_SHARED(sim);
 static long s_occl_seen, s_occl_culled;
 /** @brief Whether a moby belongs to the specular pass, read off the moby's m_Renderer byte.
  *
@@ -4244,7 +4244,7 @@ static int append_revealed_regular(CPUState* cpu) OP_REQUIRES(sim) {
  * @param zsf4_out Receives the record's ZSF4 verdict, also when the decode yields none.
  * @return The projected vertex count appended, 0 when the decode yields none,
  *         -1 when the decode's own bounds show the moby occluded (occl_confirm). */
-static int reveal_emit_record(CPUState* cpu, uint32_t m, moby_fields* f, int ver_check, int* zsf4_out) {
+static int reveal_emit_record(CPUState* cpu, uint32_t m, moby_fields* f, int ver_check, int* zsf4_out) OP_REQUIRES_SHARED(sim) {
     *zsf4_out = 1024;
     if (!ver_check && moby_native_late_spawned(m)) return 0;   /* a late present shows tick N-1's set */
     const int off = s_proj_n;
@@ -4681,7 +4681,7 @@ static unsigned moby_precull_drawn(CPUState* cpu, uint32_t m, uint32_t head) {
  * @param cpu The guest CPU state, read only.
  * @param m The Moby address the record was appended for.
  * @return 1 when the record was dropped as occluded, else 0. */
-static int moby_reveal_confirm(CPUState* cpu, uint32_t m) {
+static int moby_reveal_confirm(CPUState* cpu, uint32_t m) OP_REQUIRES_SHARED(sim) {
     OP_PROF_ACCUM_SCOPE("mcan.reveal_confirm");
     static proj_xy buf[1024];
     const uint32_t rec = moby_rec_last_appended();
@@ -6531,7 +6531,7 @@ struct moby_simple_emit {
     proj_xy* p;
 };
 
-static void moby_simple_occl_audit(uint32_t moby, const proj_xy* p, int n);
+static void moby_simple_occl_audit(uint32_t moby, const proj_xy* p, int n) OP_REQUIRES_SHARED(sim);
 
 /** @brief The view the current simple-moby record projects through, with its projection origin.
  *
@@ -6638,7 +6638,7 @@ static void moby_simple_project_take(const moby_simple_xform_t* x, int n, moby_s
 }
 
 void moby_simple_project_record(const moby_simple_xform_t* x, const double (*vm)[3], int n,
-                                float (*scr)[2], moby_otk_vert_t* iv) {
+                                float (*scr)[2], moby_otk_vert_t* iv) OP_REQUIRES_SHARED(sim) {
     if (n > MOBY_SIMPLE_MAX_VERTS) n = MOBY_SIMPLE_MAX_VERTS;
     moby_simple_proj_t pj;
     moby_simple_project_take(x, n, &pj);
@@ -12610,7 +12610,7 @@ static int s_rord_used;        /* ordinals the scene's emits have used */
 
 /** @brief Start one emit's ordinal table at the ordinals its scene's earlier emits used.
  * @param o The table to start. */
-static void moby_rank_ordinals_begin(moby_rank_ordinals_t* o) {
+static void moby_rank_ordinals_begin(moby_rank_ordinals_t* o) OP_REQUIRES_SHARED(sim) {
     const unsigned ep = openpete_native_scene_epoch();
     if (ep != s_rord_epoch) { s_rord_epoch = ep; s_rord_used = 0; }
     o->n = 0;
@@ -12889,7 +12889,7 @@ static void moby_snap_gather_print(void) {
  * @param out Receives where the triangles are, for moby_snap_queue.
  * @param first Receives the first eligible triangle's index.
  * @return The triangles gathered; 0 also on an allocation failure. */
-static int moby_snap_gather_to(int i0, int i1, const float (**out)[3][3], int* first) {
+static int moby_snap_gather_to(int i0, int i1, const float (**out)[3][3], int* first) OP_REQUIRES_SHARED(sim) {
     static float (*s_buf)[3][3]; static int s_cap;
     float (*room)[3][3] = moby_snap_queue_room(i1 - i0);
     if (!room) {
@@ -12941,7 +12941,7 @@ static void moby_snap_probe_tags(uint32_t mob, int i0, int i1, int n) {
  * record's near-floor lift, uniform per record); and its ordinal when the
  * walk ranked any of its faces.
  * @param rord The walk's ranked-moby ordinals. */
-static void moby_snap_collect(const moby_rank_ordinals_t* rord) {
+static void moby_snap_collect(const moby_rank_ordinals_t* rord) OP_REQUIRES_SHARED(sim) {
     if (!openpete_native_moby_snap_on()) return;
     uint32_t ids[256];
     for (int o = 0; o < rord->n; o++) ids[o] = moby_scene_identity(rord->moby[o]);
@@ -13028,7 +13028,7 @@ static unsigned s_tie_face_stamp;
  * and leave the count unchanged.
  * @param i Walk triangle index.
  * @return The ordinal, 0 to MOBY_TIE_MAX_ORD. */
-static int moby_tie_ordinal(int i) {
+static int moby_tie_ordinal(int i) OP_REQUIRES_SHARED(sim) {
     const int b = s_wtri_wbk[i];
     const uint32_t mob = s_wtri_moby[i];
     if (b < 0 || b >= MOBY_TIE_BUCKETS || moby_walk_tri_host_added(mob)) return 0;
@@ -13107,7 +13107,7 @@ static int moby_tie_face_on(const moby_tie_face_t* f, const moby_tie_face_t* g) 
  * @param b Its world bucket, whose s_tie_bk entry moby_tie_ordinal stamped for this scene.
  * @param ord Its splice ordinal (moby_tie_ordinal).
  * @return 1 when i coincides with an earlier record's face of b, else 0. */
-static int moby_tie_coincident(int i, int b, int ord) {
+static int moby_tie_coincident(int i, int b, int ord) OP_REQUIRES_SHARED(sim) {
     const unsigned stamp = openpete_native_scene_epoch() + 1u;
     if (s_tie_face_stamp != stamp) { s_tie_face_stamp = stamp; s_tie_face_n = 0; }
     if (s_tie_face_n >= MOBY_TIE_FACES) return 0;
@@ -13128,7 +13128,7 @@ static int moby_tie_coincident(int i, int b, int ord) {
  * state (moby_tie_ordinal) and is kept for the faces after it.
  * @param i Walk triangle index.
  * @return The pull in MOBY_TIE_STEP units, 0 to MOBY_TIE_MAX_ORD. */
-static int moby_tie_pull(int i) {
+static int moby_tie_pull(int i) OP_REQUIRES_SHARED(sim) {
     const int ord = moby_tie_ordinal(i);
     const int b = s_wtri_wbk[i];
     if (b < 0 || b >= MOBY_TIE_BUCKETS || moby_walk_tri_host_added(s_wtri_moby[i])) return 0;
@@ -13447,7 +13447,7 @@ static int moby_emit_face(const moby_emit_env_t* E, const moby_emit_run_t* R, in
  * @param rord The walk's ranked-moby ordinals.
  * @param t The face's triangle, as built or as stored; NULL for a dropped face. */
 static void moby_emit_commit_face(int i, uint8_t flags, int rank, moby_rank_ordinals_t* rord,
-                                  openpete_scene_tri* t) {
+                                  openpete_scene_tri* t) OP_REQUIRES_SHARED(sim) {
     if (flags & MEF_TIE) {
         const int pull = moby_tie_pull(i);   /* advances the bucket's splice state: once */
         if (t) {
@@ -13489,7 +13489,7 @@ static int moby_emit_run_end(int i0) {
  * @param cpu Guest CPU state, read for the terrain-order state bytes.
  * @param E The walk's constants.
  * @param rord The walk's ranked-moby ordinals. */
-static void moby_emit_serial(CPUState* cpu, const moby_emit_env_t* E, moby_rank_ordinals_t* rord) OP_REQUIRES_SHARED(sim) {
+static void moby_emit_serial(CPUState* cpu, const moby_emit_env_t* E, moby_rank_ordinals_t* rord) OP_REQUIRES(sim) {
     moby_matslot_memo_t mat = { 0u, 0u, 0 };  /* the material-slot resolve below */
     moby_shell_run_t shell = { 0, 0 };
     moby_emit_run_t R = { 0, 0, 0u, 0u, 0xFFu };
@@ -13842,7 +13842,7 @@ static void moby_emit(CPUState* cpu, const moby_emit_env_t* E, moby_rank_ordinal
  * moby_gsab_commit_simple. Does nothing while the readback is off or when no
  * pass armed it since the last commit (moby_gsab_arm, moby_gsab_arm_shaded,
  * moby_simple_begin). */
-static void moby_gsab_commit(void) {
+static void moby_gsab_commit(void) OP_REQUIRES_SHARED(sim) {
     if (!openpete_gsab_on() || s_gsab_armed == MOBY_GSAB_NONE) return;
     const int armed = s_gsab_armed;
     s_gsab_armed = MOBY_GSAB_NONE;
@@ -17097,7 +17097,7 @@ static void shaded_pcol_scratch_check(CPUState* cpu) {
  * Called at both feed sites (canonical and sub-tick re-extract) after the
  * scene's per-present reset.
  * @param cpu The guest CPU state, read only. */
-static void moby_native_set_actor_front(CPUState* cpu) {
+static void moby_native_set_actor_front(CPUState* cpu) OP_REQUIRES(sim) {
     static int s_en = -1;
     if (s_en < 0) { const char* e = getenv("OPENPETE_ACTOR_FRONT"); s_en = (e && *e) ? (*e != '0') : 1; }
     openpete_native_scene_set_actor_front(s_en && moby_cutscene_owns_draw(cpu));
@@ -17758,7 +17758,7 @@ static int occl_refresh_bounds(CPUState* cpu, uint32_t moby, const occl_rect_t* 
  * @param cpu The guest CPU state, read only.
  * @param moby The Moby address.
  * @return 1 when the moby is hidden behind nearer world depth, else 0. */
-static int occl_record_decide(CPUState* cpu, uint32_t moby) {
+static int occl_record_decide(CPUState* cpu, uint32_t moby) OP_REQUIRES_SHARED(sim) {
     s_occl_fallback = 0;
     if (moby_is_hud(moby)) { s_occl_f[0]++; return 0; }   /* HUD/UI: drawn over the scene, never occluded */
     const occl_rect_t* e = &s_occl_cache[occl_slot(moby)];
@@ -17816,7 +17816,7 @@ typedef struct { float x0, y0, x1, y1, vz; int valid; } occl_box_t;
  * @param moby The Moby address.
  * @param b The bounds.
  * @return 1 when the record is hidden behind nearer world depth, else 0. */
-static int occl_box_decide(uint32_t moby, const occl_box_t* b) {
+static int occl_box_decide(uint32_t moby, const occl_box_t* b) OP_REQUIRES_SHARED(sim) {
     if (moby_is_hud(moby)) { s_occl_f[0]++; return 0; }
     if (!b->valid) { s_occl_f[2]++; return 0; }
     const float inf = 8.0f + occl_pan_inflation(0u);
@@ -17959,7 +17959,7 @@ static int occl_held_confirm_mode(void) {
  * @param moby The Moby address.
  * @param b The bounds, or NULL for the cache.
  * @return 1 when culled, else 0. */
-static int occl_decide(CPUState* cpu, uint32_t moby, const occl_box_t* b) {
+static int occl_decide(CPUState* cpu, uint32_t moby, const occl_box_t* b) OP_REQUIRES_SHARED(sim) {
     return b ? occl_box_decide(moby, b) : occl_record_decide(cpu, moby);
 }
 
@@ -18065,7 +18065,7 @@ static int occl_confirm_on(void) {
  * @param header The AnimationHeader whose radius byte bounds the model.
  * @return 1 when the decode's bounds cull the moby, else 0. */
 static int occl_confirm(CPUState* cpu, uint32_t moby, const proj_xy* p, int n,
-                        const double tr[3], uint32_t header) {
+                        const double tr[3], uint32_t header) OP_REQUIRES_SHARED(sim) {
     const int prov = s_occl_prov_moby == moby && moby != 0u;
     const int held = prov && s_occl_prov_held;
     s_occl_prov_moby = 0u;
@@ -18194,7 +18194,7 @@ static void occl_proj_bounds(const proj_xy* p, int n, float* px0, float* py0,
  * @param cam The camera the rect was projected with.
  * @return The OPENPETE_OCCL_Q_* outcome index. */
 static int occl_audit_outcome(float x0, float y0, float x1, float y1, float vzmin,
-                              const openpete_occl_camera* cam) {
+                              const openpete_occl_camera* cam) OP_REQUIRES_SHARED(sim) {
     const float slack = openpete_native_occl_slack();
     return openpete_native_occl_query_outcome(x0, y0, x1, y1, vzmin, cam, slack > 0.0f ? slack : 0.0f);
 }
@@ -18211,7 +18211,7 @@ static int occl_audit_outcome(float x0, float y0, float x1, float y1, float vzmi
  * @param cam The camera the rect was projected with.
  * @return The OPENPETE_OCCL_Q_* outcome index (occl_audit_outcome). */
 static int occl_query_at(float x0, float y0, float x1, float y1, float vzmin,
-                         float mot, float mot_vz, const openpete_occl_camera* cam) {
+                         float mot, float mot_vz, const openpete_occl_camera* cam) OP_REQUIRES_SHARED(sim) {
     float vzm = vzmin < 512.0f ? 512.0f : vzmin;
     float own = 102400.0f * (float)s_view.s / vzm;
     if (mot * 1.5f > own) own = mot * 1.5f;
@@ -18306,7 +18306,7 @@ static void occl_audit_judge(const occl_audit_t* e, int q) {
  * waiting until OCCL_RECHECK_VBLS VBLs have passed, then counts it in
  * s_ver_unresolved. Each settled record prints one
  * `[occl-VERIFY-RECHECK ...]` line. */
-static void occl_recheck_service(void) {
+static void occl_recheck_service(void) OP_REQUIRES_SHARED(sim) {
     for (int i = 0; i < s_recheck_n;) {
         const occl_audit_t* e = &s_recheck[i];
         const int q = occl_audit_outcome(e->x0, e->y0, e->x1, e->y1, e->vz, &e->cam);
@@ -18355,7 +18355,7 @@ static int occl_verify_begin(uint32_t moby) {
  * @param moby The Moby address.
  * @param p The record's projected verts.
  * @param n Their count; 0 or less returns without a report. */
-static void occl_verify_end(uint32_t moby, const proj_xy* p, int n) {
+static void occl_verify_end(uint32_t moby, const proj_xy* p, int n) OP_REQUIRES_SHARED(sim) {
     if (n <= 0) return;                 /* no verts projected -> nothing drawable */
     occl_audit_t e;
     occl_audit_fill(&e, moby, 0, p, n);
@@ -18385,7 +18385,7 @@ int moby_simple_occluded(CPUState* cpu, uint32_t moby, const double org[3], doub
  * @param moby The Moby address.
  * @param p The record's projected vertices.
  * @param n Their count. */
-static void moby_simple_occl_audit(uint32_t moby, const proj_xy* p, int n) {
+static void moby_simple_occl_audit(uint32_t moby, const proj_xy* p, int n) OP_REQUIRES_SHARED(sim) {
     if (!occl_verify_on() || n <= 0 || s_simple_box.moby != moby || !s_simple_box.b.valid) return;
     const occl_box_t* b = &s_simple_box.b;
     occl_audit_t e;
@@ -20264,7 +20264,7 @@ static void rex_rec_decode(CPUState* cpu, uint32_t moby, rex_job* J) {
  * @param culled The pass's culled mobys, appended to.
  * @param culled_n Their count, updated. */
 static void rex_rec_commit(CPUState* cpu, int is_spec, uint32_t rec, uint32_t moby, rex_job* J,
-                           rex_split* sp, uint32_t* culled, int* culled_n) {
+                           rex_split* sp, uint32_t* culled, int* culled_n) OP_REQUIRES_SHARED(sim) {
     if (J->state == RJ_CULLED) { occl_pass_culled(moby, is_spec, culled, culled_n); return; }
     if (J->state != RJ_DECODE) return;
     sp->tr = msp_mark(MSP_R_DP, sp->tr, MSP_RSTRIDE); sp->part = MSP_R_CONF;

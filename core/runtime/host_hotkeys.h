@@ -5,6 +5,7 @@
 #include "openpete.h"
 
 #include <stdbool.h>
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 /** @brief Reset the menu-close, pointer-owner, Alt+Enter and mouse-probe latches to their start-of-run state. */
 void host_hotkey_latch_init(void);
@@ -47,7 +48,7 @@ void host_pause_step(bool *paused, bool *step_one);
  * (it is disengaged while paused). Every call counts one paused idle
  * iteration for the OPENPETE_PAUSE_AT_VBL schedule, presented or not.
  * @param opts The parsed options. */
-void host_paused_repaint(const openpete_options_t *opts);
+void host_paused_repaint(const openpete_options_t *opts) OP_REQUIRES(sim);
 
 /** @brief Decide whether the VBL about to run belongs to a paused step, clearing the step flag when it does not.
  *

@@ -214,7 +214,7 @@ void openpete_fb_snapshot_note_draw_env(int clip_x, int clip_y, int clip_w, int 
     s_area_cur = idx;
 }
 
-void openpete_fb_snapshot_on_fill(int x, int y, int w, int h)
+void openpete_fb_snapshot_on_fill(int x, int y, int w, int h) OP_REQUIRES_SHARED(sim)
 {
     openpete_native_hold_note_vram(x, y, w, h, -1, 0);
     if (!openpete_fb_snapshot_enabled()) return;

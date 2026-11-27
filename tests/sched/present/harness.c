@@ -35,6 +35,7 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 /* rhi_vulkan.c's display owner, made global by the build: only its address is used. */
 extern char s_display_owner[];
@@ -536,7 +537,7 @@ static void drv_begin(void)
  * @param target Present instant.
  * @param kind OP_PACE_CANONICAL or OP_PACE_INTERMEDIATE.
  * @return The ring slot, or -1 when the ring was full. */
-static int drv_publish(int64_t target, int kind)
+static int drv_publish(int64_t target, int kind) OP_REQUIRES(sim)
 {
     const int slot = openpete_native_scene_publish(target, kind, 0.5, 0);
     uint32_t scene_id = 0, stamp = 0;
@@ -662,7 +663,7 @@ static void quiesce_checks(void)
 /* ---------------------------------------------------------- scenarios */
 
 /** @brief Borrow while asleep: one scene presented, then two published with the present thread asleep toward the first (or, with present timing, waiting on the previous flip); the sim borrows, presents inline, returns and publishes a scene the present thread must render under its new activation; twice. */
-static void sc_borrow_asleep(void)
+static void sc_borrow_asleep(void) OP_REQUIRES(sim)
 {
     drv_begin();
     const int64_t t0 = sched_now();
@@ -682,7 +683,7 @@ static void sc_borrow_asleep(void)
 }
 
 /** @brief Borrow while asleep with no inline present: the sim thread makes no device call while it holds the display. */
-static void sc_borrow_asleep_no_inline(void)
+static void sc_borrow_asleep_no_inline(void) OP_REQUIRES(sim)
 {
     drv_begin();
     const int64_t t0 = sched_now();
@@ -700,7 +701,7 @@ static void sc_borrow_asleep_no_inline(void)
 }
 
 /** @brief Drain during a staged hold: after one present, a scene rendered and its image held for an instant far ahead; the sim disengages and engages, then borrows. */
-static void sc_drain_staged_hold(void)
+static void sc_drain_staged_hold(void) OP_REQUIRES(sim)
 {
     drv_begin();
     const int64_t t0 = sched_now();
@@ -729,7 +730,7 @@ static int pump_main(void *arg)
 }
 
 /** @brief Swapchain change: a resize the compose sees on the present thread and inline, a minimised window across several acquires, a display change from the pump, out-of-date outcomes, then a borrow. */
-static void sc_swapchain_change(void)
+static void sc_swapchain_change(void) OP_REQUIRES(sim)
 {
     static int64_t pump_at;
     drv_begin();
@@ -759,7 +760,7 @@ static void sc_swapchain_change(void)
 }
 
 /** @brief Ring pressure (ring of 3): a slowed present thread while the producer publishes faster; supersede at pick and ring-full refusal. */
-static void sc_ring_pressure(void)
+static void sc_ring_pressure(void) OP_REQUIRES(sim)
 {
     setenv("OPENPETE_PRESENT_STALL_MS", "3", 1);
     drv_begin();
@@ -773,7 +774,7 @@ static void sc_ring_pressure(void)
 }
 
 /** @brief Discontinuity flush: the guest-discontinuity flush concurrent with the present thread's pick and render. */
-static void sc_discontinuity_flush(void)
+static void sc_discontinuity_flush(void) OP_REQUIRES(sim)
 {
     drv_begin();
     const int64_t t0 = sched_now();
@@ -788,14 +789,14 @@ static void sc_discontinuity_flush(void)
 }
 
 /** @brief Discontinuity flush with renders made at their instant straight to the swapchain (OPENPETE_PT_STAGED=0). */
-static void sc_discontinuity_flush_unstaged(void)
+static void sc_discontinuity_flush_unstaged(void) OP_REQUIRES(sim)
 {
     setenv("OPENPETE_PT_STAGED", "0", 1);
     sc_discontinuity_flush();
 }
 
 /** @brief Stop while waiting: deactivation then quit while the present thread waits on a flip (present timing) or sleeps toward an instant. */
-static void sc_stop_waiting(void)
+static void sc_stop_waiting(void) OP_REQUIRES(sim)
 {
     drv_begin();
     const int64_t t0 = sched_now();
@@ -806,7 +807,7 @@ static void sc_stop_waiting(void)
 }
 
 /** @brief Device loss: a publish, a borrow with an inline present and a stop, with device loss offered at every modelled call. */
-static void sc_device_loss(void)
+static void sc_device_loss(void) OP_REQUIRES(sim)
 {
     drv_begin();
     const int64_t t0 = sched_now();
@@ -821,7 +822,7 @@ static void sc_device_loss(void)
 }
 
 /** @brief Acquire-first order: the first staged present is refused (its acquire times out twice), so the next renders are made on images acquired before them, across a borrow. */
-static void sc_acquire_first(void)
+static void sc_acquire_first(void) OP_REQUIRES(sim)
 {
     fakevk_force(FK_CALL_ACQUIRE, 0, VK_TIMEOUT);
     fakevk_force(FK_CALL_ACQUIRE, 1, VK_TIMEOUT);
@@ -840,7 +841,7 @@ static void sc_acquire_first(void)
 }
 
 /** @brief Random clients (PCT soak only): a long sequence of client actions drawn by uniform choices: publish, sleep, borrow with an inline present, disengage and engage, flush, a window resize, a minimised window. */
-static void sc_random_clients(void)
+static void sc_random_clients(void) OP_REQUIRES(sim)
 {
     drv_begin();
     int w = 1280;
@@ -871,7 +872,7 @@ static void sc_random_clients(void)
 /** One scenario: its script, ring size, bounds and device domain. */
 typedef struct pt_scenario {
     const char *name;
-    void (*fn)(void);
+    void (*fn)(void) OP_SLOT(sim);
     int ring;             /**< the binary's ring size it runs in; 0 = PCT soak only */
     int max_p, max_d;
     long max_schedules;
@@ -931,6 +932,7 @@ static void fail_hook(char *msg, size_t cap)
  * @param arg Unused. */
 static void scenario_main(void *arg)
 {
+    OP_ROLE_BIND(sim);
     (void)arg;
     memset(&g, 0, sizeof g);
     g.pt_tid = -1;
@@ -1555,7 +1557,7 @@ int main(int argc, char **argv)
     if (sched_noise()) {
         /* The race detector classifies reports by the markers of the sources this binary was built from. */
         const void *const code[] = { (const void *)openpete_present_thread_start,
-                                     (const void *)openpete_native_scene_publish, (const void *)rhi_create };
+                                     (const void *)openpete_native_scene_ring_busy, (const void *)rhi_create };
         const char *const maps[] = { "openpete-build=" PT_BINARY_DIR, "openpete=" PT_SOURCE_DIR, "=" PT_BINARY_DIR };
         const int nm = sched_tsan_markers(code, 3, maps, 3);
         if (nm < 0) return 2;

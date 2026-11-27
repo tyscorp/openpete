@@ -36,7 +36,7 @@ game_layout_t game_layout OP_SEALED(game_layout); /* thread-roles: never written
  * @param tri Unused.
  * @param category Unused.
  * @param carry Unused. */
-void openpete_native_scene_add_tri(const openpete_scene_tri* tri, int category, int carry) OP_REQUIRES_SHARED(sim)
+void openpete_native_scene_add_tri(const openpete_scene_tri* tri, int category, int carry) OP_REQUIRES(sim)
 { (void)tri; (void)category; (void)carry; }
 /** @brief Link stub.
  * @return 1. */

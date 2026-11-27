@@ -20,6 +20,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <math.h>
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 /* Forward decls only (full definitions in rhi.h) - this header is included
  * by targets that don't carry the RHI include path (knob registry test), so
@@ -619,7 +620,7 @@ void openpete_tercache_frame_slots(char *out, int cap);
  * back per sector. The feeder ANDs its own conditions (flag, debug envs,
  * portal recency).
  * @return 1 when the retained path is usable for this present, else 0. */
-int  openpete_native_tercache_usable(void);
+int  openpete_native_tercache_usable(void) OP_REQUIRES_SHARED(sim);
 /** @brief Run the terrain cache's device service on the headless path.
  *
  * The host loop calls it once per VBL. Headless never reaches the present
@@ -628,7 +629,7 @@ int  openpete_native_tercache_usable(void);
  * mode and the device is never serviced from two threads, and a no-op when
  * the retained path is not usable this present
  * (openpete_native_tercache_usable). */
-void openpete_native_tercache_service_headless(void);
+void openpete_native_tercache_service_headless(void) OP_REQUIRES_SHARED(sim);
 
 /* ---- HD texture-replacement fold (pack art in the retained path) --------
  * Defined in native_render.c (owner of the pack-registry and pack-fog

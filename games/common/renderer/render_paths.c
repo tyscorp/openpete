@@ -327,7 +327,7 @@ static void render_paths_feed_audit_census(void) {
  * canon-drawn counts an unmarked frame and its triangles, printing a DEFECT
  * line on the path's first occurrence. With OPENPETE_RENDER_PATH_FEED_ASSERT
  * set it prints every occurrence and aborts on the first. */
-static void render_paths_feed_audit(void) {
+static void render_paths_feed_audit(void) OP_REQUIRES_SHARED(sim) {
     /* One audit per canonical scene. The commit runs on every canonical
      * present; when the game stops rendering (a level-exit freeze, a
      * transition) the presents continue and the scene keeps the last frame's

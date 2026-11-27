@@ -110,7 +110,7 @@ static uint64_t tp_fnv1a(const uint16_t* p, int w, int h, int stride) {
 /* ---- ops ----------------------------------------------------------------- */
 
 /* LoadImage: src keeps the original width as stride through the clamp. */
-void openpete_vram_load(int x, int y, int w, int h, const uint16_t* src)
+void openpete_vram_load(int x, int y, int w, int h, const uint16_t* src) OP_REQUIRES_SHARED(sim)
 {
     if (w <= 0 || h <= 0 || !src) return;
     const int stride = w;
@@ -180,7 +180,7 @@ void openpete_vram_move(int src_x, int src_y, int w, int h, int dst_x, int dst_y
  * Negative origins (which PsyCross would write out-of-bounds with) are
  * clamped defensively instead of reproduced. */
 void openpete_vram_clear(int x, int y, int w, int h,
-                         uint8_t r, uint8_t g, uint8_t b)
+                         uint8_t r, uint8_t g, uint8_t b) OP_REQUIRES_SHARED(sim)
 {
     if (x < 0) { w += x; x = 0; }
     if (y < 0) { h += y; y = 0; }
@@ -213,7 +213,7 @@ void openpete_vram_clear(int x, int y, int w, int h,
  * @param h Height in rows.
  * @param src Source texels, @p w per row. */
 static void nv_load(int x, int y, int w, int h, const unsigned short* src)
-{ openpete_vram_load(x, y, w, h, (const uint16_t*)src); }
+{ OP_ROLE_ASSERT_SHARED(sim); openpete_vram_load(x, y, w, h, (const uint16_t*)src); }
 /** @brief PsyCross move callback: forwards to openpete_vram_move.
  *
  * @param sx Source X in texels.
@@ -235,7 +235,7 @@ static void nv_move(int sx, int sy, int w, int h, int dx, int dy)
  * @param b Blue channel. */
 static void nv_clear(int x, int y, int w, int h,
                      unsigned char r, unsigned char g, unsigned char b)
-{ openpete_vram_clear(x, y, w, h, r, g, b); }
+{ OP_ROLE_ASSERT_SHARED(sim); openpete_vram_clear(x, y, w, h, r, g, b); }
 
 void openpete_vram_install_ops(void)
 {

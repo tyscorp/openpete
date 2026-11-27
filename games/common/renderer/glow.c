@@ -1377,7 +1377,7 @@ static int glow_feed_enabled(void) {
  * carries no contest. Counts the triangle in s_fed_tris.
  * @param it The triangle.
  * @param key Nonzero when the fan contests by its bucket (glow_key_on). */
-static void glow_feed_tri(const glow_item* it, int key) OP_REQUIRES_SHARED(sim) {
+static void glow_feed_tri(const glow_item* it, int key) OP_REQUIRES(sim) {
     const ngte_prim* p = &it->p;
     openpete_scene_tri st = {0};
     for (int k = 0; k < 3; k++) {

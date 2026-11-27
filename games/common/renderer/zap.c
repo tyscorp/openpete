@@ -905,7 +905,7 @@ static void zap_width_note(float cx, float cy, const zap_pivot* pv, int k) {
  * {0,1,2} and {1,3,2}; a triangle feeds once. A primitive that is neither
  * is skipped.
  * @param h The held primitive with its depth and pivots. */
-static void zap_add_prim(const zap_held* h) OP_REQUIRES_SHARED(sim) {
+static void zap_add_prim(const zap_held* h) OP_REQUIRES(sim) {
     const ngte_prim* p = &h->p;
     float depth = h->depth;
     if (p->nv != 3 && p->nv != 4) return;

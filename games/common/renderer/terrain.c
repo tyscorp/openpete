@@ -19600,7 +19600,7 @@ static void tn_snap_fed(CPUState* cpu) OP_REQUIRES(sim) {
     moby_snap_terrain_fed(cpu);
 }
 
-int terrain_snap_ready(void) {
+int terrain_snap_ready(void) OP_REQUIRES_SHARED(sim) {
     return s_snap_src && s_snap_epoch == openpete_native_scene_epoch();
 }
 
@@ -19889,7 +19889,7 @@ static void tn_snap_take_owned(int nv, terrain_snap_census* cen) {
 }
 
 int terrain_snap_capture(const terrain_snap_box* b, int nb, const terrain_snap_tri** out,
-                         terrain_snap_census* cen) {
+                         terrain_snap_census* cen) OP_REQUIRES_SHARED(sim) {
     terrain_snap_census c = { 0, 0, 0 };
     if (cen) *cen = c;
     if (!terrain_snap_ready()) return -1;
@@ -19913,7 +19913,7 @@ static void tn_snap_lcen_print(void) {
 
 int terrain_snap_capture_listed(const terrain_snap_box* b, int nb, const uint64_t walk[2],
                                 const terrain_snap_fkey* fk, int nfk, const terrain_snap_tri** out,
-                                terrain_snap_census* cen) {
+                                terrain_snap_census* cen) OP_REQUIRES_SHARED(sim) {
     static int s_print = -1;
     if (s_print < 0) {
         const char* e = getenv("OPENPETE_SNAP_LISTED_CHECK");
@@ -20043,7 +20043,7 @@ static int tn_snapsec_cmp(const void* a, const void* b) {
     return ((const terrain_snap_sector*)a)->sec - ((const terrain_snap_sector*)b)->sec;
 }
 
-int terrain_snap_visible(uint64_t vis[16]) {
+int terrain_snap_visible(uint64_t vis[16]) OP_REQUIRES_SHARED(sim) {
     memset(vis, 0, 16 * sizeof *vis);
     if (!terrain_snap_ready()) return 0;
     const int nv = s_snap_G.nvis < 1024 ? s_snap_G.nvis : 1024;
@@ -20056,7 +20056,7 @@ int terrain_snap_visible(uint64_t vis[16]) {
 
 unsigned terrain_snap_build(void) { return s_secrec_gen; }
 
-int terrain_snap_sectors(const float (*wb)[6], int nb, const uint64_t skip[16], const terrain_snap_sector** out) {
+int terrain_snap_sectors(const float (*wb)[6], int nb, const uint64_t skip[16], const terrain_snap_sector** out) OP_REQUIRES_SHARED(sim) {
     if (!terrain_snap_ready()) return -1;
     if (!s_snap_secv.elem_size)
         mod_fvec_init(&s_snap_secv, sizeof(terrain_snap_sector), 64, "terrain.snap.sectors", 64);
@@ -20150,7 +20150,7 @@ static int tn_face_verdict_at(int vi, int pass, int face) {
     return g.near ? TERRAIN_FACE_NEAR : TERRAIN_FACE_FLAT;
 }
 
-int terrain_snap_face_verdict(int sec, int pass, int face) {
+int terrain_snap_face_verdict(int sec, int pass, int face) OP_REQUIRES_SHARED(sim) {
     if (!terrain_snap_ready()) return TERRAIN_FACE_DROPPED;
     const int vi = tn_snap_vi(sec);
     return vi < 0 ? TERRAIN_FACE_DROPPED : tn_face_verdict_at(vi, pass, face);
@@ -20372,7 +20372,7 @@ static void tn_snap_pass_faces(int vi, int pass, const uint64_t hit[2]) {
     }
 }
 
-int terrain_snap_faces(const float (*wb)[6], int nb, const terrain_snap_face** out) {
+int terrain_snap_faces(const float (*wb)[6], int nb, const terrain_snap_face** out) OP_REQUIRES_SHARED(sim) {
     static const int passes[4] = { 0, 1, 3, 4 };
     const terrain_snap_sector* ss = NULL;
     const int ns = terrain_snap_sectors(wb, nb, NULL, &ss);
@@ -20658,6 +20658,7 @@ static int tocc_latch_census_on(void)
  * the list. */
 static void tocc_latch_census_eval(void)
 {
+    OP_ROLE_ASSERT_SHARED(sim);
     long q0[OPENPETE_OCCL_Q_COUNT], q1[OPENPETE_OCCL_Q_COUNT];
     openpete_native_occl_qstats(q0);
     int kept = 0, culled = 0;
@@ -20783,7 +20784,7 @@ static void tocc_sector_probe(tocc_probe_t* p, uint32_t i, double oc1, double oc
  * panned off is still in the re-extract's frame. An unbounded sector is kept.
  * @param p The sector's inputs (tocc_sector_probe).
  * @return TOCC_KEEP, TOCC_FRUSTUM or TOCC_DEPTH. */
-static int tocc_sector_verdict(const tocc_probe_t* p)
+static int tocc_sector_verdict(const tocc_probe_t* p) OP_REQUIRES_SHARED(sim)
 {
     if (!p->bounded) return TOCC_KEEP;
     if (p->own_off) return TOCC_FRUSTUM;

@@ -293,7 +293,7 @@ void openpete_fb_snapshot_counts(unsigned *taken, unsigned *resolved,
  * @param y Fill top.
  * @param w Fill width.
  * @param h Fill height. */
-void openpete_fb_snapshot_on_fill(int x, int y, int w, int h);
+void openpete_fb_snapshot_on_fill(int x, int y, int w, int h) OP_REQUIRES_SHARED(sim);
 
 /** @brief Report whether a live draw area's clip rect contains a VRAM rect.
  *
@@ -331,7 +331,7 @@ int openpete_fb_snapshot_retained_area(unsigned *epoch);
  * @param h Height.
  * @param src_x Copy source left, or -1 for a fill or load.
  * @param src_y Copy source top; unused for a fill or load. */
-void openpete_native_hold_note_vram(int x, int y, int w, int h, int src_x, int src_y);
+void openpete_native_hold_note_vram(int x, int y, int w, int h, int src_x, int src_y) OP_REQUIRES_SHARED(sim);
 
 /** @brief Report whether the snapshot mechanism is enabled.
  *

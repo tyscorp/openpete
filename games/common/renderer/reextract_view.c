@@ -8,6 +8,7 @@
 #include "psx_runtime_internal.h"     /* CPUState */
 
 #include <stddef.h>
+#include "openpete_thread_roles.h"   /* OP_ROLE_ASSERT */
 
 static void (*s_body)(void* cpu);
 
@@ -17,6 +18,7 @@ static void (*s_body)(void* cpu);
  * the native scene as a replay, then ends the view.
  * @param cpu_v The guest CPU state, passed as CPUState*. */
 static void reextract_view(void* cpu_v) {
+    OP_ROLE_ASSERT(sim);
     CPUState* cpu = (CPUState*)cpu_v;
     { OP_PROF_ACCUM_SCOPE("rex.view_begin");
       openpete_subtick_view_begin(cpu); }

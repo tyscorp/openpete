@@ -45,7 +45,7 @@ bool openpete_capture_canon_reference(const openpete_options_t *opts, int shot_k
  * rendering it; when this present is not a source, the kept scene renders
  * here, while the device still holds the state it was drawn with.
  * @param opts Session options. */
-void openpete_capture_present_begin(const openpete_options_t *opts);
+void openpete_capture_present_begin(const openpete_options_t *opts) OP_REQUIRES(sim);
 
 /** @brief Write the native capture legs of a canonical present, after the present's device services.
  *
@@ -58,7 +58,7 @@ void openpete_capture_present_begin(const openpete_options_t *opts);
  * @param shot_key The present's capture key, as for openpete_capture_canon_reference.
  * @param presents_owed The value openpete_capture_canon_reference returned. */
 void openpete_capture_canon_native(const openpete_options_t *opts, int shot_key,
-                                   bool presents_owed);
+                                   bool presents_owed) OP_REQUIRES(sim);
 
 /** @brief Write the intermediate capture of each --screenshot-intermediate-on-frame target reached.
  *
@@ -69,7 +69,7 @@ void openpete_capture_canon_native(const openpete_options_t *opts, int shot_key,
  * target's feed key.
  * @param opts Session options.
  * @param cpu The guest CPU the re-extract reads. */
-void openpete_capture_canon_intermediate(const openpete_options_t *opts, void *cpu);
+void openpete_capture_canon_intermediate(const openpete_options_t *opts, void *cpu) OP_REQUIRES(sim);
 
 /** @brief Write the native intermediate present of --screenshot-presents-start/count while the sequence is open.
  *

@@ -106,6 +106,7 @@ bool SDL_CompareAndSwapAtomicPointer(void **a, void *oldval, void *newval)
 
 /* ---- engine externals: no-yield, no effect ---- */
 void op_role__bind_present(op_role_site_t *site) { (void)site; }
+void op_role__bind_sim(op_role_site_t *site) { (void)site; }
 void op_role__bind_compile(op_role_site_t *site) { (void)site; }
 void op_role__bind_pcache(op_role_site_t *site) { (void)site; }
 void openpete_logf(openpete_log_level_t level, const char *subsystem, const char *fmt, ...)

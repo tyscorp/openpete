@@ -103,7 +103,7 @@ static int tracer_project(const ngte_view* v,
  * @param ccol Vertex c colour, 0xBBGGRR. */
 static void emit_tri(double ax, double ay, double az, uint32_t acol,
                      double bx, double by, double bz, uint32_t bcol,
-                     double cx, double cy, double cz, uint32_t ccol) OP_REQUIRES_SHARED(sim) {
+                     double cx, double cy, double cz, uint32_t ccol) OP_REQUIRES(sim) {
     openpete_scene_tri st = {0};
     memset(&st, 0, sizeof st);
     st.textured = 0;

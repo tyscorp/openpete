@@ -2021,7 +2021,7 @@ static void part_quad_colours(const part_item* it, const part_rebase* r, uint32_
  * @param depth The scene depth to feed at.
  * @param gouraud Nonzero for LINE_G2. */
 static void part_feed_line(const part_item* it, const part_rebase* r,
-                           float depth, int gouraud) OP_REQUIRES_SHARED(sim) {
+                           float depth, int gouraud) OP_REQUIRES(sim) {
     const ngte_prim* p = &it->p;
     const uint32_t w1 = p->raw[1];
     const int stp = (int)((w1 >> 24) & 0x02u);

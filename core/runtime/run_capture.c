@@ -352,7 +352,7 @@ bool openpete_capture_canon_reference(const openpete_options_t *opts, int shot_k
  * mode.
  * @param opts Session options.
  * @param shot_key The present's capture key. */
-static void vk_leg(const openpete_options_t *opts, int shot_key)
+static void vk_leg(const openpete_options_t *opts, int shot_key) OP_REQUIRES(sim)
 {
     for (int si = 0; si < opts->screenshot_frame_count; ++si) {
         if (s_cap.vk_fired[si]) continue;
@@ -391,7 +391,7 @@ static bool freeze_backdrop_run(const openpete_options_t *opts)
             || opts->screenshot_presents_start >= 0);
 }
 
-void openpete_capture_present_begin(const openpete_options_t *opts)
+void openpete_capture_present_begin(const openpete_options_t *opts) OP_REQUIRES(sim)
 {
     if (freeze_backdrop_run(opts)) openpete_native_render_snapshot_present_begin();
 }
@@ -416,7 +416,7 @@ static void og_vram_check(const openpete_options_t *opts)
 }
 
 void openpete_capture_canon_native(const openpete_options_t *opts, int shot_key,
-                                   bool presents_owed)
+                                   bool presents_owed) OP_REQUIRES(sim)
 {
     if (presents_owed && openpete_native_scene_enabled())
         presents_write(opts, "native-canonical");
@@ -517,7 +517,7 @@ static int intermediate_reextract(openpete_native_reextract_fn ire, void *cpu,
  * @param cpu The guest CPU it reads.
  * @param si Target index. */
 static void intermediate_shot(const openpete_options_t *opts,
-                              openpete_native_reextract_fn ire, void *cpu, int si)
+                              openpete_native_reextract_fn ire, void *cpu, int si) OP_REQUIRES(sim)
 {
     const int target = opts->screenshot_intermediate_frames[si];
     int paired = openpete_interp_paired();
@@ -554,7 +554,7 @@ static void intermediate_shot(const openpete_options_t *opts,
                alpha, openpete_frame, target, paired, bracketed, npre);
 }
 
-void openpete_capture_canon_intermediate(const openpete_options_t *opts, void *cpu)
+void openpete_capture_canon_intermediate(const openpete_options_t *opts, void *cpu) OP_REQUIRES(sim)
 {
     /* Headless-capable: this drives an explicit re-extract; the live sub-tick
      * present path is headless-blocked. Deterministic capture pins the ring

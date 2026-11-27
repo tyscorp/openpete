@@ -121,14 +121,14 @@ static ms_ord s_rk[1024]; static int s_rk_n;
 static ms_ord s_sn[256];  static int s_sn_n;
 
 /** @brief Start the scene's queue and ordinal census when the scene changed. */
-static void ms_scene_sync(void) {
+static void ms_scene_sync(void) OP_REQUIRES_SHARED(sim) {
     const unsigned ep = openpete_native_scene_epoch();
     if (ep == s_q_epoch) return;
     s_q_epoch = ep; s_q_nm = s_q_nt = 0; s_rk_n = s_sn_n = 0; s_q_seg = 0;
     s_ms_scenes++;
 }
 
-void moby_snap_note_ranked(const uint32_t* mids, int n, int base) {
+void moby_snap_note_ranked(const uint32_t* mids, int n, int base) OP_REQUIRES_SHARED(sim) {
     ms_scene_sync();
     for (int k = 0; k < n && s_rk_n < 1024; k++) { s_rk[s_rk_n].mid = mids[k]; s_rk[s_rk_n++].ord = base + k + 1; }
 }
@@ -217,14 +217,14 @@ int moby_snap_probe_on(void) {
     return s_on;
 }
 
-float (*moby_snap_queue_room(int n))[3][3] {
+float (*moby_snap_queue_room(int n))[3][3] OP_REQUIRES_SHARED(sim) {
     ms_scene_sync();
     if (!moby_snap_queue_lean() || n <= 0 || !ms_grow((void**)&s_q_tri, &s_q_capt, s_q_nt + n, sizeof *s_q_tri)) return NULL;
     return &s_q_tri[s_q_nt];
 }
 
 void moby_snap_queue(uint32_t mid, int mordinal, int dofs, float off_m,
-                     const float (*v)[3][3], int n) {
+                     const float (*v)[3][3], int n) OP_REQUIRES_SHARED(sim) {
     ms_scene_sync();
     if (n <= 0 || !mid || dofs <= 0) return;
     if (!ms_grow((void**)&s_q_mob, &s_q_capm, s_q_nm + 1, sizeof *s_q_mob) ||
@@ -1674,7 +1674,7 @@ static const int* ms_hit_index(const void* base, size_t stride, size_t off, int 
  * @param x The entries' indices in it, -1 for a moby not recorded.
  * @param rb Their contact regions.
  * @param nb The chunk's size, at most 128. */
-static void mc_store_chunk(mc_tab* t, const int* x, const float (*rb)[6], int nb) {
+static void mc_store_chunk(mc_tab* t, const int* x, const float (*rb)[6], int nb) OP_REQUIRES_SHARED(sim) {
     int s0[128], ns[128];
     const terrain_snap_face* ff = NULL;
     const int mf = terrain_snap_faces(rb, nb, &ff);
@@ -1695,7 +1695,7 @@ static void mc_store_chunk(mc_tab* t, const int* x, const float (*rb)[6], int nb
 
 /** @brief Record in a canonical store the build's visible sectors and, for each queued moby, its contact region (ms_moby_cbox widened by MC_CAND) and the faces of the visible sectors in it with their walk verdicts.
  * @param t The table the resolve stored into. */
-static void mc_store_cands(mc_tab* t) {
+static void mc_store_cands(mc_tab* t) OP_REQUIRES_SHARED(sim) {
     t->vis_ok = terrain_snap_visible(t->vis);
     if (!t->vis_ok) return;
     for (int g = 0; g < s_q_nm; g += 128) {
@@ -1719,7 +1719,7 @@ static void mc_store_cands(mc_tab* t) {
 /** @brief Mark each queued moby whose endpoint contact region a sector reaches that the present's build finds visible and the endpoint's did not (s_pq_new).
  * @param ep The endpoint.
  * @return 0 on an allocation failure, else 1. */
-static int mc_present_sectors(const mc_tab* ep) {
+static int mc_present_sectors(const mc_tab* ep) OP_REQUIRES_SHARED(sim) {
     if (!ms_grow((void**)&s_pq_new, &s_pq_cap, s_q_nm, 1)) return 0;
     memset(s_pq_new, 0, (size_t)s_q_nm);
     s_pq_ok = ep->vis_ok;
@@ -1745,7 +1745,7 @@ static int mc_present_sectors(const mc_tab* ep) {
 /** @brief A face's walk verdict in the present's build, through the per-build cache.
  * @param c The face.
  * @return Its verdict (terrain_snap_face_verdict). */
-static int mc_verdict(const mc_fc* c) {
+static int mc_verdict(const mc_fc* c) OP_REQUIRES_SHARED(sim) {
     const uint32_t key = ((uint32_t)(uint16_t)c->sec << 19) | ((uint32_t)c->pass << 16) | c->face;
     const unsigned h = (key * 2654435761u) >> (32 - MC_FV_BITS);
     if (s_fv_gen[h] == s_fv_cur && s_fv_key[h] == key) return s_fv_v[h];
@@ -1770,7 +1770,7 @@ static int mc_verdict(const mc_fc* c) {
  * @param k Its queue index.
  * @param same 1 when the present camera equals the endpoint's bit for bit: the region test is left to mc_refresh's exact corner comparison.
  * @return 1 when they can differ or a record is missing, else 0. */
-static int mc_faces_changed(const mc_tab* ep, const mc_ent* e, const ms_moby* mb, int k, int same) {
+static int mc_faces_changed(const mc_tab* ep, const mc_ent* e, const ms_moby* mb, int k, int same) OP_REQUIRES_SHARED(sim) {
     if (!e->fc_ok || !s_pq_ok || s_pq_new[k] || !s_rs_wb) return 1;
     float wb[6];
     if (!same) ms_moby_cbox(mb, wb);   /* a bit-equal camera compares the corners exactly (mc_refresh) */
@@ -1890,7 +1890,7 @@ static int mc_corners_moved(const mc_tab* ep, const mc_ent* e, const ms_moby* mb
  * @param k Its queue index.
  * @param same 1 when the present camera equals the endpoint's bit for bit.
  * @return 0 when it takes the endpoint's planes, 2 when it resolves fresh on a face-verdict change, 1 when it resolves fresh for another reason. */
-static int mc_refresh(const mc_tab* ep, const mc_ent* e, const ms_moby* mb, int k, int same) {
+static int mc_refresh(const mc_tab* ep, const mc_ent* e, const ms_moby* mb, int k, int same) OP_REQUIRES_SHARED(sim) {
     if (!mc_refresh_on()) return 0;
     if (mc_still(mb->mid) != 1) return 1;
     if (mc_faces_changed(ep, e, mb, k, same)) return 2;
@@ -1967,7 +1967,7 @@ static int mc_map_ent(const mc_tab* ep, const mc_ent* e, int same, const double 
  * @param L The present walk camera's linear part.
  * @param P Its position.
  * @return 0 on an allocation failure, else 1. */
-static int mc_map(const mc_tab* ep, const double L[3][3], const double P[3]) {
+static int mc_map(const mc_tab* ep, const double L[3][3], const double P[3]) OP_REQUIRES_SHARED(sim) {
     if (!ms_grow((void**)&s_vc_np, &s_vc_cap, s_q_nm, sizeof *s_vc_np) ||
         !ms_grow((void**)&s_vc_p0, &s_vc_cap0, s_q_nm, sizeof *s_vc_p0) ||
         !ms_grow((void**)&s_vc_ref, &s_vc_refcap, s_q_nm, 1) ||
@@ -2635,7 +2635,7 @@ static int mc_vf_moby(int qi) {
  * @param ep The endpoint, or NULL.
  * @param L The present walk camera's linear part.
  * @param P Its position. */
-static void mc_vf_compare(const mc_tab* ep, const double L[3][3], const double P[3]) {
+static void mc_vf_compare(const mc_tab* ep, const double L[3][3], const double P[3]) OP_REQUIRES_SHARED(sim) {
     mc_vstat* v = &s_vs;
     v->resolves++;
     s_vf_dp = s_vf_dl = 0.0;
@@ -2819,7 +2819,7 @@ static int ms_carry_begin(ms_census* cs) OP_REQUIRES(sim) {
  * A canonical store also records each moby's contact region and candidate
  * faces (mc_store_cands), the endpoint side of mc_faces_changed.
  * @param cs The resolve's census; its overflow counts into the verify's. */
-static void ms_carry_end(const ms_census* cs) {
+static void ms_carry_end(const ms_census* cs) OP_REQUIRES_SHARED(sim) {
     if (s_store && mc_refresh_on()) mc_store_cands(s_store);
     if (s_vf_on) { s_vs.ovf += cs->ovf; mc_vf_compare(s_rs_ep, s_rs_L, s_rs_P); }
     s_store = NULL; s_vf_on = 0;
@@ -3231,7 +3231,7 @@ static void ms_contact(const ms_fo_job* J, int nb, ms_census* cs, uint8_t* snapp
 }
 
 static int ms_chunk_run(int g, int nb, const terrain_snap_box* box, const float view[3], ms_census* cs,
-                        int listed, uint64_t tp);
+                        int listed, uint64_t tp) OP_REQUIRES_SHARED(sim);
 
 /** @brief The per-pass slot of the sub-tick census (ms_pc) for the walk pass now queueing: s_q_seg, the last slot holding the rest.
  * @return The slot. */
@@ -3283,7 +3283,7 @@ static int ms_lc_on(void) {
  * @param tc Receives the capture's cost counters.
  * @return The triangle count, or -1 when the terrain is not ready. */
 static int ms_lc_capture(int g, int nb, const terrain_snap_box* box, const terrain_snap_tri** tt,
-                         terrain_snap_census* tc) {
+                         terrain_snap_census* tc) OP_REQUIRES_SHARED(sim) {
     static terrain_snap_fkey* fk; static int fkcap;
     float kb[128][6];
     uint64_t walk[2] = { 0, 0 };
@@ -3343,7 +3343,7 @@ static void ms_lc_check_print(void) {
  * @param view H, ofx, ofy.
  * @param cs The census, updated.
  * @return 0 when a capture failed, else 1. */
-static int ms_lc_check(int g, int nb, const terrain_snap_box* box, const float view[3], ms_census* cs) {
+static int ms_lc_check(int g, int nb, const terrain_snap_box* box, const float view[3], ms_census* cs) OP_REQUIRES_SHARED(sim) {
     static int s_atexit;
     static ms_fo_res ref[128];
     static mc_tab_mark tm;
@@ -3399,7 +3399,7 @@ static int ms_lc_check(int g, int nb, const terrain_snap_box* box, const float v
  * @param view H, ofx, ofy.
  * @param cs The census, updated (its clocks run when cs->timed).
  * @return 0 when the capture failed (the rest of the queue is dropped), else 1. */
-static int ms_resolve_chunk(int g, int nb, const float view[3], ms_census* cs) {
+static int ms_resolve_chunk(int g, int nb, const float view[3], ms_census* cs) OP_REQUIRES_SHARED(sim) {
     terrain_snap_box box[128];
     uint64_t tp = rsp_now();
     for (int k = 0; k < nb; k++) { ms_bounds_ensure(&s_q_mob[g + k]); ms_box(&s_q_mob[g + k], &box[k]); }
@@ -3422,7 +3422,7 @@ static int ms_resolve_chunk(int g, int nb, const float view[3], ms_census* cs) {
  * @param tp The resolve part clock (rsp_now), 0 when off.
  * @return 0 when the capture failed (the rest of the queue is dropped), else 1. */
 static int ms_chunk_run(int g, int nb, const terrain_snap_box* box, const float view[3], ms_census* cs,
-                        int listed, uint64_t tp) {
+                        int listed, uint64_t tp) OP_REQUIRES_SHARED(sim) {
     const terrain_snap_tri* tt = NULL;
     terrain_snap_census tc;
     const uint64_t c0 = cs->timed ? ms_cpu_ns() : 0;

@@ -1443,6 +1443,7 @@ core/renderer/native_render.c	-	s_precreated_win	static	-
 core/renderer/native_render.c	-	s_present_area	static	-	
 core/renderer/native_render.c	-	s_present_area_isbg	static	-	
 core/renderer/native_render.c	-	s_present_area_valid	static	-	
+core/renderer/native_render.c	-	s_ps_live	static	-	the live compose source, set and cleared by sim; a present-thread compose has a ring slot and never reads it
 core/renderer/native_render.c	-	s_ps_slot	static	-	
 core/renderer/native_render.c	-	s_pt_cnt_cur	static	-	
 core/renderer/native_render.c	-	s_pt_cnt_ring	static	-	
@@ -1474,17 +1475,10 @@ core/renderer/native_render.c	-	s_ring_mx	static	-
 core/renderer/native_render.c	-	s_rq_params	static	-	
 core/renderer/native_render.c	-	s_rq_pipe	static	-	
 core/renderer/native_render.c	-	s_rr	static	-	owed: declared with no form and no row before the new-global refusal
-core/renderer/native_render.c	-	s_scene_actor_front	static	-	
-core/renderer/native_render.c	-	s_scene_bg	static	-	
-core/renderer/native_render.c	-	s_scene_clear_held	static	-	
 core/renderer/native_render.c	-	s_scene_delay	static	-	
 core/renderer/native_render.c	-	s_scene_dropped	static	-	
 core/renderer/native_render.c	-	s_scene_early_supersedes	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	-	s_scene_early_unopened	static	-	owed: declared with no form and no row before the new-global refusal
-core/renderer/native_render.c	-	s_scene_epoch	static	-	
-core/renderer/native_render.c	-	s_scene_fade	static	-	
-core/renderer/native_render.c	-	s_scene_frame	static	-	
-core/renderer/native_render.c	-	s_scene_freeze	static	-	
 core/renderer/native_render.c	-	s_scene_game	static	-	
 core/renderer/native_render.c	-	s_scene_held_clear	static	-	
 core/renderer/native_render.c	-	s_scene_hist	static	-	
@@ -1504,16 +1498,12 @@ core/renderer/native_render.c	-	s_scene_hist_matview	static	-
 core/renderer/native_render.c	-	s_scene_hist_n	static	-	
 core/renderer/native_render.c	-	s_scene_hist_replay	static	-	
 core/renderer/native_render.c	-	s_scene_hist_snap	static	-	
-core/renderer/native_render.c	-	s_scene_hud_under	static	-	
 core/renderer/native_render.c	-	s_scene_id_next	static	-	
-core/renderer/native_render.c	-	s_scene_key	static	-	
 core/renderer/native_render.c	-	s_scene_moved	static	-	
 core/renderer/native_render.c	-	s_scene_moved_id	static	-	
 core/renderer/native_render.c	-	s_scene_moved_slot	static	-	
-core/renderer/native_render.c	-	s_scene_n	static	-	
 core/renderer/native_render.c	-	s_scene_refused_epoch	static	-	
 core/renderer/native_render.c	-	s_scene_refused_stamp	static	-	
-core/renderer/native_render.c	-	s_scene_replay	static	-	
 core/renderer/native_render.c	-	s_scene_saved	static	-	
 core/renderer/native_render.c	-	s_scene_saved_actor_front	static	-	
 core/renderer/native_render.c	-	s_scene_saved_bg	static	-	
@@ -1717,13 +1707,13 @@ core/renderer/native_render.c	nr_tercache_keys	s_keys	local	-
 core/renderer/native_render.c	occl_cam_move	m	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	occl_cam_turn_trace	t	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	occl_camdbg	v	local	once	= -1, one filler, first reference tests it
+core/renderer/native_render.c	occl_census_present	raw	local	-	the grid readback buffer, moved with the body of openpete_native_occl_census_present
 core/renderer/native_render.c	occl_cull_enabled	on	local	-	
 core/renderer/native_render.c	occl_cull_enabled	seen	local	-	
+core/renderer/native_render.c	occl_service_headless	raw	local	-	the grid readback buffer, moved with the body of openpete_native_occl_service_headless
 core/renderer/native_render.c	occl_slack	s	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	openpete_native_hdfold_on	env	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	openpete_native_moby_snap_on	s_on	local	once	= -1, one filler, first reference tests it
-core/renderer/native_render.c	openpete_native_occl_census_present	raw	local	-	
-core/renderer/native_render.c	openpete_native_occl_service_headless	raw	local	-	
 core/renderer/native_render.c	openpete_native_render_screenshot_all	pz	local	-	
 core/renderer/native_render.c	openpete_native_render_snapshot_fb_window	s_census	local	once	= -1, one filler, first reference tests it
 core/renderer/native_render.c	openpete_native_render_snapshot_fb_window	s_failures	local	-	owed: declared with no form and no row before the new-global refusal

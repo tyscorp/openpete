@@ -495,7 +495,7 @@ typedef struct {
  * @param iv Receives each vertex's integer RTPS for the paint key; written
  *        only when the paint key carries a row. */
 void moby_simple_project_record(const moby_simple_xform_t* x, const double (*vm)[3], int n,
-                                float (*scr)[2], moby_otk_vert_t* iv);
+                                float (*scr)[2], moby_otk_vert_t* iv) OP_REQUIRES_SHARED(sim);
 /* The vertex count moby_simple_project_record takes per record. */
 #define MOBY_SIMPLE_MAX_VERTS 256
 /* One simple-model record's projection, its slots and terms taken on the sim

@@ -204,6 +204,11 @@ enum { OP_ROLE_LIST(OP_ROLE_ENUM_) };
     ROW("c:portal_spyro23.c@F@on_portal_leaf", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
     ROW("c:transition.c@F@on_8004F000_crossfade", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
     ROW("c:native_vram.c@F@nv_move", "init:PsyX_VRAMOps", "sim") /* thread-roles: PsyCross MoveImage callback, run by psyq_MoveImage and by the DR_MOVE primitive of a DrawOTag walk, both on the game fiber */ \
+    ROW("c:native_vram.c@F@nv_load", "init:PsyX_VRAMOps", "sim") /* thread-roles: PsyCross LoadImage callback, run by psyq_LoadImage on the game fiber */ \
+    ROW("c:native_vram.c@F@nv_clear", "init:PsyX_VRAMOps", "sim") /* thread-roles: PsyCross ClearImage callback, run by psyq_ClearImage and by a DrawOTag walk's fill primitive, both on the game fiber */ \
+    ROW("c:reextract_view.c@F@reextract_view", "arg:openpete_native_register_reextract", "sim") /* thread-roles: the registered sub-tick re-extract, run by the host loop's present step and the identity audit on sim */ \
+    ROW("c:terrain.c@F@tocc_latch_census_eval", "arg:openpete_native_occl_census_register", "sim") /* thread-roles: run by openpete_native_occl_census_present, which the host loop calls on sim */ \
+    ROW("c:harness.c@F@scenario_main", "field:sched_config.scenario", "sim") /* thread-roles: the present-thread harness's scheduled thread 0 stands in for the sim thread */ \
     ROW("c:reextract.c@F@game_reextract_body", "arg:game_reextract_view_install", "sim") /* thread-roles: each game's sub-tick re-extract, run by the host loop */ \
     ROW("c:reextract_spyro23.c@F@game_reextract_body", "arg:game_reextract_view_install", "sim") /* thread-roles: the Spyro 2/3 sub-tick re-extract, run by the host loop */ \
     ROW("c:reextract.c@F@orch_epoch_commit", "init:game_orchestrator_t", "sim") /* thread-roles: Spyro 1 orchestrator entry, called through s_orch by spyro_native_canon_epoch_commit on sim */ \

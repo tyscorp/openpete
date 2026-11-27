@@ -29,7 +29,7 @@ struct CPUState;
  *        (full-world), three corners per triangle.
  * @param n Triangle count. */
 void moby_snap_queue(uint32_t mid, int mordinal, int dofs, float off_m,
-                     const float (*v)[3][3], int n);
+                     const float (*v)[3][3], int n) OP_REQUIRES_SHARED(sim);
 /** @brief The lean queue's mode (OPENPETE_SNAP_QUEUE_LEAN, OPENPETE_SNAP_QUEUE_LEAN_CHECK), read once.
  *
  * On, a queued moby's bounds are computed when its chunk resolves and the
@@ -43,7 +43,7 @@ int moby_snap_queue_lean(void);
  * call into the queue; moby_snap_queue given this pointer copies nothing.
  * @param n The most triangles the caller writes.
  * @return The room, or NULL when the lean queue is off or on an allocation failure. */
-float (*moby_snap_queue_room(int n))[3][3];
+float (*moby_snap_queue_room(int n))[3][3] OP_REQUIRES_SHARED(sim);
 /** @brief Whether the carry verify's corner probe is on (OPENPETE_MOBY_SNAP_CARRY_VERIFY_CMOV=1), read once.
  * @return 1 when on, else 0. */
 int moby_snap_probe_on(void);
@@ -60,7 +60,7 @@ void moby_snap_queue_probe(uint32_t mid, const uint32_t* fk, int n, int path, fl
  * @param mids The pass's ranked moby identities in ordinal order.
  * @param n Their count.
  * @param base The ordinals the scene's earlier passes used. */
-void moby_snap_note_ranked(const uint32_t* mids, int n, int base);
+void moby_snap_note_ranked(const uint32_t* mids, int n, int base) OP_REQUIRES_SHARED(sim);
 /** @brief Mark the resolves that follow as a sub-tick re-extract's at a phase, or as canonical.
  *
  * A canonical resolve stores its planes for the snap carry; a re-extract's

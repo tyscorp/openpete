@@ -1444,14 +1444,14 @@ static int s_portal_kind = OPENPETE_TAG_PORTAL_FLAT;
  * "a sky run without a matching mask uses its own footprint" behaviour. */
 static int s_aperture_ok = 0;
 static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly, int pn, int clipped,
-                                 int use_plane, double pa, double pb, double pc) OP_REQUIRES_SHARED(sim);
+                                 int use_plane, double pa, double pb, double pc) OP_REQUIRES(sim);
 static void outline_offset(const ppt* poly, int pn, const double* d, float* ex, float* ey);
 static double portal_aperture_margin_world(void);
 static double portal_margin_for(CPUState* cpu, uint32_t p);
 static void margin_px_per_vertex(CPUState* cpu, const ngte_view* v, const ppt* poly, int pn,
                                  double world, double* out);
 static void emit_aperture_ring(const ppt* poly, int pn, const double* dpx,
-                               uint32_t rgba, int channel) OP_REQUIRES_SHARED(sim);
+                               uint32_t rgba, int channel) OP_REQUIRES(sim);
 /* Portal-guard gate for the terrain feeder (see OPENPETE_SCENE_PORTAL_GUARD):
  * true while a portal fed sky within the last couple of presents. */
 static int      s_sky_fed = 0;
@@ -1602,7 +1602,7 @@ static unsigned s_tri_col, s_tri_mask;
  * (pvz) is set to its stored depth.
  * @param t The triangle.
  * @param category The scene category (mask or cyclorama). */
-static void portal_add_tri(const openpete_scene_tri* t, int category) OP_REQUIRES_SHARED(sim) {
+static void portal_add_tri(const openpete_scene_tri* t, int category) OP_REQUIRES(sim) {
     if (category == OPENPETE_SCENE_PORTAL_MASK) s_tri_mask++; else s_tri_col++;
     openpete_scene_tri w = *t;
     for (int k = 0; k < 3; k++) w.v[k].pvz = w.v[k].z;
@@ -1616,7 +1616,7 @@ static void portal_add_tri(const openpete_scene_tri* t, int category) OP_REQUIRE
  * triangle's footprint is also its mask and is added to
  * OPENPETE_SCENE_PORTAL_MASK first.
  * @param t The triangle, with depth in each vertex's z. */
-static void portal_add_sky_tri(const openpete_scene_tri* t) OP_REQUIRES_SHARED(sim) {
+static void portal_add_sky_tri(const openpete_scene_tri* t) OP_REQUIRES(sim) {
     if (!portal_scene_emit_enabled()) return;
     openpete_native_scene_set_tag(OPENPETE_TAG_PORTAL(s_portal_kind, 0));
     if (!s_aperture_ok)   /* no opening polygon this feed: footprint IS the mask */
@@ -2120,7 +2120,7 @@ static void outline_offset(const ppt* poly, int pn, const double* d, float* ex, 
  * @param rgba The ring colour.
  * @param channel The scene category (mask or cyclorama). */
 static void emit_aperture_ring(const ppt* poly, int pn, const double* dpx,
-                               uint32_t rgba, int channel) OP_REQUIRES_SHARED(sim) {
+                               uint32_t rgba, int channel) OP_REQUIRES(sim) {
     if (!portal_scene_emit_enabled()) return;
     openpete_native_scene_set_tag(OPENPETE_TAG_PORTAL(s_portal_kind, 0));
     float rx[PORTAL_POLY_MAX], ry[PORTAL_POLY_MAX];
@@ -2200,7 +2200,7 @@ static int portal_outline_corrected(const ppt* raw, int rn, int rclip, const ppt
  * @param Wr The authored world outline.
  * @param Wn The corrected world outline.
  * @param wn The world point count. */
-static void emit_correction_band(const double (*Wr)[3], const double (*Wn)[3], int wn) OP_REQUIRES_SHARED(sim) {
+static void emit_correction_band(const double (*Wr)[3], const double (*Wn)[3], int wn) OP_REQUIRES(sim) {
     for (int i = 0; i < wn; i++) {
         const int j = (i + 1) % wn;
         const double* wq[4] = { Wr[i], Wr[j], Wn[j], Wn[i] };
@@ -2245,7 +2245,7 @@ static void emit_correction_band(const double (*Wr)[3], const double (*Wn)[3], i
  * @param pb The plane's inverse-depth y coefficient.
  * @param pc The plane's inverse-depth constant. */
 static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly, int pn, int clipped,
-                                 int use_plane, double pa, double pb, double pc) OP_REQUIRES_SHARED(sim) {
+                                 int use_plane, double pa, double pb, double pc) OP_REQUIRES(sim) {
     s_aperture_ok = 0;
     if (!portal_aperture_enabled() || pn < 3 || pn > PORTAL_POLY_MAX) return;
     if (!portal_scene_emit_enabled()) return;
@@ -2315,7 +2315,7 @@ static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly
 /* use_plane: 0 = const_depth, 1 = the opening plane, 2 = that plane pushed
  * BEHIND it (plane_depth_back - the spill outside the opening). */
 static void fan_emit_poly(const pgv* v, int n, float const_depth,
-                          int use_plane, double pa, double pb, double pc) OP_REQUIRES_SHARED(sim);
+                          int use_plane, double pa, double pb, double pc) OP_REQUIRES(sim);
 
 /* TEMP band census: 0=off, else tint each band producer a flat colour. */
 static int s_band_dbg = -1;
@@ -2350,7 +2350,7 @@ static int band_dbg(void) {
  * @param pb The plane fit's y coefficient.
  * @param pc The plane fit's constant. */
 static void emit_split_by_outline(const pgv* poly, int n, float depth,
-                                  int use_plane, double pa, double pb, double pc) OP_REQUIRES_SHARED(sim) {
+                                  int use_plane, double pa, double pb, double pc) OP_REQUIRES(sim) {
     fan_emit_poly(poly, n, depth, use_plane, pa, pb, pc);
 }
 
@@ -2367,7 +2367,7 @@ static void emit_split_by_outline(const pgv* poly, int n, float depth,
  * @param pb The plane fit's y coefficient.
  * @param pc The plane fit's constant. */
 static void fan_emit_poly(const pgv* v, int n, float const_depth,
-                          int use_plane, double pa, double pb, double pc) OP_REQUIRES_SHARED(sim) {
+                          int use_plane, double pa, double pb, double pc) OP_REQUIRES(sim) {
     for (int i = 1; i + 1 < n; i++) {                       /* fan-triangulate */
         openpete_scene_tri t = {0};
         memset(&t, 0, sizeof t);
@@ -2411,7 +2411,7 @@ static void fan_emit_poly(const pgv* v, int n, float const_depth,
  * @param pb The plane fit's y coefficient.
  * @param pc The plane fit's constant. */
 static void emit_clipped_gouraud(pgv v0, pgv v1, pgv v2, int x0, int y0, int x1, int y1,
-                                 float depth, int use_plane, double pa, double pb, double pc) OP_REQUIRES_SHARED(sim) {
+                                 float depth, int use_plane, double pa, double pb, double pc) OP_REQUIRES(sim) {
     pgv a[10], b[10];
     a[0] = v0; a[1] = v1; a[2] = v2;
     int n = 3;

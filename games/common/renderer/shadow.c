@@ -1405,7 +1405,7 @@ static int fan_point(const shadow_fan* f, const double inv[3][3], const double w
  * the anchor to 0 at the rim, with vertex alpha 1 marking it as the fan. The
  * depth is biased by shadow_bias_spyro; pvz is unbiased.
  * @param f The fan. */
-static void fan_feed_tris(const shadow_fan* f) OP_REQUIRES_SHARED(sim) {
+static void fan_feed_tris(const shadow_fan* f) OP_REQUIRES(sim) {
     const float bias = shadow_bias_spyro();
     for (int k = 0; k < SHADOW_FAN_RING; k++) {
         if (!(f->tri_mask & (1u << k))) continue;
@@ -1424,7 +1424,7 @@ static void fan_feed_tris(const shadow_fan* f) OP_REQUIRES_SHARED(sim) {
     }
 }
 
-void shadow_fan_feed(CPUState* cpu, const shadow_fan* f) OP_REQUIRES_SHARED(sim) {
+void shadow_fan_feed(CPUState* cpu, const shadow_fan* f) OP_REQUIRES(sim) {
     (void)cpu;
     double inv[3][3]; shadow_cam_inverse(f->C, inv);
     const double caster = f->caster_up;

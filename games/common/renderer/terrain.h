@@ -201,7 +201,7 @@ typedef struct { int faces, tris, sectors; } terrain_snap_census;
 
 /** @brief Whether the last terrain build fed the scene now accumulating, so its triangles and walk inputs are the contact source of this present.
  * @return 1 when they are, else 0. */
-int  terrain_snap_ready(void);
+int  terrain_snap_ready(void) OP_REQUIRES_SHARED(sim);
 /** @brief Read the projection the last terrain build drew with.
  * @param H Receives the projection distance in PSX screen pixels.
  * @param ofx Receives the optical axis' screen X.
@@ -232,7 +232,7 @@ int  terrain_snap_camera(double L[3][3], double P[3]);
  * @param cen Receives the cost counters; may be NULL.
  * @return The triangle count, or -1 when terrain_snap_ready does not hold. */
 int  terrain_snap_capture(const terrain_snap_box* b, int nb, const terrain_snap_tri** out,
-                          terrain_snap_census* cen);
+                          terrain_snap_census* cen) OP_REQUIRES_SHARED(sim);
 /* A face a listed capture keeps: its level sector index, walk pass (0, 1, 3
  * or 4) and face index. */
 typedef struct { int16_t sec; uint8_t pass; uint16_t face; } terrain_snap_fkey;
@@ -255,7 +255,7 @@ typedef struct { int16_t sec; uint8_t pass; uint16_t face; } terrain_snap_fkey;
  * @return The triangle count, or -1 when terrain_snap_ready does not hold. */
 int  terrain_snap_capture_listed(const terrain_snap_box* b, int nb, const uint64_t walk[2],
                                  const terrain_snap_fkey* fk, int nfk, const terrain_snap_tri** out,
-                                 terrain_snap_census* cen);
+                                 terrain_snap_census* cen) OP_REQUIRES_SHARED(sim);
 
 /* A walk verdict of one terrain face: dropped (a gate or the back-face cull
  * removed it, or its pass or sector did not run), drawn flat, or drawn on
@@ -277,11 +277,11 @@ typedef struct { int16_t sec; uint8_t pass, verd; uint16_t face; uint64_t hit[2]
  * @param out Receives the sectors, valid until the next call.
  * @return The sector count, or -1 when terrain_snap_ready does not hold. */
 int  terrain_snap_sectors(const float (*wb)[6], int nb, const uint64_t skip[16],
-                          const terrain_snap_sector** out);
+                          const terrain_snap_sector** out) OP_REQUIRES_SHARED(sim);
 /** @brief Read the level sectors the last build found visible with a decode (the sectors terrain_snap_sectors can list), as bits.
  * @param vis Receives the set: sector s is bit s & 63 of vis[s >> 6].
  * @return 1 when a build is latched and fed the scene now accumulating, else 0 (vis cleared). */
-int  terrain_snap_visible(uint64_t vis[16]);
+int  terrain_snap_visible(uint64_t vis[16]) OP_REQUIRES_SHARED(sim);
 /** @brief A stamp of the last terrain build, distinct for each build: the face verdicts of terrain_snap_face_verdict hold while it is unchanged.
  * @return The stamp. */
 unsigned terrain_snap_build(void);
@@ -294,7 +294,7 @@ unsigned terrain_snap_build(void);
  * @param nb Box count, at most 128.
  * @param out Receives the faces, valid until the next call.
  * @return The face count, or -1 when terrain_snap_ready does not hold. */
-int  terrain_snap_faces(const float (*wb)[6], int nb, const terrain_snap_face** out);
+int  terrain_snap_faces(const float (*wb)[6], int nb, const terrain_snap_face** out) OP_REQUIRES_SHARED(sim);
 /** @brief The walk verdict of one terrain face under the last build's camera: the walk's own gate chain (tn_face_classify, tn_face_gate) over the face's corners projected by the build's camera.
  *
  * A sector the build did not find visible, a pass that does not run for it
@@ -303,7 +303,7 @@ int  terrain_snap_faces(const float (*wb)[6], int nb, const terrain_snap_face** 
  * @param pass The walk pass, 0-5.
  * @param face The face index within the pass.
  * @return TERRAIN_FACE_DROPPED, TERRAIN_FACE_FLAT or TERRAIN_FACE_NEAR. */
-int  terrain_snap_face_verdict(int sec, int pass, int face);
+int  terrain_snap_face_verdict(int sec, int pass, int face) OP_REQUIRES_SHARED(sim);
 
 /* A level's terrain read from the disc into host bytes, in the record
  * layout the walk's decoders read: the sector records and the texture

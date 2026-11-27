@@ -1208,7 +1208,7 @@ static void eager_cost_note(op_time_t span)
  * eager_tail_cost reads; unbounded, it is logged as its PRESENT_SPAN.
  * @param t Display instant on the op_now() clock.
  * @param canonical Nonzero for the span's canonical scene. */
-static void eager_produce_one(op_time_t t, int canonical)
+static void eager_produce_one(op_time_t t, int canonical) OP_REQUIRES(sim)
 {
     extern int g_openpete_canon_lag_leg;
     openpete_native_reextract_fn re = openpete_native_get_reextract();
@@ -1323,7 +1323,7 @@ static void eager_replan(op_time_t now, op_time_t deadline, op_time_t tail)
  * @param deadline Time by which production must stop.
  * @param period Render-grid period in nanoseconds.
  * @return The number of scenes produced. */
-static int eager_produce(op_time_t deadline, op_time_t period)
+static int eager_produce(op_time_t deadline, op_time_t period) OP_REQUIRES(sim)
 {
     int made = 0;
     const op_time_t tail = eager_tail_cost();

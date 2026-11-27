@@ -2636,7 +2636,7 @@ static void psyq_pack_draw_env(DRAWENV* env) {
  * The span is PsyCross's DRAWENV, which PutDrawEnv copies whole. A span
  * that runs past its region returns 0 with nothing done.
  * @param cpu Guest CPU state. */
-void psyq_PutDrawEnv(CPUState* cpu) {
+void psyq_PutDrawEnv(CPUState* cpu) OP_REQUIRES_SHARED(sim) {
     DRAWENV* env = (DRAWENV*)SPAN(cpu->a0, sizeof(DRAWENV));
     if (!env) { cpu->v0 = 0u; return; }
     psyq_pack_draw_env(env);

@@ -983,7 +983,7 @@ static float tr_item_depth(const tr_item* it, const tr_poly* q) {
  * @param key The bucket the routine links the item at, or -1.
  * @return The number of triangles fed. */
 static int tr_feed_fan(const tr_poly* q, int b, int e, float depth, const ngte_tpage* tpp, int blend,
-                       int key) OP_REQUIRES_SHARED(sim) {
+                       int key) OP_REQUIRES(sim) {
     int fed = 0;
     for (int i = b + 1; i + 1 < e; i++) {
         const int idx[4] = { b, i, i + 1, i + 1 };
@@ -1014,7 +1014,7 @@ static int tr_feed_fan(const tr_poly* q, int b, int e, float depth, const ngte_t
  * bucket and keeps true depth against terrain. Only 3 and 4 vertex
  * primitives are fed. Counts the triangles fed.
  * @param it The item. */
-static void tr_add_prim(const tr_item* it) OP_REQUIRES_SHARED(sim) {
+static void tr_add_prim(const tr_item* it) OP_REQUIRES(sim) {
     const ngte_prim* p = &it->p;
     if (p->nv != 3 && p->nv != 4) return;
     ngte_tpage tp;

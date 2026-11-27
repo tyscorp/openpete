@@ -481,13 +481,13 @@ int ngte_prim_tpage_blend(const ngte_prim* p, ngte_tpage* tp) {
 
 int ngte_feed_flat_quad(const float x[4], const float y[4], const float u[4],
                         const float v[4], const uint32_t rgb[4], float depth,
-                        const ngte_tpage* tp, int blend, int nv) OP_REQUIRES_SHARED(sim) {
+                        const ngte_tpage* tp, int blend, int nv) OP_REQUIRES(sim) {
     return ngte_feed_flat_quad_q(x, y, u, v, rgb, NULL, depth, tp, blend, nv, -1);
 }
 
 int ngte_feed_flat_quad_q(const float x[4], const float y[4], const float u[4],
                           const float v[4], const uint32_t rgb[4], const uint32_t rgbq[4],
-                          float depth, const ngte_tpage* tp, int blend, int nv, int bucket) OP_REQUIRES_SHARED(sim) {
+                          float depth, const ngte_tpage* tp, int blend, int nv, int bucket) OP_REQUIRES(sim) {
     static const int split[2][3] = { {0, 1, 2}, {1, 3, 2} };
     const int ntri = (nv == 4) ? 2 : 1;
     int fed = 0;
@@ -529,7 +529,7 @@ void ngte_line_quad(float ax, float ay, float bx, float by, float centre,
 }
 
 int ngte_feed_flat_line(float ax, float ay, float bx, float by, uint32_t rgb_a,
-                        uint32_t rgb_b, float centre, float depth, int blend) OP_REQUIRES_SHARED(sim) {
+                        uint32_t rgb_b, float centre, float depth, int blend) OP_REQUIRES(sim) {
     float qx[4], qy[4];
     ngte_line_quad(ax, ay, bx, by, centre, qx, qy);
     const float zu[4] = { 0.0f, 0.0f, 0.0f, 0.0f };

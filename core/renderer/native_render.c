@@ -494,7 +494,7 @@ static inline void rv_drain(rhi_vertex* o, const scene_tri_t* t, int k)
 }
 static mod_fvec           s_scene_v;              /* accumulating (frame N) */
 #define s_scene ((scene_tri_t*)s_scene_v.data)    /* moves on growth: index, never hold */
-static int                s_scene_n;
+static int                s_scene_n OP_GUARDED_BY(sim);
 
 /** @brief Grow a scene-triangle run to hold n triangles and return how many it holds.
  *
@@ -776,6 +776,7 @@ typedef struct {
     uint32_t bg, fade, freeze; int hud_under, actor_front;
     int replay;                    /* the scene was built by a re-extract, not the game render */
     unsigned  frame;               /* openpete_frame at extraction */
+    unsigned  key;                 /* feed key the scene began at (s_scene_key) */
     uint32_t  stamp;               /* terrain-cache build stamp (scene id) */
     uint32_t  drawenv_clear;
     int       geom[8];
@@ -825,6 +826,8 @@ static const nr_cover_block *ps_cover(void);
 static const nr_snap_table *ps_snap(void);
 static const openpete_occl_camera *ps_occl_cam(void);
 static unsigned ps_frame(void);
+static unsigned ps_key(void);
+static int      ps_ntri(void);
 static const nr_pack_fog *ps_pack_fog(void);
 
 /** @brief Set a material push block's distance fade from a vertex fade target word and the composed scene's fog ramp.
@@ -853,8 +856,8 @@ static void material_fade_fill(psx_material_hd* mh, uint32_t w) {
 
 static void     ps_apply_geometry(void);
 static int      hold_verdict(const int geom[8], uint32_t *fill, int *ref);
-static void     hold_retain_canonical(void);
-static void     hold_note_clear(int x, int y, int w, int h, int r, int g, int b);
+static void     hold_retain_canonical(void) OP_REQUIRES_SHARED(sim);
+static void     hold_note_clear(int x, int y, int w, int h, int r, int g, int b) OP_REQUIRES_SHARED(sim);
 /* The clear colour an empty compose of an auto-cleared area draws
  * (hold_redirect_begin), 0 outside such a compose; read by ps_drawenv_clear
  * and scene_content_test. */
@@ -871,7 +874,7 @@ static uint32_t     s_scene_id_next = 1;
  * scene_begin alike), so a tri recorded at feed time can be told from a tri
  * fed into a scene that has since been replaced. The 2D-overlay carry uses it
  * to know which of its entries the live scene still holds. */
-static uint32_t     s_scene_epoch = 1;
+static uint32_t     s_scene_epoch OP_GUARDED_BY(sim) = 1;
 static struct { unsigned published, refused_full, superseded, presented; } s_ring_census;
 /* The ring slot of the last world present displayed, kept from retiring as
  * the live freeze-backdrop source (freeze_bd_note_present), -1 none. Written
@@ -950,7 +953,7 @@ static int carry_run_fit(mod_fvec *tris, mod_fvec *epochs, const char *name, int
  *
  * Counts it in s_overlay_accum_dropped when the accumulation cannot grow.
  * @param t The triangle. */
-static void carry_accum_push(const scene_tri_t *t)
+static void carry_accum_push(const scene_tri_t *t) OP_REQUIRES_SHARED(sim)
 {
     if (!carry_run_fit(&s_overlay_accum_v, &s_overlay_accum_epoch_v, "carry.accum",
                        s_overlay_accum_n + 1)) {
@@ -1191,7 +1194,7 @@ static void fill_material_ubo(void);
 /* Shared with the retained terrain cache's material pass. */
 struct rhi_ubo *openpete_native_material_ubo(void) { return s_mat_ubo; }
 
-static uint32_t           s_scene_bg;  /* panel-0 background fill (rgba); 0 = none */
+static uint32_t           s_scene_bg OP_GUARDED_BY(sim);  /* panel-0 background fill (rgba); 0 = none */
 
 /* Reference frame-sync: the native scene is built from the FRESHLY-computed
  * geometry (frame N), but PsyCross's reference shows its display FBO, which lags
@@ -1207,8 +1210,8 @@ static unsigned           s_scene_hist_frame[SCENE_HIST]; /* completed frame's s
 static uint32_t           s_scene_hist_bg[SCENE_HIST];
 static uint32_t           s_scene_hist_clear[SCENE_HIST]; /* draw-environment clear the snapshot was presented under */
 static uint32_t           s_drawenv_clear;               /* defined with the clear-colour setter */
-static uint32_t           scene_clear_word(void);
-static int                s_scene_clear_held;
+static uint32_t           scene_clear_word(void) OP_REQUIRES_SHARED(sim);
+static int                s_scene_clear_held OP_GUARDED_BY(sim);
 static uint32_t           s_scene_hist_fade[SCENE_HIST];  /* full-screen fade overlay, per snapshot */
 static uint32_t           s_scene_hist_freeze[SCENE_HIST]; /* freeze-backdrop overlay, per snapshot */
 static int                s_scene_hist_replay[SCENE_HIST]; /* built by a re-extract, per snapshot */
@@ -1261,7 +1264,7 @@ static unsigned s_fbsnap_want_frame;
 static int s_fbsnap_game_sel;
 
 /* The openpete_frame stamp of the scene at a given delay depth. */
-static unsigned scene_frame_at_depth(int d);
+static unsigned scene_frame_at_depth(int d) OP_REQUIRES_SHARED(sim);
 static int scene_hist_depth_max(void);
 
 /** @brief Return the completed-scene ring depth the present composes: 0 is the live scene.
@@ -1274,7 +1277,7 @@ static int scene_hist_depth_max(void);
  * composes.
  * @return Ring depth, 0 to SCENE_HIST-1; a framebuffer-window resolve may
  *         return up to SCENE_HIST. */
-static int scene_delay_depth(void) {
+static int scene_delay_depth(void) OP_REQUIRES_SHARED(sim) {
     /* A framebuffer window holds what the game drew on the frame it copied, and
      * the present that resolves it runs a frame later: reach back through the
      * completed-scene ring to that frame. Wins over every other selection,
@@ -1313,7 +1316,7 @@ static int scene_delay_depth(void) {
 /* Full-screen fade overlay for the current frame (func_800190D4). 0 = none; else
  * bit31 = active, bits[25:24] = PSX ABR mode (0..3), bits[23:0] = rgb (R in 16..23,
  * G in 8..15, B in 0..7). Reset every frame; the present draws it dead last. */
-static uint32_t s_scene_fade = 0;
+static uint32_t s_scene_fade OP_GUARDED_BY(sim) = 0;
 /* The guest address of the fade's POLY_F4 the game linked into this frame's
  * ordering table (openpete_native_scene_set_fade_prim); 0 = none. Reset with
  * the fade at every game-feed frame. */
@@ -1323,14 +1326,14 @@ static uint32_t s_scene_fade_prim OP_GUARDED_BY(sim) = 0;
  * results). 0 = inactive; else bit31 = active, bits[23:0] = green tint rgb (the
  * FT4's setRGB0). Reset every frame; when active the present draws frozen_tex
  * desaturated + tinted as the backdrop instead of the world. */
-static uint32_t s_scene_freeze = 0;
+static uint32_t s_scene_freeze OP_GUARDED_BY(sim) = 0;
 
 /* Flat-HUD-vs-player draw order for the current frame. 0 (default) = flat HUD/text
  * drawn OVER the player (on top of everything); 1 = drawn UNDER the player, set only
  * during GS_LevelTransition (the "THE ADVENTURE BEGINS"/"ENTERING <level>" flyby,
  * where Spyro flies in front of the revealed text). Reset per frame; the feeder sets
  * it from g_Gamestate. The 3D HUD icons (HUD3D) and OVERLAY/fade are always on top. */
-static int s_scene_hud_under = 0;
+static int s_scene_hud_under OP_GUARDED_BY(sim) = 0;
 
 /* Actors-in-front draw order for the current frame. 0 (default) = the ACTOR
  * group depth-tests against the world normally. 1 = the ACTOR group draws
@@ -1341,7 +1344,7 @@ static int s_scene_hud_under = 0;
  * the rescue actors and the PSX's coarse OT bucketing painted them over the
  * terrain they interpenetrate (the spread wing inside a wall) - true per-pixel
  * Z would amputate them. Reset per frame. */
-static int s_scene_actor_front = 0;
+static int s_scene_actor_front OP_GUARDED_BY(sim) = 0;
 
 /* One-shot census: the DISCRETE half of a composed scene, hashed.
  *
@@ -1415,7 +1418,7 @@ static uint64_t scene_tri_key(const scene_tri_t *t)
  * @param set_h Receives the distinct-key hash.
  * @param cnt_h Receives the all-triangle hash.
  * @param distinct Receives the number of distinct keys counted. */
-static void scene_discrete_sig(uint64_t *set_h, uint64_t *cnt_h, int *distinct)
+static void scene_discrete_sig(uint64_t *set_h, uint64_t *cnt_h, int *distinct) OP_REQUIRES_SHARED(sim)
 {
     static uint64_t tbl[SIG_TBL];
     memset(tbl, 0, sizeof tbl);
@@ -1469,7 +1472,7 @@ static int scene_pos_sig_on(void)
  * path 5, selectors 4 and 5). A category above 13 accumulates in a bucket
  * the line does not print.
  * @param canonical Nonzero labels the line CANON, zero labels it inter. */
-static void scene_pos_sig_report(int canonical)
+static void scene_pos_sig_report(int canonical) OP_REQUIRES_SHARED(sim)
 {
     enum { NCAT = 16 };
     uint64_t h[NCAT] = {0}, hb = 0; int n[NCAT] = {0}, nb = 0;
@@ -1500,7 +1503,7 @@ static void scene_pos_sig_report(int canonical)
     fprintf(stderr, " BURST=%016llx/%d\n", (unsigned long long)hb, nb);
 }
 
-void openpete_native_scene_sig_report(int canonical)
+void openpete_native_scene_sig_report(int canonical) OP_REQUIRES_SHARED(sim)
 {
     if (scene_pos_sig_on()) scene_pos_sig_report(canonical);
     if (!scene_sig_on()) return;
@@ -1601,8 +1604,8 @@ void openpete_native_scene_note_torder(uint32_t mid) {
  * own accumulation (openpete_native_scene_begin_frame). The two emit the
  * same geometry in different orders: the game render in the order the guest
  * links its primitives, the re-extract in its fixed producer order. */
-static int s_scene_replay;
-static void scene_game_retain(void);
+static int s_scene_replay OP_GUARDED_BY(sim);
+static void scene_game_retain(void) OP_REQUIRES_SHARED(sim);
 void openpete_native_scene_begin(void) OP_REQUIRES(sim) {
     /* The scene about to be wiped is the game render's own accumulation the
      * first time a tick re-extracts; record its blended-world key order
@@ -1626,10 +1629,19 @@ void openpete_native_scene_begin(void) OP_REQUIRES(sim) {
 
 /* VBL stamp of the scene accumulating in s_scene; 0xFFFFFFFF before the
  * first openpete_native_scene_begin_frame. */
-static unsigned s_scene_frame = 0xFFFFFFFFu;
+static unsigned s_scene_frame OP_GUARDED_BY(sim) = 0xFFFFFFFFu;
+/* s_scene_frame as other threads read it: stored beside it by
+ * openpete_native_scene_begin_frame, read by scene_frame_pub. */
+static _Atomic(unsigned) s_scene_frame_pub = 0xFFFFFFFFu;
+/** @brief Return the VBL stamp of the scene accumulating in s_scene, as last published by the thread that runs the guest.
+ *
+ * A relaxed load: a reader on another thread may see the previous scene's
+ * stamp for the duration of one begin_frame.
+ * @return The stamp, 0xFFFFFFFF before the first scene. */
+static unsigned scene_frame_pub(void) { return atomic_load_explicit(&s_scene_frame_pub, memory_order_relaxed); }
 /* The feed key (openpete_feed_key_now) when the scene began: the frame number
  * the instrument lines a harness matches against its capture targets carry. */
-static unsigned s_scene_key = 0xFFFFFFFFu;
+static unsigned s_scene_key OP_GUARDED_BY(sim) = 0xFFFFFFFFu;
 /* Stamp of the last begin_frame made outside the sub-tick view: the game's own
  * render, never a re-extract. 0xFFFFFFFF before the first. */
 static unsigned s_scene_game_frame OP_GUARDED_BY(sim) = 0xFFFFFFFFu;
@@ -1686,9 +1698,9 @@ static struct { uint64_t captures, fed, tris, same_vbl_opens, same_vbl_supersede
 /* The canonical present's repeat verdict (openpete_native_scene_canon_repeat),
  * -1 until it is first asked for and again after the capture. */
 static int s_canon_repeat = -1;
-static void alpha_census(const scene_tri_t* scene, int scene_n);  /* blend census, defined below */
+static void alpha_census(const scene_tri_t* scene, int scene_n) OP_REQUIRES_SHARED(sim);  /* blend census, defined below */
 static bool scene_has_world(const scene_tri_t* scene, int n);     /* defined below */
-static bool scene_accum_has_world(void);                          /* defined below */
+static bool scene_accum_has_world(void) OP_REQUIRES_SHARED(sim);                          /* defined below */
 static bool scene_has_game_tris(const scene_tri_t* scene, int n); /* defined below */
 static int s_scene_dropped;       /* tris refused this frame (cap hit) - capdbg */
 /** @brief Return the ring slot that still holds the scene an eager publish moved out of the accumulator, or NULL.
@@ -1698,7 +1710,7 @@ static int s_scene_dropped;       /* tris refused this frame (cap hit) - capdbg 
  * thread that publishes calls this, so the slot's triangles cannot change
  * under the caller.
  * @return The slot, or NULL. */
-static const scene_slot_t *scene_moved_slot(void) {
+static const scene_slot_t *scene_moved_slot(void) OP_REQUIRES_SHARED(sim) {
     if (!s_scene_moved || s_scene_n != 0 || s_scene_moved_slot < 0) return NULL;
     const scene_slot_t *sl = &s_ring[s_scene_moved_slot];
     return sl->scene_id == s_scene_moved_id ? sl : NULL;
@@ -1734,7 +1746,7 @@ static const scene_tri_t *scene_hist_tris(int slot) {
  * the slot's triangles and the ones fed since are copied into the entry.
  * A slot already republished leaves no scene to name, and the ring is
  * emptied so a delayed compose falls back as it does before the ring fills. */
-static void scene_hist_push(void) {
+static void scene_hist_push(void) OP_REQUIRES_SHARED(sim) {
     int slot = (s_scene_hist_head + 1) % SCENE_HIST;
     (void)scene_run_fit(&s_scene_hist[slot], "scene.hist", 0);   /* initialise on first use */
     s_scene_hist_alias[slot] = -1;
@@ -1799,7 +1811,7 @@ static void scene_hist_push(void) {
  * additive, 3 subtractive), read once; unset leaves the scene whole. It
  * isolates which transparency class owns an artifact without touching any
  * feeder. */
-static void scene_drop_blend_debug(void) {
+static void scene_drop_blend_debug(void) OP_REQUIRES(sim) {
     static int db = -2;
     if (db == -2) { const char* e = getenv("OPENPETE_SCENE_DROP_BLEND");
         db = (e && *e) ? atoi(e) : -1; }
@@ -1825,7 +1837,7 @@ static void scene_drop_blend_debug(void) {
  * place (headless captures and inline presents compose the open scene) and
  * when it is published into the scene ring.
  * @param report Nonzero prints the kept count, once per closed scene. */
-static void scene_faceid_debug(int report) {
+static void scene_faceid_debug(int report) OP_REQUIRES(sim) {
     if (!openpete_tercache_faceid()) return;
     int w = 0;
     for (int ti = 0; ti < s_scene_n; ti++) {
@@ -1856,7 +1868,7 @@ static void scene_faceid_debug(int report) {
  * @param push Nonzero pushes the scene into the ring. Zero leaves the ring
  * as it was: the scene was never presented and holds the stamp of the
  * scene that replaces it, which a stamp lookup must find alone. */
-static void scene_close_completed(int push) {
+static void scene_close_completed(int push) OP_REQUIRES(sim) {
     /* Permanent safety net: if the scene cap is ever exceeded, terrain/
      * mobys silently vanish - warn once so the cap can be raised rather
      * than leaving a view-dependent dropout in the wild. */
@@ -1979,7 +1991,7 @@ static int scene_game_retick(int game_feed, unsigned frame, uint32_t tick) OP_RE
  * @param frame The VBL stamp both scenes carry.
  * @param tick The opening render's loop-anchor count.
  * @param superseded Nonzero when the closing scene never reached a canonical present. */
-static void scene_same_vbl_note(unsigned frame, uint32_t tick, int superseded) {
+static void scene_same_vbl_note(unsigned frame, uint32_t tick, int superseded) OP_REQUIRES_SHARED(sim) {
     s_feed_census.same_vbl_opens++;
     if (superseded) s_feed_census.same_vbl_superseded++;
     if (s_feed_census.same_vbl_opens <= 8)
@@ -2040,6 +2052,7 @@ void openpete_native_scene_begin_frame(unsigned frame) OP_REQUIRES(sim) {
         s_cur_fb_cell = 0;
         s_scene_clear_held = 0;
         s_scene_n = 0; torder_note_clear(); memset(s_scene_kind_n, 0, sizeof s_scene_kind_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; cover_planes_clear(); snap_table_clear(); s_scene_frame = frame; s_scene_key = openpete_feed_key_now();
+        atomic_store_explicit(&s_scene_frame_pub, frame, memory_order_relaxed);
         s_scene_fade_prim = 0;
         s_scene_replay = 0;
         /* Per-instance material slots are per-feed-cycle: reset here (the
@@ -2055,7 +2068,7 @@ void openpete_native_scene_begin_frame(unsigned frame) OP_REQUIRES(sim) {
         if (game_feed) openpete_native_scene_undefer_2d();
     }
 }
-void openpete_native_scene_mark_replay(void) { s_scene_replay = 1; }
+void openpete_native_scene_mark_replay(void) OP_REQUIRES(sim) { s_scene_replay = 1; }
 
 /* Accumulating-scene save/restore. A re-extract rebuilds s_scene in place, so a
  * caller that drives one purely to look at the result must put the canonical
@@ -2113,8 +2126,8 @@ void openpete_native_scene_restore(void) OP_REQUIRES(sim) {
     s_scene_saved_n = -1;
 }
 
-unsigned openpete_native_scene_frame(void) { return s_scene_frame; }
-unsigned openpete_native_scene_epoch(void) { return s_scene_epoch; }
+unsigned openpete_native_scene_frame(void) OP_REQUIRES_SHARED(sim) { return s_scene_frame; }
+unsigned openpete_native_scene_epoch(void) OP_REQUIRES_SHARED(sim) { return s_scene_epoch; }
 unsigned openpete_native_scene_game_frame(void) OP_REQUIRES_SHARED(sim) { return s_scene_game_frame; }
 
 /* The game render's own scene of the last tick a re-extract replaced, kept for
@@ -2140,7 +2153,7 @@ static struct {
  * overwrites from triangle 0. Nothing is kept when the accumulator is empty
  * or its storage went to an eager ring slot (the slot holds the scene), so
  * the previous kept scene stands. */
-static void scene_game_retain(void) {
+static void scene_game_retain(void) OP_REQUIRES_SHARED(sim) {
     if (s_scene_n <= 0 || s_scene_moved) return;
     (void)scene_run_fit(&s_scene_game.v, "scene.game", 0);   /* initialise on first use */
     scene_run_swap(&s_scene_game.v, &s_scene_v);
@@ -2169,7 +2182,7 @@ void openpete_native_scene_register_superseded(void (*fn)(unsigned frame)) {
  *
  * @param d Delay depth.
  * @return The stamp, or 0xFFFFFFFF when the ring does not hold that depth. */
-static unsigned scene_frame_at_depth(int d) {
+static unsigned scene_frame_at_depth(int d) OP_REQUIRES_SHARED(sim) {
     if (d <= 0) return s_scene_frame;
     const int slot = scene_hist_slot_at(d);
     return slot < 0 ? 0xFFFFFFFFu : s_scene_hist_frame[slot];
@@ -2466,7 +2479,7 @@ static void scene_pvz_missing_note(unsigned n, int category, uint32_t tag) {
 }
 
 void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int category,
-                                           int carry, int group) OP_REQUIRES_SHARED(sim) {
+                                           int carry, int group) OP_REQUIRES(sim) {
     if (!tri) return;
     if (s_scene_n < (int)s_scene_v.cap || scene_room(s_scene_n + 1)) {
         unsigned missing = 0;
@@ -2488,7 +2501,7 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
     }
 }
 
-int openpete_native_scene_reserve(int n) {
+int openpete_native_scene_reserve(int n) OP_REQUIRES_SHARED(sim) {
     if (n < 0 || (s_scene_n + n > (int)s_scene_v.cap && !scene_room(s_scene_n + n))) return -1;
     (void)tag_tint_on();
     (void)scene_true_w_mask();
@@ -2506,13 +2519,13 @@ openpete_scene_tri* openpete_native_scene_stored(int slot) {
     return (openpete_scene_tri*)&s_scene[slot];
 }
 
-void openpete_native_scene_mark(openpete_native_scene_mark_t* m) {
+void openpete_native_scene_mark(openpete_native_scene_mark_t* m) OP_REQUIRES_SHARED(sim) {
     m->n = s_scene_n;
     m->pvz_missing = s_pvz_missing;
     memcpy(m->kind, s_scene_kind_n, sizeof m->kind);
 }
 
-void openpete_native_scene_rewind(const openpete_native_scene_mark_t* m) {
+void openpete_native_scene_rewind(const openpete_native_scene_mark_t* m) OP_REQUIRES(sim) {
     s_scene_n = m->n;
     s_pvz_missing = m->pvz_missing;
     memcpy(s_scene_kind_n, m->kind, sizeof s_scene_kind_n);
@@ -2522,15 +2535,15 @@ void openpete_native_scene_count_kind(uint32_t tag, int n) OP_REQUIRES(sim) {
     if (n > 0) s_scene_kind_n[tag >> 28][openpete_tag_kind(tag)] += (uint32_t)n;
 }
 
-void openpete_native_scene_commit_stored(int n, unsigned pvz_missing, int category) {
+void openpete_native_scene_commit_stored(int n, unsigned pvz_missing, int category) OP_REQUIRES(sim) {
     scene_pvz_missing_note(pvz_missing, category, 0u);
     s_scene_n += n;
 }
 
-void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, int carry) OP_REQUIRES_SHARED(sim) {
+void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, int carry) OP_REQUIRES(sim) {
     openpete_native_scene_add_tri_grouped(tri, category, carry, 0);
 }
-void openpete_native_scene_set_bg(uint32_t rgba) { s_scene_bg = openpete_tercache_faceid() ? 0u : rgba; }
+void openpete_native_scene_set_bg(uint32_t rgba) OP_REQUIRES(sim) { s_scene_bg = openpete_tercache_faceid() ? 0u : rgba; }
 
 /* Gamestate draw-env clear colour (the framebuffer background the canonical
  * render auto-clears to). Two producers: the PutDrawEnv thunk (fallback,
@@ -2546,15 +2559,15 @@ void openpete_native_scene_set_bg(uint32_t rgba) { s_scene_bg = openpete_tercach
 static uint32_t s_drawenv_clear = 0;
 /* The clear a held camera cut's scene shows, in place of s_drawenv_clear until
  * the next scene begins (openpete_native_scene_hold_clear). */
-static int      s_scene_clear_held = 0;
+static int      s_scene_clear_held OP_GUARDED_BY(sim) = 0;
 static uint32_t s_scene_held_clear = 0;
 /** @brief The draw-env clear of the scene being accumulated: the held one on a held camera cut, else the latch.
  *
  * @return The clear colour word (0: no auto-clear). */
-static uint32_t scene_clear_word(void) { return s_scene_clear_held ? s_scene_held_clear : s_drawenv_clear; }
+static uint32_t scene_clear_word(void) OP_REQUIRES_SHARED(sim) { return s_scene_clear_held ? s_scene_held_clear : s_drawenv_clear; }
 uint32_t openpete_native_clear_color(void) { return s_drawenv_clear; }
-void openpete_native_scene_hold_clear(uint32_t clear) { s_scene_clear_held = 1; s_scene_held_clear = clear; }
-void openpete_native_set_clear_color(int isbg, int r, int g, int b) {
+void openpete_native_scene_hold_clear(uint32_t clear) OP_REQUIRES(sim) { s_scene_clear_held = 1; s_scene_held_clear = clear; }
+void openpete_native_set_clear_color(int isbg, int r, int g, int b) OP_REQUIRES_SHARED(sim) {
     uint32_t v = isbg
         ? (0xFF000000u | (uint32_t)(r & 0xFF) | ((uint32_t)(g & 0xFF) << 8)
                        | ((uint32_t)(b & 0xFF) << 16))
@@ -2694,7 +2707,7 @@ static uint32_t area_fade_word(int a, unsigned ep) {
     return fade_sum_word(F->sum);
 }
 
-void openpete_native_note_put_draw_env(int isbg, int r, int g, int b) {
+void openpete_native_note_put_draw_env(int isbg, int r, int g, int b) OP_REQUIRES_SHARED(sim) {
     s_drawenv_put[0] = (uint8_t)isbg; s_drawenv_put[1] = (uint8_t)r;
     s_drawenv_put[2] = (uint8_t)g;    s_drawenv_put[3] = (uint8_t)b;
     s_drawenv_put_scene = s_scene_frame;
@@ -2753,7 +2766,7 @@ static int rect_on_display(int x, int y, int w, int h) {
  * area presented. The caller checks that the game fed a scene since the
  * last capture.
  * @return 1 when the swap owes the fed scene a capture, else 0. */
-static int display_swap_owed(void) {
+static int display_swap_owed(void) OP_REQUIRES_SHARED(sim) {
     if (!scene_has_game_tris(s_scene, s_scene_n)) return 0;
     for (int i = 0; i < DRAWN_AREA_MAX; i++) {
         if (!s_drawn_area[i].unpresented) continue;
@@ -2964,7 +2977,7 @@ static int      s_freeze_retained = 0;
 
 void openpete_native_scene_set_freeze_retained(int retained) { s_freeze_retained = retained ? 1 : 0; }
 
-void openpete_native_scene_set_fade(int mode, int r, int g, int b) {
+void openpete_native_scene_set_fade(int mode, int r, int g, int b) OP_REQUIRES(sim) {
     uint32_t v;
     if (mode < 0) { v = 0; }
     else {
@@ -2987,7 +3000,7 @@ void openpete_native_scene_set_fade(int mode, int r, int g, int b) {
         s_fade_unput_other = 1;
     }
 }
-void openpete_native_scene_set_freeze_backdrop(int r, int g, int b, int fade) {
+void openpete_native_scene_set_freeze_backdrop(int r, int g, int b, int fade) OP_REQUIRES(sim) {
     if (r < 0) { s_scene_freeze = 0; return; }
     if (r > 255) r = 255;
     if (g < 0) g = 0;
@@ -3008,7 +3021,7 @@ void openpete_native_scene_set_stp_select(int sel) {
     s_cur_stp_sel = (sel > 0 && sel < OPENPETE_STP_SELS) ? sel : OPENPETE_STP_ALL;
 }
 
-int openpete_native_scene_collect_2d_prims(uint32_t* out, int max) {
+int openpete_native_scene_collect_2d_prims(uint32_t* out, int max) OP_REQUIRES_SHARED(sim) {
     int n = 0;
     if (!out || max <= 0) return 0;
     for (int t = 0; t < s_scene_n && n < max; t++)
@@ -3020,7 +3033,7 @@ int openpete_native_scene_collect_2d_prims(uint32_t* out, int max) {
 
 void openpete_native_scene_set_fade_prim(uint32_t prim) OP_REQUIRES(sim) { s_scene_fade_prim = prim; }
 
-void openpete_native_scene_set_fade_slot(int slot) {
+void openpete_native_scene_set_fade_slot(int slot) OP_REQUIRES(sim) {
     if (!(s_game_fade & (1u << 31)) || slot < 0 || slot > 30) return;
     const uint32_t enc = (uint32_t)(slot + 1) << 26;
     s_game_fade = (s_game_fade & ~(0x1Fu << 26)) | enc;
@@ -3047,7 +3060,7 @@ static int scene_tri_mark_under_player(scene_tri_t* q, int (*under)(uint32_t pri
     return q->under_player;
 }
 
-int openpete_native_scene_mark_under_player(int (*under)(uint32_t prim), int player_slot) {
+int openpete_native_scene_mark_under_player(int (*under)(uint32_t prim), int player_slot) OP_REQUIRES_SHARED(sim) {
     s_under_player_slot = player_slot;
     int n = 0;
     for (int t = 0; t < s_scene_n; t++) n += scene_tri_mark_under_player(&s_scene[t], under);
@@ -3058,7 +3071,7 @@ int openpete_native_scene_mark_under_player(int (*under)(uint32_t prim), int pla
     return n;
 }
 
-void openpete_native_scene_mark_over_fade(uint32_t fade_rank) {
+void openpete_native_scene_mark_over_fade(uint32_t fade_rank) OP_REQUIRES_SHARED(sim) {
     for (int t = 0; t < s_scene_n; t++)
         if (s_scene[t].prim) s_scene[t].over_fade = fade_rank && s_scene[t].seq > fade_rank;
     for (int t = 0; t < s_overlay_accum_n; t++)
@@ -3066,7 +3079,7 @@ void openpete_native_scene_mark_over_fade(uint32_t fade_rank) {
             s_overlay_accum[t].over_fade = fade_rank && s_overlay_accum[t].seq > fade_rank;
 }
 
-void openpete_native_scene_rank_2d(uint32_t (*rank_of)(uint32_t prim)) {
+void openpete_native_scene_rank_2d(uint32_t (*rank_of)(uint32_t prim)) OP_REQUIRES_SHARED(sim) {
     if (!rank_of) return;
     for (int t = 0; t < s_scene_n; t++)
         if (s_scene[t].prim) s_scene[t].seq = rank_of(s_scene[t].prim);
@@ -3096,7 +3109,7 @@ static int defer_census(void) {
  * The triangle keeps every routing field it was stored with. A full scene
  * store refuses it and counts it in s_scene_dropped, as add_tri does.
  * @param t The stored triangle. */
-static void scene_append_stored(const scene_tri_t *t) {
+static void scene_append_stored(const scene_tri_t *t) OP_REQUIRES(sim) {
     if (!(s_scene_n < (int)s_scene_v.cap || scene_room(s_scene_n + 1))) { s_scene_dropped++; return; }
     s_scene[s_scene_n] = *t;
     scene_kind_count(t->tag, 1);
@@ -3127,7 +3140,7 @@ static int defer_hold(const scene_tri_t *q) {
  * A triangle the store cannot keep stays in the scene.
  * @param later Returns nonzero for a primitive whose triangles are held back.
  * @return The number of triangles moved. */
-static int scene_defer_live(int (*later)(uint32_t prim)) {
+static int scene_defer_live(int (*later)(uint32_t prim)) OP_REQUIRES(sim) {
     int w = 0, moved = 0;
     for (int t = 0; t < s_scene_n; t++) {
         const scene_tri_t q = s_scene[t];
@@ -3154,7 +3167,7 @@ static void accum_drop(int (*later)(uint32_t prim)) {
     s_overlay_accum_n = w;
 }
 
-int openpete_native_scene_defer_2d(int (*later)(uint32_t prim)) {
+int openpete_native_scene_defer_2d(int (*later)(uint32_t prim)) OP_REQUIRES(sim) {
     if (!later) return 0;
     const int moved = scene_defer_live(later);
     if (!moved) return 0;
@@ -3166,7 +3179,7 @@ int openpete_native_scene_defer_2d(int (*later)(uint32_t prim)) {
     return moved;
 }
 
-void openpete_native_scene_undefer_2d(void) {
+void openpete_native_scene_undefer_2d(void) OP_REQUIRES(sim) {
     if (!s_defer_n) return;
     for (int i = 0; i < s_defer_n; i++) scene_append_stored(&s_defer[i]);
     s_defer_in += (unsigned)s_defer_n;
@@ -3176,9 +3189,9 @@ void openpete_native_scene_undefer_2d(void) {
     s_defer_n = 0;
 }
 
-void openpete_native_scene_set_hud_under_player(int under) { s_scene_hud_under = under ? 1 : 0; }
+void openpete_native_scene_set_hud_under_player(int under) OP_REQUIRES(sim) { s_scene_hud_under = under ? 1 : 0; }
 
-void openpete_native_scene_set_actor_front(int front) { s_scene_actor_front = front ? 1 : 0; }
+void openpete_native_scene_set_actor_front(int front) OP_REQUIRES(sim) { s_scene_actor_front = front ? 1 : 0; }
 
 /* --- 2D-overlay carry across sub-tick re-extracts -------------------------
  * The fade overlay (func_800190D4) and the cutscene letterbox bars
@@ -3254,7 +3267,7 @@ static void carry_prev_take(void)
 }
 
 struct carry_census;
-static void carry_compose(const int32_t *match, double oalpha, struct carry_census *cz);
+static void carry_compose(const int32_t *match, double oalpha, struct carry_census *cz) OP_REQUIRES(sim);
 /* Tick-grid timestamps (openpete_interp_tick_stamp) of the two most-recent CANONICAL overlay captures, so
  * apply_overlay computes the position/fade interpolation alpha from the OVERLAY's
  * OWN cadence - NOT the camera-bracket alpha, which the re-extract leaves at 0
@@ -3590,7 +3603,7 @@ static void seq_sort_runs(scene_tri_t* sc, int n, int all) {
  * nonzero count, naming the scene's frame and feed key. Read once.
  * @param sc Scene triangles, before sorting.
  * @param n Triangle count. */
-static void seq_sort_census(const scene_tri_t* sc, int n) {
+static void seq_sort_census(const scene_tri_t* sc, int n) OP_REQUIRES_SHARED(sim) {
     static int on = -1;
     if (on < 0) { const char* e = getenv("OPENPETE_SEQ_SORT_CENSUS"); on = (e && *e && *e != '0'); }
     if (!on || n <= 0) return;
@@ -3619,7 +3632,7 @@ static void seq_sort_census(const scene_tri_t* sc, int n) {
  * No-op when OPENPETE_SEQ_SORT=0.
  * @param sc Scene triangles.
  * @param n Triangle count. */
-static void seq_sort_scene_2d(scene_tri_t* sc, int n) {
+static void seq_sort_scene_2d(scene_tri_t* sc, int n) OP_REQUIRES_SHARED(sim) {
     if (!seq_sort_on()) return;
     static int whole = -1;
     if (whole < 0) { const char* e = getenv("OPENPETE_SEQ_SORT_RUNS"); whole = (e && !strcmp(e, "scene")); }
@@ -3818,7 +3831,7 @@ static void held_append(held_list_t* L, const scene_tri_t* tick, int n) {
  *
  * @param src Triangles.
  * @param n Count. */
-static void scene_insert_before_2d(const scene_tri_t* src, int n) {
+static void scene_insert_before_2d(const scene_tri_t* src, int n) OP_REQUIRES(sim) {
     if (n <= 0 || !scene_room(s_scene_n + n)) return;
     int at = 0;
     while (at < s_scene_n && !(s_scene[at].category == OPENPETE_SCENE_HUD ||
@@ -3832,9 +3845,9 @@ static void scene_insert_before_2d(const scene_tri_t* src, int n) {
 
 static int s_front_mark = -1;   /* openpete_native_scene_front_begin's count, -1 = none */
 
-void openpete_native_scene_front_begin(void) { s_front_mark = s_scene_n; }
+void openpete_native_scene_front_begin(void) OP_REQUIRES_SHARED(sim) { s_front_mark = s_scene_n; }
 
-void openpete_native_scene_front_end(void) {
+void openpete_native_scene_front_end(void) OP_REQUIRES(sim) {
     static mod_fvec tail;   /* scene_tri_t */
     const int first = s_front_mark;
     s_front_mark = -1;
@@ -3859,7 +3872,7 @@ void openpete_native_scene_front_end(void) {
  * (present_area_fade_word, else area_fade_word). Records whether the scene holds the world for
  * the next DrawOTag's fold. OPENPETE_FBSNAP_CENSUS prints the
  * list per capture. */
-static void held_capture(void) {
+static void held_capture(void) OP_REQUIRES(sim) {
     unsigned ep = 0;
     const int a = openpete_fb_snapshot_retained_area(&ep);
     const bool world = scene_accum_has_world();
@@ -3953,7 +3966,7 @@ void openpete_native_scene_hold_2d(void) OP_REQUIRES(sim) {
 /** @brief Log and reset the held-present census at a canonical capture.
  *
  * @param on Nonzero to log the census line when any owed present was held since the last capture. */
-static void held_2d_report(int on) {
+static void held_2d_report(int on) OP_REQUIRES_SHARED(sim) {
     if (on && s_held_2d_presents)
         fprintf(stderr, "[carry f=%u] held presents=%u dropped_2d=%u\n",
                 s_scene_frame, s_held_2d_presents, s_held_2d_tris);
@@ -3983,7 +3996,7 @@ static void feed_census_note(void) OP_REQUIRES_SHARED(sim) {
 /** @brief Report whether the live scene holds re-applied 2D carry (carry 2), which apply_overlay composes.
  *
  * @return 1 when any live triangle is a re-applied copy, else 0. */
-static int scene_holds_reapplied(void) {
+static int scene_holds_reapplied(void) OP_REQUIRES_SHARED(sim) {
     for (int t = 0; t < s_scene_n; t++)
         if (s_scene[t].carry == 2) return 1;
     return 0;
@@ -4041,7 +4054,7 @@ static const char* fbwin_space(const float b[2][4], const int n[2], float xlo, f
  * widened frame), and the frame the entries were placed in (fbwin_space).
  * @param kind The present kind.
  * @param alpha The overlay's sub-tick phase; 1 for a canonical capture. */
-static void fbwin_census(const char* kind, double alpha) {
+static void fbwin_census(const char* kind, double alpha) OP_REQUIRES_SHARED(sim) {
     static int on = -1;
     if (on < 0) { const char* e = getenv("OPENPETE_FBWIN_CENSUS"); on = (e && *e && *e != '0'); }
     if (!on) return;
@@ -4113,7 +4126,7 @@ static int carry_eligible(const scene_tri_t *q)
  * reported and reset either way.
  * @param mismatch Carry entries whose epoch is not the live scene's.
  * @param reapplied Nonzero when the scene already holds re-applied carry. */
-static void carry_epoch_probe(int mismatch, int reapplied)
+static void carry_epoch_probe(int mismatch, int reapplied) OP_REQUIRES_SHARED(sim)
 {
     static int pz = -1;
     if (pz < 0) { const char* e = getenv("OPENPETE_CARRY_EPOCH_PROBE"); pz = (e && *e && *e != '0'); }
@@ -4143,7 +4156,7 @@ static void carry_epoch_probe(int mismatch, int reapplied)
  * in their own order. Skipped too when the scene already holds re-applied
  * carry (carry 2): apply_overlay has composed this set into it already.
  * @param reapplied Nonzero when the scene holds re-applied carry, taken before any compose. */
-static void carry_canon_compose(int reapplied)
+static void carry_canon_compose(int reapplied) OP_REQUIRES(sim)
 {
     int mismatch = 0;
     for (int t = 0; t < s_overlay_carry_n; t++) mismatch += s_overlay_carry_epoch[t] != s_scene_epoch;
@@ -4168,7 +4181,7 @@ static void carry_canon_compose(int reapplied)
  *
  * A lost triangle vanishes on every sub-tick present of its tick. Resets the
  * per-capture counts. */
-static void carry_drop_report(void)
+static void carry_drop_report(void) OP_REQUIRES_SHARED(sim)
 {
     if (s_carry_drop_tick > 0)
         OPL_ERROR_F("native", "2D carry lost %u triangles at frame %u (%lu since boot): "
@@ -5359,7 +5372,7 @@ static void carry_census_pair(carry_census_t* cz, const carry_key_map_t* m,
  * @param oalpha Sub-tick alpha of the overlay, 0 to 1.
  * @param st Run tallies of the present. */
 static void carry_census_flush(const carry_census_t* cz, int carried, int paired,
-                               double oalpha, const carry_run_stats_t* st) {
+                               double oalpha, const carry_run_stats_t* st) OP_REQUIRES_SHARED(sim) {
     static uint32_t s_frame = 0xFFFFFFFFu;
     static int s_ix = 0;
     if (s_scene_frame != s_frame) { s_frame = s_scene_frame; s_ix = 0; }
@@ -5421,7 +5434,7 @@ static double overlay_alpha(double alpha) {
  * stepping while the 3D scene glides is attributable in one log.
  * @param alpha Camera-bracket alpha.
  * @param oalpha Overlay alpha. */
-static void overlay_alpha_trace(double alpha, double oalpha) {
+static void overlay_alpha_trace(double alpha, double oalpha) OP_REQUIRES_SHARED(sim) {
     static int s_oadbg = -1;
     if (s_oadbg < 0) { const char* e = getenv("OPENPETE_ALPHA_MAP_DBG"); s_oadbg = (e && *e && *e != '0'); }
     if (!s_oadbg || s_overlay_carry_n <= 0) return;
@@ -5440,7 +5453,7 @@ static void overlay_alpha_trace(double alpha, double oalpha) {
  * @param rst Receives the rigid-run pass's tallies.
  * @param paired Receives the number of entries paired.
  * @return The match (previous index per current entry, -1 for none), or NULL when nothing could be paired. */
-static const int32_t* carry_pair_present(carry_run_stats_t* rst, int* paired) {
+static const int32_t* carry_pair_present(carry_run_stats_t* rst, int* paired) OP_REQUIRES_SHARED(sim) {
     const int pair_n = s_overlay_prev_n > s_overlay_carry_n ? s_overlay_prev_n : s_overlay_carry_n;
     *paired = 0;
     if (!carry_scratch_fit(pair_n)) {
@@ -5463,7 +5476,7 @@ static const int32_t* carry_pair_present(carry_run_stats_t* rst, int* paired) {
  * @param match Previous-capture partner per entry, -1 for none, or NULL to lerp nothing.
  * @param oalpha Overlay alpha a paired entry is lerped by.
  * @param cz Carry census accumulating each lerped pair, or NULL. */
-static void carry_compose(const int32_t* match, double oalpha, carry_census_t* cz) {
+static void carry_compose(const int32_t* match, double oalpha, carry_census_t* cz) OP_REQUIRES(sim) {
     (void)scene_room(s_scene_n + s_overlay_carry_n);
     for (int t = 0; t < s_overlay_carry_n && s_scene_n < (int)s_scene_v.cap; t++) {
         scene_tri_t tri = s_overlay_carry[t];   /* curr; category already stamped */
@@ -5484,7 +5497,7 @@ static void carry_compose(const int32_t* match, double oalpha, carry_census_t* c
 /** @brief Print one summary line of the committed carry: its seq range, unranked count, bounding box and per-layer counts.
  *
  * @param paired Entries the pairing matched this present. */
-static void carry_probe_summary(int paired) {
+static void carry_probe_summary(int paired) OP_REQUIRES_SHARED(sim) {
     unsigned lo = 0xFFFFFFFFu, hi = 0; int cat[16] = {0}, nz = 0;
     float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
     for (int t = 0; t < s_overlay_carry_n; t++) {
@@ -5507,7 +5520,7 @@ static void carry_probe_summary(int paired) {
  *
  * Active within 4 frames of the frame the variable names.
  * @param paired Entries the pairing matched this present. */
-static void carry_apply_probe(int paired) {
+static void carry_apply_probe(int paired) OP_REQUIRES_SHARED(sim) {
     static int pf = -2;
     if (pf == -2) { const char* e = getenv("OPENPETE_APPLY_PROBE"); pf = (e && *e) ? atoi(e) : -1; }
     if (pf < 0 || (int)s_scene_frame < pf - 4 || (int)s_scene_frame > pf + 4) return;
@@ -5541,7 +5554,7 @@ void openpete_native_scene_apply_overlay(double alpha) OP_REQUIRES(sim) {
     fbwin_census("inter", oalpha);
 }
 
-static unsigned scene_live_stamp(void);   /* defined beside the eager publish */
+static unsigned scene_live_stamp(void) OP_REQUIRES_SHARED(sim);   /* defined beside the eager publish */
 
 /* A scene and its per-scene words, as one selection of the present returns them.
  * stamp is the id its retained-terrain state is kept under (a scene id for an
@@ -5554,20 +5567,36 @@ typedef struct {
     int replay;
 } scene_view_t;
 
-/** @brief Select the scene the present draws: the eager ring slot, the kept game-render scene, a history entry or the live accumulator.
+/* The live scene as a compose of it reads it: what the compose accessors
+ * return when no ring slot is the compose source (s_ps_slot NULL). The
+ * thread that runs the guest takes it (ps_live_begin) before it composes
+ * the live scene; a compose reads the accumulator and its selection state
+ * only through it, never directly. */
+typedef struct {
+    scene_view_t view;                             /* scene_select_view */
+    const openpete_mods_material_view_t *matview;  /* scene_select_matview; NULL = the live table */
+    const nr_cover_block *cover;                   /* scene_select_cover */
+    const nr_snap_table  *snap;                    /* scene_select_snap */
+    uint32_t clear;                                /* scene_select_clear */
+    unsigned frame;                                /* scene_select_frame */
+    unsigned key;                                  /* s_scene_key */
+    int      n;                                    /* s_scene_n: the accumulator's count */
+} scene_live_t;
+/* The live compose source, NULL outside a live compose. Set and cleared only
+ * by the thread that runs the guest (ps_live_begin, ps_live_end); a compose
+ * on the present thread always has a ring slot and never reads it. */
+static const scene_live_t *s_ps_live;
+static const scene_live_t *ps_live(void);
+
+/** @brief Select the scene a compose of the live scene draws: the kept game-render scene, a history entry or the live accumulator.
  *
- * The ring slot being composed wins under eager production; then the kept
- * game-render scene while a framebuffer-window resolve selects it; then the
- * history entry at the delay depth; then the ring slot an eager publish moved
- * the live scene to; else the live accumulator. The scene's stamp and
- * replay flag come from the same arm as its triangles, so the
- * retained-terrain selection keyed on the stamp matches what is drawn.
+ * The kept game-render scene wins while a framebuffer-window resolve
+ * selects it; then the history entry at the delay depth; then the ring slot
+ * an eager publish moved the live scene to; else the live accumulator. The
+ * scene's stamp and replay flag come from the same arm as its triangles, so
+ * the retained-terrain selection keyed on the stamp matches what is drawn.
  * @return The selected scene and its words. */
-static scene_view_t scene_present_view(void) {
-    if (s_ps_slot)
-        return (scene_view_t){ s_ps_slot->tri, s_ps_slot->n, s_ps_slot->bg, s_ps_slot->fade,
-                               s_ps_slot->freeze, s_ps_slot->hud_under, s_ps_slot->actor_front,
-                               s_ps_slot->stamp, s_ps_slot->replay };
+static scene_view_t scene_select_view(void) OP_REQUIRES(sim) {
     if (s_fbsnap_game_sel)
         return (scene_view_t){ (const scene_tri_t*)s_scene_game.v.data, s_scene_game.n,
                                s_scene_game.bg, s_scene_game.fade, s_scene_game.freeze,
@@ -5588,20 +5617,35 @@ static scene_view_t scene_present_view(void) {
                            s_scene_replay };
 }
 
-/** @brief Return the material view captured with the scene scene_present_view selects.
+/** @brief Select the scene the present draws: the compose source slot's, else the live compose source's selection.
+ * @return The selected scene and its words. */
+static scene_view_t scene_present_view(void) {
+    if (s_ps_slot)
+        return (scene_view_t){ s_ps_slot->tri, s_ps_slot->n, s_ps_slot->bg, s_ps_slot->fade,
+                               s_ps_slot->freeze, s_ps_slot->hud_under, s_ps_slot->actor_front,
+                               s_ps_slot->stamp, s_ps_slot->replay };
+    return ps_live()->view;
+}
+
+/** @brief Return the material view captured with the scene scene_select_view selects.
  *
- * The same arms in the same order as scene_present_view: the compose
- * source slot's view, the kept game-render scene's, the history entry's at
- * the delay depth, the moved ring slot's; NULL for the live accumulator,
- * whose outcomes are the live table's.
+ * The same arms in the same order as scene_select_view: the kept
+ * game-render scene's, the history entry's at the delay depth, the moved
+ * ring slot's; NULL for the live accumulator, whose outcomes are the live
+ * table's.
  * @return The view, or NULL. */
-static const openpete_mods_material_view_t *scene_present_matview(void) {
-    if (s_ps_slot) return &s_ps_slot->matview;
+static const openpete_mods_material_view_t *scene_select_matview(void) OP_REQUIRES(sim) {
     if (s_fbsnap_game_sel) return &s_scene_game.matview;
     const int slot = scene_hist_slot_at(scene_delay_depth());
     if (slot >= 0) return &s_scene_hist_matview[slot];
     const scene_slot_t *ms = scene_moved_slot();
     return ms ? &ms->matview : NULL;
+}
+
+/** @brief Return the material view captured with the scene scene_present_view selects: the compose source slot's, else the live source's.
+ * @return The view, or NULL for the live table. */
+static const openpete_mods_material_view_t *scene_present_matview(void) {
+    return s_ps_slot ? &s_ps_slot->matview : ps_live()->matview;
 }
 
 /** @brief Return whether the scene scene_present_buf returns was built by a re-extract rather than by the game's render.
@@ -5671,7 +5715,7 @@ static bool scene_has_world(const scene_tri_t* scene, int n) {
     return false;
 }
 
-static uint32_t scene_accum_stamp(void);   /* defined with the build stamp */
+static uint32_t scene_accum_stamp(void) OP_REQUIRES_SHARED(sim);   /* defined with the build stamp */
 /** @brief Test whether the scene accumulating in s_scene holds the game's own world, on either terrain route.
  *
  * scene_has_world's triangles, or a live sector in the retained terrain
@@ -5681,7 +5725,7 @@ static uint32_t scene_accum_stamp(void);   /* defined with the build stamp */
  * is found by the scene's build stamp, not by the present's selection,
  * since the scene has not been composed yet.
  * @return true when the scene holds world geometry. */
-static bool scene_accum_has_world(void) {
+static bool scene_accum_has_world(void) OP_REQUIRES_SHARED(sim) {
     return scene_has_world(s_scene, s_scene_n) ||
            openpete_tercache_build_content(scene_accum_stamp()) > 0;
 }
@@ -9005,7 +9049,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
 }
 
 /* Retained terrain path availability; documented at the declaration. */
-int openpete_native_tercache_usable(void)
+int openpete_native_tercache_usable(void) OP_REQUIRES_SHARED(sim)
 {
     /* OPENPETE_TERRAIN_CACHE_FORCE=1: waive the software-GPU exclusion (dev -
      * llvmpipe renders the path correctly, just slowly; the WSL parity
@@ -9023,7 +9067,7 @@ int openpete_native_tercache_usable(void)
         && (s_force || !rhi_device_is_software(s_nr.dev));
 }
 
-void openpete_native_tercache_service_headless(void)
+void openpete_native_tercache_service_headless(void) OP_REQUIRES_SHARED(sim)
 {
     /* The service's windowed site is the present entry, which headless never
      * reaches: both entries into the render frame return early on
@@ -9441,7 +9485,7 @@ static void sync_vram_texture_locked(void)
       if (s_peek < 0) { const char* e = getenv("OPENPETE_VRAM_PEEK");
           s_peek = 0; pf_ = 0;
           if (e && sscanf(e, "%d,%d,%d,%d,%d", &px_, &py_, &pw_, &ph_, &pf_) >= 4) s_peek = 1; }
-      if (s_peek == 1 && s_scene_frame != 0xFFFFFFFFu && (int)s_scene_frame >= pf_) {
+      if (s_peek == 1 && scene_frame_pub() != 0xFFFFFFFFu && (int)scene_frame_pub() >= pf_) {
           s_peek = 2;
           static uint16_t vrow[NR_VRAM_W];
           if (pw_ > 32) pw_ = 32;
@@ -13355,7 +13399,7 @@ static void occl_decode_publish(const uint8_t *raw, const occl_meta_t *m, unsign
     occl_grid_publish();
     if (occl_camdbg())
         fprintf(stderr, "[occl-grid] sframe=%u present=%u stamp=%u age=%u valid=%d "
-                "gcam=(%.0f,%.0f,%.0f)\n", s_scene_frame, presents, m->stamp,
+                "gcam=(%.0f,%.0f,%.0f)\n", scene_frame_pub(), presents, m->stamp,
                 presents - m->stamp, s_occl_dec.cam.valid,
                 s_occl_dec.cam.pos[0], s_occl_dec.cam.pos[1], s_occl_dec.cam.pos[2]);
 }
@@ -13445,7 +13489,7 @@ static void native_occl_downsample(void)
     occl_meta_now(mm, presents);
     if (occl_camdbg())
         fprintf(stderr, "[occl-queue] sframe=%u present=%u slot=%d valid=%d "
-                "qcam=(%.0f,%.0f,%.0f)\n", s_scene_frame, presents, s_ps_slot ? 1 : 0,
+                "qcam=(%.0f,%.0f,%.0f)\n", scene_frame_pub(), presents, s_ps_slot ? 1 : 0,
                 mm->cam.valid, mm->cam.pos[0], mm->cam.pos[1], mm->cam.pos[2]);
     s_occl_fifo_head++;
 }
@@ -13529,7 +13573,7 @@ static int occl_uv_offscreen(const occl_uv_rect *r, float vz_near)
 }
 
 int openpete_native_occl_query_outcome(float sx0, float sy0, float sx1, float sy1, float vz_near,
-                                       const openpete_occl_camera *cam, float slack)
+                                       const openpete_occl_camera *cam, float slack) OP_REQUIRES_SHARED(sim)
 {
     const occl_grid_t *G = occl_grid_reader();
     int refusal = occl_grid_refusal(G);
@@ -13577,7 +13621,7 @@ int openpete_native_occl_query_outcome(float sx0, float sy0, float sx1, float sy
 }
 
 int openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float vz_near,
-                               const openpete_occl_camera *cam)
+                               const openpete_occl_camera *cam) OP_REQUIRES_SHARED(sim)
 {
     const int o = openpete_native_occl_query_outcome(sx0, sy0, sx1, sy1, vz_near, cam, occl_slack());
     s_occl_qstat[o]++;
@@ -16364,7 +16408,7 @@ static void draw_hud_flat_layer(const scene_tri_t* scene, int scene_n,
  * only.
  * @param scene Completed scene triangles.
  * @param scene_n Triangle count. */
-static void alpha_census(const scene_tri_t* scene, int scene_n)
+static void alpha_census(const scene_tri_t* scene, int scene_n) OP_REQUIRES_SHARED(sim)
 {
     static int s_on = -1;
     if (s_on < 0) { const char* e = getenv("OPENPETE_ALPHA_CENSUS"); s_on = (e && *e && *e != '0') ? 1 : 0; }
@@ -16644,7 +16688,7 @@ static void portal_cover_check(const scene_tri_t* sc, int n)
     static long chk = -2;
     if (chk == -2) { const char* e = getenv("OPENPETE_PORTAL_COVER_CHECK");
                      chk = (e && *e) ? atol(e) : -1; }
-    if (chk < 0 || s_scene_frame != (unsigned)chk || s_cvp_n <= 0) return;
+    if (chk < 0 || ps_frame() != (unsigned)chk || s_cvp_n <= 0) return;
     if (!vec_run_fit(&s_cz_cand, sizeof(int), SCENE_RUN_INIT, "compose.portal_cover_cand",
                      SCENE_TRIS_WAS, n)) return;
     for (int pi = 0; pi < s_cvp_n; pi++) {
@@ -16734,22 +16778,24 @@ static void portal_cover_check(const scene_tri_t* sc, int n)
         }
         fprintf(stderr, "[pcover f=%u] pi=%d pn=%d M=%.0f in=%d preview=%d "
                 "front=%d empty=%d VIOL=%d first=(%.1f,%.1f) TVIOL=%d tfirst=(%.1f,%.1f)\n",
-                s_scene_frame, pi, P->pn, (double)s_cvp_m, in_px, prev_px,
+                ps_frame(), pi, P->pn, (double)s_cvp_m, in_px, prev_px,
                 front_px, empty_px, viol, (double)vpx, (double)vpy,
                 tviol, (double)tvx, (double)tvy);
     }
 }
 
-/** @brief Return the VBL at which the scene the compose is reading was extracted.
- *
- * The scene is the ring slot being composed, else the delayed history
- * entry, else the live accumulator.
+/** @brief Return the VBL at which the scene a compose of the live scene reads was extracted: the delayed history entry's, else the accumulator's.
  * @return The VBL number, 0xFFFFFFFF before the first scene. */
-static unsigned scene_present_frame(void) {
-    if (s_ps_slot) return s_ps_slot->frame;
+static unsigned scene_select_frame(void) OP_REQUIRES(sim) {
     const int slot = scene_hist_slot_at(scene_delay_depth());
     if (slot >= 0) return s_scene_hist_frame[slot];
     return s_scene_frame;
+}
+
+/** @brief Return the VBL at which the scene the compose is reading was extracted: the compose source slot's, else the live source's (scene_select_frame).
+ * @return The VBL number, 0xFFFFFFFF before the first scene. */
+static unsigned scene_present_frame(void) {
+    return s_ps_slot ? s_ps_slot->frame : ps_live()->frame;
 }
 
 /** @brief Test whether a triangle edge separates the probe box from the triangle.
@@ -17073,7 +17119,7 @@ static void bw_snapb_census(const scene_tri_t* scene, int base, int ntri, int sn
             }
     }
     fprintf(stderr, "[snapb] frame=%u snap_on=%d table_ents=%d blended_actor=%d keyed=%d listed=%d\n",
-            s_scene_frame, snap_on, tab->ne, actor, keyed, listed);
+            ps_frame(), snap_on, tab->ne, actor, keyed, listed);
 }
 
 /** @brief Draw the blended world block in emission order, one draw per run of one class and texturing mode.
@@ -17200,7 +17246,7 @@ static void bw_fam_census_pass(const scene_tri_t* sc, int n, int refined,
     }
     for (int q = 0; q < nk; q++) if (bursts[q] > 1) split++;
     fprintf(stderr, "[bwfam f=%u key=%s] bw=%d keys=%d split=%d\n",
-            s_scene_frame, label, bw, nk, split);
+            ps_frame(), label, bw, nk, split);
     for (int q = 0; q < nk; q++)
         fprintf(stderr, "[bwf %s] k=%04X bursts=%d tris=%d first=#%d\n",
                 label, key[q], bursts[q], tris[q], first[q]);
@@ -17220,9 +17266,9 @@ static void bw_fam_census(const scene_tri_t* sc, int n) {
         if (e && sscanf(e, "%u-%u", &a, &b) == 2) { lo = a; hi = b; }
         else if (e && *e) { lo = (unsigned)atoi(e); hi = lo; }
     }
-    if (on != 1 || s_scene_key < lo || s_scene_key > hi) return;
-    fprintf(stderr, "[bwfam f=%u leg=%s] n=%d\n", s_scene_frame,
-            s_scene_replay ? "replay" : "inline", n);
+    if (on != 1 || ps_key() < lo || ps_key() > hi) return;
+    fprintf(stderr, "[bwfam f=%u leg=%s] n=%d\n", ps_frame(),
+            scene_present_replay() ? "replay" : "inline", n);
     bw_fam_census_pass(sc, n, 0, "fam");
     bw_fam_census_pass(sc, n, 1, "rank");
 }
@@ -17231,7 +17277,7 @@ static void bw_fam_census(const scene_tri_t* sc, int n) {
 /** @brief Print a blended-world block as the ordered pass draws it, on stderr, for OPENPETE_BWDRAWORDER.
  *
  * OPENPETE_BWDRAWORDER=N or N-M selects the scenes dumped by the feed key at
- * their start (s_scene_key).
+ * their start (ps_key()).
  * One line per maximal run of one provenance key, blend class and texturing
  * mode, with its triangle count, then the totals. Scene indices are left
  * out: the game render and the re-extract build different scenes, so only
@@ -17249,7 +17295,7 @@ static void bw_draw_order_dump(const scene_tri_t* scene, const int* idx, int n) 
         if (e && sscanf(e, "%u-%u", &a, &b) == 2) { lo = a; hi = b; }
         else if (e && *e) { lo = (unsigned)atoi(e); hi = lo; }
     }
-    if (on != 1 || s_scene_key < lo || s_scene_key > hi) return;
+    if (on != 1 || ps_key() < lo || ps_key() > hi) return;
     int runs = 0, tris = 0, i = 0;
     while (i < n) {
         const scene_tri_t* s0 = &scene[idx[i]];
@@ -17265,7 +17311,7 @@ static void bw_draw_order_dump(const scene_tri_t* scene, const int* idx, int n) 
                 runs, k, bl, tex, cnt);
         runs++; tris += cnt; i += cnt;
     }
-    fprintf(stderr, "[bwdraworder f=%u] runs=%d tris=%d\n", s_scene_frame, runs, tris);
+    fprintf(stderr, "[bwdraworder f=%u] runs=%d tris=%d\n", ps_frame(), runs, tris);
 }
 
 
@@ -17344,10 +17390,10 @@ static void blend_order_dump(const scene_tri_t* sc, int n) {
         if (e && sscanf(e, "%u-%u", &a, &b) == 2) { bof = a; bol = b; }
         else if (e && *e) { bof = (unsigned)atoi(e); bol = 0; }
     }
-    if (bo != 1 || s_scene_frame < bof) return;
-    if (s_scene_frame >= bol) bo = -1;   /* past the range: one dump left */
+    if (bo != 1 || ps_frame() < bof) return;
+    if (ps_frame() >= bol) bo = -1;   /* past the range: one dump left */
     int runs = 0, tris = 0, i = 0;
-    fprintf(stderr, "[blendorder f=%u] n=%d\n", s_scene_frame, n);
+    fprintf(stderr, "[blendorder f=%u] n=%d\n", ps_frame(), n);
     while (i < n) {
         if (!blended_world_tri(&sc[i])) { i++; continue; }
         const int bl = sc[i].blend, tex = sc[i].textured;
@@ -17361,7 +17407,7 @@ static void blend_order_dump(const scene_tri_t* sc, int n) {
         runs++; tris += cnt; i = j;
     }
     fprintf(stderr, "[blendorder f=%u] runs=%d tris=%d draws_ordered=%d "
-                    "draws_fixed=%d\n", s_scene_frame, runs, tris,
+                    "draws_fixed=%d\n", ps_frame(), runs, tris,
             bw_draw_ranges(sc, n, 1), bw_draw_ranges(sc, n, 0));
 }
 
@@ -17434,9 +17480,9 @@ static void scene_probes(scene_tri_t* sc, int n)
     { static int sd = -2; static unsigned sdf = 0;
       if (sd == -2) { const char* e = getenv("OPENPETE_SCENEDUMP");
           sd = (e && *e) ? 1 : -1; sdf = (e && *e) ? (unsigned)atoi(e) : 0; }
-      if (sd == 1 && s_scene_key >= sdf) {
+      if (sd == 1 && ps_key() >= sdf) {
         sd = -1;
-        fprintf(stderr, "[scenedump f=%u] n=%d\n", s_scene_key, n);
+        fprintf(stderr, "[scenedump f=%u] n=%d\n", ps_key(), n);
         for (int ti = 0; ti < n; ti++) scene_tri_dump_line(stderr, ti, &sc[ti]);
       } }
     blend_order_dump(sc, n);
@@ -17493,7 +17539,7 @@ static void hud3d_tex_census(const scene_tri_t* scene, int scene_n, int drawn) {
         if (scene[t].blend >= 1 && scene[t].blend <= 4) blended++;
     }
     fprintf(stderr, "[census f=%u HUD3D-TEX] fed=%d drawn=%d blended=%d\n",
-            s_scene_frame, fed, drawn, blended);
+            ps_frame(), fed, drawn, blended);
 }
 
 /** @brief Draw the HUD3D layer, the in-game 3D HUD icon mobys, in its own depth pass on top of the scene.
@@ -18619,7 +18665,7 @@ static void cz_hud6_dbg(const compose_t* c, int hn)
 {
     static int s_h6 = -2;
     if (s_h6 == -2) { const char* e = getenv("OPENPETE_HUD6_DBG"); s_h6 = (e && *e) ? atoi(e) : -1; }
-    if (!(s_h6 >= 0 && (int)s_scene_frame >= s_h6 && (int)s_scene_frame < s_h6 + 2)) return;
+    if (!(s_h6 >= 0 && (int)ps_frame() >= s_h6 && (int)ps_frame() < s_h6 + 2)) return;
     const hud_paint_t *ho = (const hud_paint_t *)s_cz_hud.data;
     for (int i = 0; i < hn; i++) {
         const scene_tri_t* T = &c->scene[ho[i].t];
@@ -18630,7 +18676,7 @@ static void cz_hud6_dbg(const compose_t* c, int hn)
         for (int k = 0; k < 3; k++) scene_to_clip(T->v[k].sx, T->v[k].sy, &cl[k][0], &cl[k][1]);
         fprintf(stderr, "[hud6] f=%u i=%d/%d t=%d z=%.4f rgba=%08X "
                 "v0=%.1f,%.1f v1=%.1f,%.1f v2=%.1f,%.1f clip=(%.4f,%.4f)(%.4f,%.4f)(%.4f,%.4f)\n",
-                s_scene_frame, i, hn, ho[i].t, (double)ho[i].z, T->v[0].rgba,
+                ps_frame(), i, hn, ho[i].t, (double)ho[i].z, T->v[0].rgba,
                 (double)T->v[0].sx, (double)T->v[0].sy, (double)T->v[1].sx, (double)T->v[1].sy,
                 (double)T->v[2].sx, (double)T->v[2].sy, (double)cl[0][0], (double)cl[0][1],
                 (double)cl[1][0], (double)cl[1][1], (double)cl[2][0], (double)cl[2][1]);
@@ -18828,20 +18874,20 @@ static void cz_hud6_vb_dbg(const compose_t* c)
 {
     static int s_h6b = -2;
     if (s_h6b == -2) { const char* e = getenv("OPENPETE_HUD6_DBG"); s_h6b = (e && *e) ? atoi(e) : -1; }
-    if (!(s_h6b >= 0 && (int)s_scene_frame >= s_h6b && (int)s_scene_frame < s_h6b + 2)) return;
+    if (!(s_h6b >= 0 && (int)ps_frame() >= s_h6b && (int)ps_frame() < s_h6b + 2)) return;
     const rhi_vertex* buf = c->buf;
     const int f6 = c->ut_first[6], n6 = c->ut_count[6];
     int hits = 0;
     for (int v = f6; v < f6 + n6; v++)
         if (buf[v].x > 0.20f && buf[v].x < 0.31f && buf[v].y > -0.82f && buf[v].y < -0.60f) hits++;
     fprintf(stderr, "[hud6vb] f=%u ut6=[%d+%d] n=%d glyph-verts-in-Vwindow=%d\n",
-            s_scene_frame, f6, n6, c->n, hits);
+            ps_frame(), f6, n6, c->n, hits);
     for (int v = f6; v + 2 < f6 + n6; v += 3) {
         const float x0 = buf[v].x, y0 = buf[v].y;
         if (y0 < -0.75f || y0 > -0.60f) continue;
         if ((x0 > 0.2515f && x0 < 0.2545f) || (x0 > 0.2345f && x0 < 0.2375f))
             fprintf(stderr, "[hud6cap] f=%u vslot=%d (%.4f,%.4f,%.4f)(%.4f,%.4f,%.4f)(%.4f,%.4f,%.4f) rgba=%08X,%08X,%08X\n",
-                    s_scene_frame, v, (double)buf[v].x, (double)buf[v].y, (double)buf[v].z,
+                    ps_frame(), v, (double)buf[v].x, (double)buf[v].y, (double)buf[v].z,
                     (double)buf[v+1].x, (double)buf[v+1].y, (double)buf[v+1].z,
                     (double)buf[v+2].x, (double)buf[v+2].y, (double)buf[v+2].z,
                     buf[v].rgba, buf[v+1].rgba, buf[v+2].rgba);
@@ -19516,12 +19562,12 @@ static void key_ident_check(const scene_tri_t* scene, int scene_n, bool full_ext
         while (db < nb && a[db] == b[db]) db++;
         if (im != lm || db < nb)
             fprintf(stderr, "[keyident f=%u] MISMATCH cls=%d fe=%d m=%d/%d scene=%p/%p n=%d/%d first-diff vert=%zu\n",
-                    s_scene_frame, cls, full_extent ? 1 : 0, im, lm,
+                    ps_frame(), cls, full_extent ? 1 : 0, im, lm,
                     (const void*)scene, (const void*)s_tk_last.scene,
                     scene_n, s_tk_last.scene_n, db / sizeof(rhi_vertex));
         else
             fprintf(stderr, "[keyident f=%u] OK cls=%d fe=%d m=%d\n",
-                    s_scene_frame, cls, full_extent ? 1 : 0, im);
+                    ps_frame(), cls, full_extent ? 1 : 0, im);
     }
 }
 
@@ -19548,7 +19594,7 @@ static void load_census_scene(const scene_tri_t* scene, int scene_n, uint32_t fa
         else if (scene[t].category >= 0 && scene[t].category <= 12) cat[scene[t].category]++;
     }
     fprintf(stderr, "[census f=%u SCENE] n=%d wor=%d act=%d hud=%d ply=%d ovl=%d pan=%d h3d=%d psky=%d pmsk=%d sky=%d fill=%d blend=%d fade=%08x freeze=%u denv=%08x sbg=%08x\n",
-            s_scene_frame, scene_n, cat[0], cat[1], cat[2], cat[3], cat[4], cat[5], cat[6], cat[7], cat[8],
+            ps_frame(), scene_n, cat[0], cat[1], cat[2], cat[3], cat[4], cat[5], cat[6], cat[7], cat[8],
             cat[10], cat[11], blend, fade, freeze, ps_drawenv_clear(), scene_bg);
 }
 
@@ -21593,7 +21639,7 @@ static void pc_trace_print(int kind, int outcome, int ntri, int tc_drawn)
 {
     const scene_view_t pv = scene_present_view();
     const int twod = scene_2d_count_fwd(pv.tri, pv.n);
-    const unsigned frame = s_ps_slot ? s_ps_slot->frame : s_scene_frame;
+    const unsigned frame = ps_frame();
     const double alpha = s_ps_slot ? s_ps_slot->alpha : 0.0;
     const int paired = s_ps_slot ? s_ps_slot->paired : 0;
     fprintf(stderr, "[present] #%u kind=%s shows=%s frame=%u stamp=%08x n=%d tc=%d alpha=%.4f paired=%d %dx%d fe=%d"
@@ -21623,7 +21669,7 @@ static void pc_note(void)
     s_pc.total++;
     s_pc.n[kind][outcome]++;
     if (s_render_full_extent) s_pc.full_extent[kind]++;
-    const int ntri = s_ps_slot ? s_ps_slot->n : s_scene_n;
+    const int ntri = ps_ntri();
     int tc_drawn = 0, tc_hp = 0, tc_lp = 0, tc_nv = 0, tc_gen[8];
     openpete_tercache_frame_stats(&tc_drawn, &tc_hp, &tc_lp, &tc_nv, tc_gen);
     if (!s_pc.seen[kind]++) { s_pc.min_n[kind] = s_pc.max_n[kind] = ntri;
@@ -21845,7 +21891,7 @@ static void compose_variant(void)
         const size_t gblen = strlen(gb);
         openpete_tercache_frame_slots(gb + gblen, (int)(sizeof gb - gblen));
         fprintf(stderr, "[freeze f=%u stamp=%08x] world=%d n=%d W=%d A=%d freeze=%08x tc_src=%d tc_content=%d drawn=%d | %s\n",
-                s_scene_key, scene_present_stamp(), (int)world_frame, sn, cw, ca, sfreeze,
+                ps_key(), scene_present_stamp(), (int)world_frame, sn, cw, ca, sfreeze,
                 openpete_tercache_frame_source(), openpete_tercache_frame_content(), td, gb);
     }
     /* --resolution N | WxH: the scene composes into the base image and is
@@ -22044,7 +22090,7 @@ static void phase_present_done(void)
         { "rex", "ter", "moby", "shdw", "spy", "prep", "comp", "gpu", "sim" };
     static uint32_t sorted[PT_WINDOW];
     char line[512]; int off = 0;
-    off += snprintf(line + off, sizeof(line) - (size_t)off, "[phase f=%u n=%d]", s_scene_frame, s_pt_n);
+    off += snprintf(line + off, sizeof(line) - (size_t)off, "[phase f=%u n=%d]", scene_frame_pub(), s_pt_n);
     for (int p = 0; p < OPPT_COUNT && off < (int)sizeof(line); p++) {
         memcpy(sorted, s_pt_ring[p], (size_t)s_pt_n * sizeof(uint32_t));
         qsort(sorted, (size_t)s_pt_n, sizeof(uint32_t), pt_cmp_u32);
@@ -23447,7 +23493,7 @@ static void gpu_zone_line(const rhi_gpu_zone_result *res, int n)
     if (s_gpuz_last == 0) s_gpuz_last = now;
     if (s_gpuz_n == 0 || now - s_gpuz_last < 1000000u) return;
     char line[1024]; int off = 0;
-    off += snprintf(line + off, sizeof(line) - (size_t)off, "[gpu-pass f=%u]", s_scene_frame);
+    off += snprintf(line + off, sizeof(line) - (size_t)off, "[gpu-pass f=%u]", scene_frame_pub());
     for (int j = 0; j < s_gpuz_n && off < (int)sizeof(line); j++)
         off += snprintf(line + off, sizeof(line) - (size_t)off,
                         " %s %.0f", s_gpuz[j].name, s_gpuz[j].ema);
@@ -23657,7 +23703,11 @@ static void ps_apply_geometry(void) {
  * @return The clear colour word (0: no auto-clear). */
 static uint32_t ps_drawenv_clear(void) {
     if (s_hold_clear_bg) return s_hold_clear_bg;   /* an empty compose of an auto-cleared area */
-    if (s_ps_slot) return s_ps_slot->drawenv_clear;
+    return s_ps_slot ? s_ps_slot->drawenv_clear : ps_live()->clear;
+}
+/** @brief The draw-environment clear colour of the live scene a compose selects: the history entry's under a framebuffer resolve, else the accumulator's.
+ * @return The clear colour word (0: no auto-clear). */
+static uint32_t scene_select_clear(void) OP_REQUIRES(sim) {
     if (s_fbsnap_want_frame && !s_fbsnap_game_sel) {
         const int slot = scene_hist_slot_at(scene_delay_depth());
         if (slot >= 0) return s_scene_hist_clear[slot];
@@ -23676,7 +23726,11 @@ static const openpete_shadow_footprint *ps_shadow_foot(void) { return s_ps_slot 
  * scene wipe has cleared.
  * @return The selected scene's cover block. */
 static const nr_cover_block *ps_cover(void) {
-    if (s_ps_slot) return &s_ps_slot->cover;
+    return s_ps_slot ? &s_ps_slot->cover : ps_live()->cover;
+}
+/** @brief Return the portal openings of the live scene a compose selects, with scene_select_view's arms.
+ * @return The kept game scene's, the history entry's, the moved slot's or the accumulator's cover block. */
+static const nr_cover_block *scene_select_cover(void) OP_REQUIRES(sim) {
     if (s_fbsnap_game_sel) return &s_scene_game.cover;
     const int slot = scene_hist_slot_at(scene_delay_depth());
     if (slot >= 0) return &s_scene_hist_cover[slot];
@@ -23684,9 +23738,13 @@ static const nr_cover_block *ps_cover(void) {
     return ms ? &ms->cover : &s_cover_live;
 }
 /** @brief The composed scene's snap table, selected like ps_cover.
- * @return The table of the slot, the kept game scene, the history snapshot or the accumulator. */
+ * @return The table of the slot, or of the live source's selection. */
 static const nr_snap_table *ps_snap(void) {
-    if (s_ps_slot) return &s_ps_slot->snap;
+    return s_ps_slot ? &s_ps_slot->snap : ps_live()->snap;
+}
+/** @brief Return the snap table of the live scene a compose selects, with scene_select_view's arms.
+ * @return The table of the kept game scene, the history snapshot, the moved slot or the accumulator. */
+static const nr_snap_table *scene_select_snap(void) OP_REQUIRES(sim) {
     if (s_fbsnap_game_sel) return &s_scene_game.snap;
     const int slot = scene_hist_slot_at(scene_delay_depth());
     if (slot >= 0) return &s_scene_hist_snap[slot];
@@ -23699,8 +23757,12 @@ static const openpete_occl_camera *ps_occl_cam(void) { return s_ps_slot ? &s_ps_
 static const bw_order_t *ps_bw(void) { return s_ps_slot ? &s_ps_slot->bw : &s_bw; }
 /** @brief The freeze-backdrop production mode of the composed scene: the slot's copy, or the live mode inline. */
 static int ps_freeze_retained(void) { return s_ps_slot ? s_ps_slot->freeze_retained : s_freeze_retained; }
-/** @brief The VBL at which the composed scene was extracted: the slot's, or the live scene's inline. */
-static unsigned ps_frame(void)          { return s_ps_slot ? s_ps_slot->frame : s_scene_frame; }
+/** @brief The VBL at which the composed scene was extracted: the slot's, or the accumulator's published stamp inline. */
+static unsigned ps_frame(void)          { return s_ps_slot ? s_ps_slot->frame : scene_frame_pub(); }
+/** @brief The feed key the composed scene began at: the slot's, or the live source's inline. */
+static unsigned ps_key(void)            { return s_ps_slot ? s_ps_slot->key : ps_live()->key; }
+/** @brief The triangle count the present reports for its scene: the slot's, or the accumulator's inline. */
+static int      ps_ntri(void)           { return s_ps_slot ? s_ps_slot->n : ps_live()->n; }
 /** @brief Copy the texture pack's current fog-ladder ramp and fog shift.
  *
  * Runs on the thread that extracts scenes, which is the thread that sets
@@ -23725,6 +23787,50 @@ static const nr_pack_fog *ps_pack_fog(void)
     return &live;
 }
 
+/** @brief Return the live compose source: the one ps_live_begin installed, else an empty scene.
+ *
+ * A compose of the live scene outside a ps_live_begin scope has no source:
+ * it draws an empty scene with the accumulator's portal openings and snap
+ * table, and the first such compose of the run logs an error naming it.
+ * @return The source; never NULL. */
+static const scene_live_t *ps_live(void)
+{
+    static const scene_live_t none = { .cover = &s_cover_live, .snap = &s_snap_live,
+                                       .frame = 0xFFFFFFFFu, .key = 0xFFFFFFFFu };
+    static _Atomic(int) s_unwrapped;
+    if (s_ps_live) return s_ps_live;
+    if (!atomic_exchange_explicit(&s_unwrapped, 1, memory_order_relaxed))
+        OPL_ERROR_F("native", "a compose of the live scene ran without a live compose source");
+    return &none;
+}
+
+/** @brief Take the live scene as a compose of it reads it and install it as the live compose source.
+ *
+ * Fills @p lv from the accumulator and its selection state (the
+ * framebuffer-resolve, delay-depth and moved-slot arms) as they stand, so
+ * it is taken after everything that changes them and before the compose.
+ * A nested scope takes the state current at its own begin.
+ * @param lv Receives the source; it must outlive the scope.
+ * @return The source installed before, for ps_live_end. */
+static const scene_live_t *ps_live_begin(scene_live_t *lv) OP_REQUIRES(sim)
+{
+    lv->view = scene_select_view();
+    lv->matview = scene_select_matview();
+    lv->cover = scene_select_cover();
+    lv->snap = scene_select_snap();
+    lv->clear = scene_select_clear();
+    lv->frame = scene_select_frame();
+    lv->key = s_scene_key;
+    lv->n = s_scene_n;
+    const scene_live_t *prev = s_ps_live;
+    s_ps_live = lv;
+    return prev;
+}
+
+/** @brief Restore the live compose source ps_live_begin replaced.
+ * @param prev Its return value. */
+static void ps_live_end(const scene_live_t *prev) OP_REQUIRES(sim) { s_ps_live = prev; }
+
 /* Stamp the terrain builder tags its build with: the scene id while an eager
  * scene is being extracted, else the VBL counter as before. Scene ids carry
  * the top bit so they never collide with a VBL number. */
@@ -23737,7 +23843,7 @@ uint32_t openpete_native_scene_build_stamp(void) {
  * The scene id of an eager scene the ring refused while the accumulator
  * still holds it (same epoch), else the VBL the scene was opened on.
  * @return The stamp. */
-static unsigned scene_live_stamp(void) {
+static unsigned scene_live_stamp(void) OP_REQUIRES_SHARED(sim) {
     return (s_scene_refused_stamp && s_scene_refused_epoch == s_scene_epoch)
            ? s_scene_refused_stamp : s_scene_frame;
 }
@@ -23746,7 +23852,7 @@ static unsigned scene_live_stamp(void) {
  * The scene id while an eager scene is being extracted, else the VBL the
  * scene was opened on.
  * @return The build stamp. */
-static uint32_t scene_accum_stamp(void) {
+static uint32_t scene_accum_stamp(void) OP_REQUIRES_SHARED(sim) {
     return s_eager_stamp ? s_eager_stamp : (uint32_t)s_scene_frame;
 }
 void openpete_native_scene_eager_begin(void) {
@@ -23769,7 +23875,7 @@ static int slot_grow(scene_slot_t *sl, int n) {
  * The refused scene stays in the accumulator while its terrain build sits
  * under the scene id, so the accumulator's present stamp is that id until
  * the next scene reset (a new epoch). */
-static void scene_keep_refused_stamp(void) {
+static void scene_keep_refused_stamp(void) OP_REQUIRES_SHARED(sim) {
     s_scene_refused_stamp = s_eager_stamp;
     s_scene_refused_epoch = s_scene_epoch;
     s_eager_stamp = 0;
@@ -23790,7 +23896,7 @@ static void slot_note_census(scene_slot_t *sl) {
 }
 /** @brief Copy the live per-present compose inputs other than the scene's triangles and words into a slot.
  *
- * The inputs are the VBL, the draw-environment clear, the display and clip
+ * The inputs are the VBL, the feed key, the draw-environment clear, the display and clip
  * geometry, the mod overlay, the shadow decal and footprint, the occlusion
  * camera, the blended-world order, the freeze-backdrop mode, the walk
  * census, the mod present context and the interned material slots: every
@@ -23799,8 +23905,9 @@ static void slot_note_census(scene_slot_t *sl) {
  * which scene's openings the slot carries. The walk census is copied
  * because the compose may run on another thread a tick later.
  * @param sl The slot being filled. */
-static void slot_capture_inputs(scene_slot_t *sl) {
+static void slot_capture_inputs(scene_slot_t *sl) OP_REQUIRES_SHARED(sim) {
     sl->frame = s_scene_frame;
+    sl->key = s_scene_key;
     sl->drawenv_clear = scene_clear_word();
     memcpy(sl->geom, s_geom_in, sizeof sl->geom);
     if (sl->ovl_cap < s_mod_overlay_n) {
@@ -23829,7 +23936,7 @@ static void ring_slot_free(scene_slot_t *sl)
     hold_slot_release(sl);
 }
 /* Publish into any free ring slot; see the header. */
-int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int paired) {
+int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int paired) OP_REQUIRES(sim) {
     SDL_LockMutex(ring_mx());
     int idx = -1;
     for (int i = 1; i <= SCENE_RING; i++) {
@@ -23985,7 +24092,7 @@ void openpete_native_scene_ring_report(void) {
                s_ring_census.superseded, s_ring_census.refused_full);
 }
 
-void openpete_native_render_frame(uint64_t record_pts_us)
+void openpete_native_render_frame(uint64_t record_pts_us) OP_REQUIRES(sim)
 {
     if (!s_nr.enabled)
         return;
@@ -24017,6 +24124,9 @@ void openpete_native_render_frame(uint64_t record_pts_us)
      * (gating it off for vk blanked the captured native-intermediate frames). */
     sync_vram_texture();
     bool have_ref = sync_reference_texture();
+    scene_faceid_debug(0);   /* an inline present composes the open scene in place */
+    scene_live_t lv;
+    const scene_live_t *lprev = ps_live_begin(&lv);
     freeze_bd_edge();
     { const uint64_t b0 = rhi_frame_serial(s_nr.dev);
       const scene_slot_t *prev; const int hk = hold_redirect_begin(&prev);
@@ -24024,6 +24134,7 @@ void openpete_native_render_frame(uint64_t record_pts_us)
       hold_redirect_end(hk, prev);
       freeze_bd_note_present(-1, rhi_frame_serial(s_nr.dev) != b0);
       pt_dump_maybe(rhi_frame_serial(s_nr.dev) != b0, s_scene_frame, s_scene_frame, s_scene_freeze, -1, 0, 0.0, 0, s_scene_n); }
+    ps_live_end(lprev);
 }
 
 /* Compose and present one ring slot. The present thread's entry: no VRAM or
@@ -24240,7 +24351,6 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
 {
     NR_PROF_BEGIN("render.setup");   /* layout, resize debounce, target allocation */
     s_last_frame_presented = 0;
-    scene_faceid_debug(0);   /* an inline present composes the open scene in place */
     ps_apply_geometry();
     glyph_lists_latch();
     record_extent_pin();
@@ -24387,7 +24497,7 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
     { OP_PROF_ACCUM_SCOPE("upl.hdfold");   openpete_native_hdfold_flush(); }
     rhi_gpu_zone_end(s_nr.dev);
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_GPU_SYNC, pt_t1 - pt_t0); pt_t0 = pt_t1; }
-    if (s_ptrace) { fprintf(stderr, "[ptrace f=%u] B", s_scene_frame); fflush(stderr); }
+    if (s_ptrace) { fprintf(stderr, "[ptrace f=%u] B", scene_frame_pub()); fflush(stderr); }
     /* Shared WORLD-opaque depth pre-pass (its own render pass) - must record
      * before every consumer pass; one raster serves rtt/SSAA/offscreen alike. */
     NR_PROF_BEGIN("render.prepass");
@@ -24450,7 +24560,7 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
         }
     }
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_COMPOSE, pt_t1 - pt_t0); pt_t0 = pt_t1;
-                 openpete_phase_set_count(OPPC_TRIS, s_ps_slot ? s_ps_slot->n : s_scene_n); }
+                 openpete_phase_set_count(OPPC_TRIS, ps_ntri()); }
     if (s_ptrace) { fprintf(stderr, "C"); fflush(stderr); }
 
     NR_PROF_BEGIN("render.tail");   /* blit, recording, thumbnails */
@@ -24793,7 +24903,9 @@ static int freeze_src_verify(void) {
  * overwrite the good backdrop with an empty or ground-less one. The verdict
  * reads the selected retained state, so the selection runs first.
  * @return true when the scene is a freeze-backdrop source. */
-static bool freeze_src_verdict(void) {
+static bool freeze_src_verdict(void) OP_REQUIRES(sim) {
+    scene_live_t lv;
+    const scene_live_t *prev = ps_live_begin(&lv);
     int scene_n; uint32_t sbg, sfade, sfreeze;
     const scene_tri_t* sbuf = scene_present_buf(&scene_n, &sbg, &sfade, &sfreeze, NULL, NULL);
     openpete_tercache_frame_select(scene_present_stamp());
@@ -24805,6 +24917,7 @@ static bool freeze_src_verdict(void) {
                 (sfreeze & (1u << 31)) ? 1 : 0, src ? 0 : 1,
                 (int)scene_has_world(sbuf, scene_n), (int)scene_has_terrain(sbuf, scene_n),
                 openpete_tercache_frame_content());
+    ps_live_end(prev);
     return src;
 }
 
@@ -24883,7 +24996,7 @@ static void freeze_render_at(freeze_target_t *t, float wf, const openpete_render
         t->wf = wf;
         if (freeze_leg_probe())
             fprintf(stderr, "[freezeleg-render f=%u] stamp=%u kept=%d\n",
-                    s_scene_frame, scene_present_stamp(), s_ps_slot ? 1 : 0);
+                    scene_frame_pub(), scene_present_stamp(), s_ps_slot ? 1 : 0);
     }
     s_render_freeze_wf = prev_wf;
 }
@@ -25011,7 +25124,7 @@ static bool freeze_src_pending(void)
  * VRAM drain: the render's upload applies the journal up to the pinned
  * scene. Under OPENPETE_FREEZE_SRC_VERIFY the image is compared with the
  * on-the-spot render of the newest source present. */
-static void freeze_src_settle(void) {
+static void freeze_src_settle(void) OP_REQUIRES_SHARED(sim) {
     if (!s_nr.enabled || !s_nr.dev || !freeze_src_pending()) return;
     const float wf = s_frz.wf >= 1.0f ? s_frz.wf : 1.0f;
     openpete_render_res_plan_t bp;
@@ -25161,7 +25274,7 @@ static void hold_stall_for(unsigned frame)
         s_hold.stall_frame = (e && *e) ? atol(e) + 1 : -1;
     }
     if (s_hold.stall_frame <= 0 || frame != (unsigned)(s_hold.stall_frame - 1)) return;
-    for (int i = 0; i < 500 && (int32_t)(__atomic_load_n(&s_scene_frame, __ATOMIC_RELAXED) - frame) < 1; i++)
+    for (int i = 0; i < 500 && (int32_t)(scene_frame_pub() - frame) < 1; i++)
         SDL_Delay(1);
 }
 
@@ -25511,7 +25624,7 @@ static void hold_slot_release(scene_slot_t *sl)
  * @param r Fill red.
  * @param g Fill green.
  * @param b Fill blue. */
-static void hold_note_clear(int x, int y, int w, int h, int r, int g, int b)
+static void hold_note_clear(int x, int y, int w, int h, int r, int g, int b) OP_REQUIRES_SHARED(sim)
 {
     if (!hold_on() || w <= 0 || h <= 0) return;
     SDL_LockMutex(hold_mx());
@@ -25556,7 +25669,7 @@ static void fade_apply_fill(uint32_t fade, int rgb[3])
  * s_drawenv_clear). The area is the one held scenes are kept under, the
  * last PutDrawEnv's clip (s_geom_in). OPENPETE_HOLD_CENSUS logs each mark
  * whose isbg or colour differs from the current-buffer env, unfaded. */
-static void hold_note_put(void)
+static void hold_note_put(void) OP_REQUIRES_SHARED(sim)
 {
     const int own = s_drawenv_put_scene == s_scene_frame;
     const uint32_t c = s_drawenv_clear;
@@ -25582,7 +25695,7 @@ static void hold_note_put(void)
  * @param stamp The scene's stamp.
  * @param tc_miss Receives whether the scene's retained state held content and its copy missed.
  * @return 1 when the copy holds the whole scene. */
-static int hold_entry_fill(int k, uint32_t stamp, int *tc_miss)
+static int hold_entry_fill(int k, uint32_t stamp, int *tc_miss) OP_REQUIRES_SHARED(sim)
 {
     scene_slot_t *sl = &s_hold.e[k].sl;
     *tc_miss = 0;
@@ -25638,7 +25751,7 @@ static void hold_area_file(int k, const int g[8])
  * the content of the state its build wrote) replaces the pin
  * (hold_pin_backdrop); a source that finds no free entry leaves the older
  * pin and is counted. */
-static void hold_retain_canonical(void)
+static void hold_retain_canonical(void) OP_REQUIRES_SHARED(sim)
 {
     if (!s_nr.enabled || s_scene_replay) return;
     const uint32_t stamp = scene_live_stamp();
@@ -25678,7 +25791,7 @@ static void hold_retain_canonical(void)
                 s_scene_frame, stamp, s_scene_n, tcb > 0, g[4], g[5], g[6], g[7], g[0], g[1], k, (int)src);
 }
 
-void openpete_native_hold_note_vram(int x, int y, int w, int h, int src_x, int src_y)
+void openpete_native_hold_note_vram(int x, int y, int w, int h, int src_x, int src_y) OP_REQUIRES_SHARED(sim)
 {
     otag_area_note_vram(x, y, w, h, src_x, src_y);
     if (!hold_on() || w <= 0 || h <= 0) return;
@@ -25760,7 +25873,7 @@ static int hold_take_for_compose(int area, unsigned stamp)
     SDL_UnlockMutex(hold_mx());
     if (hold_census())
         fprintf(stderr, "[hold] empty f=%u scene=%u stamp=%u slot=%d area=%d -> %s\n",
-                s_scene_frame, s_ps_slot ? s_ps_slot->frame : s_scene_frame, stamp, s_ps_slot ? 1 : 0, area,
+                scene_frame_pub(), ps_frame(), stamp, s_ps_slot ? 1 : 0, area,
                 k_hold_branch[branch]);
     return k;
 }
@@ -25843,7 +25956,7 @@ static void hold_fill_census(uint32_t fill)
     const uint32_t now = shown >= 0 && s_hold.a[shown].writer == HOLD_W_CLEAR
                        ? s_hold.a[shown].clear : (own ? own : 0xFF000000u);
     if (now != fill)
-        fprintf(stderr, "[hold] fill-src f=%u fill=%08x area-now=%08x\n", s_scene_frame, fill, now);
+        fprintf(stderr, "[hold] fill-src f=%u fill=%08x area-now=%08x\n", scene_frame_pub(), fill, now);
 }
 
 /** @brief Point the compose at the held scene of the area an empty present shows.
@@ -25891,7 +26004,7 @@ static int hold_redirect_begin(const scene_slot_t **prev)
         s_pc_hold = HOLD_V_CLEAR; s_pc_clear = s_hold_clear_bg;
         if (hold_census())
             fprintf(stderr, "[hold] empty f=%u stamp=%u slot=%d area=clear -> fill %08x\n",
-                    s_scene_frame, v.stamp, s_ps_slot ? 1 : 0, s_hold_clear_bg);
+                    scene_frame_pub(), v.stamp, s_ps_slot ? 1 : 0, s_hold_clear_bg);
         return -1;
     }
     const int k = hold_take_for_compose(area, v.stamp);
@@ -25902,7 +26015,7 @@ static int hold_redirect_begin(const scene_slot_t **prev)
     s_hold_view.fade = held_fade_compose(kept_fade, v.fade);
     if (hold_census())
         fprintf(stderr, "[hold] fade f=%u kept=%08x present=%08x composed=%08x\n",
-                s_scene_frame, kept_fade, v.fade, s_hold_view.fade);
+                scene_frame_pub(), kept_fade, v.fade, s_hold_view.fade);
     s_ps_slot = &s_hold_view;
     openpete_mods_material_view_set(&s_hold.e[k].sl.matview);
     ps_apply_geometry();
@@ -25925,18 +26038,18 @@ static void hold_redirect_end(int k, const scene_slot_t *prev)
     SDL_UnlockMutex(hold_mx());
 }
 
-void openpete_native_render_snapshot_present_begin(void)
+void openpete_native_render_snapshot_present_begin(void) OP_REQUIRES(sim)
 {
     if (!s_nr.enabled || !freeze_src_pending()) return;
     if (!freeze_src_verdict()) freeze_src_settle();
 }
 
-void openpete_native_render_snapshot_settle(void)
+void openpete_native_render_snapshot_settle(void) OP_REQUIRES_SHARED(sim)
 {
     freeze_src_settle();
 }
 
-void openpete_native_render_snapshot_frozen(float cap_wf)
+void openpete_native_render_snapshot_frozen(float cap_wf) OP_REQUIRES(sim)
 {
     if (!s_nr.enabled || !s_nr.headless) return;
     ps_apply_geometry();
@@ -25949,7 +26062,12 @@ void openpete_native_render_snapshot_frozen(float cap_wf)
         return;
     }
     s_frz.wf = cap_wf;
-    if (freeze_src_verify()) freeze_render_into(&s_frz.vt, cap_wf, 1, NULL);
+    if (freeze_src_verify()) {
+        scene_live_t lv;
+        const scene_live_t *prev = ps_live_begin(&lv);
+        freeze_render_into(&s_frz.vt, cap_wf, 1, NULL);
+        ps_live_end(prev);
+    }
 }
 
 /** @brief Return the largest 24-bit packed depth over a block of an RGBA8 readback.
@@ -26030,9 +26148,9 @@ static void occl_reduce_verify(const uint8_t *grid)
             mode, pvw, pvh, w, h, OCCL_GW * OCCL_GH, miss, near);
 }
 
-void openpete_native_occl_service_headless(void)
+/** @brief Build and read back the headless occlusion grid of the scene a present composes (openpete_native_occl_service_headless). */
+static void occl_service_headless(void)
 {
-    if (!s_nr.enabled || !s_nr.headless || !s_nr.dev) return;
     ps_apply_geometry();
     if (s_nr.ref_w <= 0 || s_nr.ref_h <= 0) {
         int dh = s_nr.disp_h > 0 ? s_nr.disp_h : 240;
@@ -26076,9 +26194,9 @@ void openpete_native_occl_census_register(void (*fn)(void))
     if (fn && s_occl_census_n < OCCL_CENSUS_MAX) s_occl_census_fn[s_occl_census_n++] = fn;
 }
 
-void openpete_native_occl_census_present(void)
+/** @brief Run one census present: rebuild the grid of the composed scene, call the registered censuses, restore the grid state (openpete_native_occl_census_present). */
+static void occl_census_present(void)
 {
-    if (!s_occl_census_n || !s_nr.enabled || !s_nr.headless || !s_nr.dev) return;
     /* Everything the walks read from the grid state is restored afterwards,
      * so a census run draws the tiles a census-free run draws. */
     const occl_grid_t saved_pub = s_occl_pub, saved_dec = s_occl_dec;
@@ -26110,6 +26228,24 @@ void openpete_native_occl_census_present(void)
     s_occl_pub = saved_pub;
     SDL_UnlockMutex(mx);
     SDL_AddAtomicInt(&s_occl_pub_seq, 1);
+}
+
+void openpete_native_occl_service_headless(void) OP_REQUIRES(sim)
+{
+    if (!s_nr.enabled || !s_nr.headless || !s_nr.dev) return;
+    scene_live_t lv;
+    const scene_live_t *prev = ps_live_begin(&lv);
+    occl_service_headless();
+    ps_live_end(prev);
+}
+
+void openpete_native_occl_census_present(void) OP_REQUIRES(sim)
+{
+    if (!s_occl_census_n || !s_nr.enabled || !s_nr.headless || !s_nr.dev) return;
+    scene_live_t lv;
+    const scene_live_t *prev = ps_live_begin(&lv);
+    occl_census_present();
+    ps_live_end(prev);
 }
 
 /* Screenshot chrome (--screenshot-overlays). The live present draws the
@@ -26331,7 +26467,7 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf,
 
 /* The compose flags are set and cleared here so the impl's early returns
  * cannot leak them into the live present path. */
-int openpete_native_render_screenshot_all(const char *base)
+int openpete_native_render_screenshot_all(const char *base) OP_REQUIRES(sim)
 {
     /* A kept freeze-backdrop source renders before this compose touches the
      * device, which still holds that source present's state. */
@@ -26342,6 +26478,8 @@ int openpete_native_render_screenshot_all(const char *base)
     scene_faceid_debug(0);   /* a capture can compose the open scene */
     s_scene_shot_compose = 1;
     s_scene_shot_lag = s_nr.headless ? 1 : 0;
+    scene_live_t lv;
+    const scene_live_t *lprev = ps_live_begin(&lv);
     const scene_slot_t *hold_prev;
     const int hold_k = hold_redirect_begin(&hold_prev);
     /* Retained terrain rides the same scene selection: the state whose stamp
@@ -26368,12 +26506,13 @@ int openpete_native_render_screenshot_all(const char *base)
       } }
     int r = native_render_screenshot_all_impl(base, NULL, NULL, NULL);
     hold_redirect_end(hold_k, hold_prev);
+    ps_live_end(lprev);
     s_scene_shot_compose = 0;
     s_scene_shot_lag = 0;
     return r;
 }
 
-int openpete_native_render_capture_rgba(unsigned char **out, int *w, int *h)
+int openpete_native_render_capture_rgba(unsigned char **out, int *w, int *h) OP_REQUIRES(sim)
 {
     if (!out) return 1;
     *out = NULL;
@@ -26382,11 +26521,14 @@ int openpete_native_render_capture_rgba(unsigned char **out, int *w, int *h)
     scene_faceid_debug(0);   /* a capture can compose the open scene */
     s_scene_shot_compose = 1;
     s_scene_shot_lag = s_nr.headless ? 1 : 0;
+    scene_live_t lv;
+    const scene_live_t *lprev = ps_live_begin(&lv);
     const scene_slot_t *hold_prev;
     const int hold_k = hold_redirect_begin(&hold_prev);
     openpete_tercache_frame_select(scene_present_stamp());
     int r = native_render_screenshot_all_impl("ident-audit", out, w, h);
     hold_redirect_end(hold_k, hold_prev);
+    ps_live_end(lprev);
     s_scene_shot_compose = 0;
     s_scene_shot_lag = 0;
     if (r != 0 && *out) { free(*out); *out = NULL; }
@@ -26468,7 +26610,7 @@ static unsigned char *fbsnap_crop(const unsigned char *cap, int cw, int ch,
  * hold, and the buffer then still holds the last frame the game drew.
  * @param frame Stamp the copy names.
  * @return 1 to compose s_scene_game. */
-static int fbsnap_use_game_scene(unsigned frame) {
+static int fbsnap_use_game_scene(unsigned frame) OP_REQUIRES_SHARED(sim) {
     if (s_scene_game.n <= 0 || s_scene_game.frame > frame) return 0;
     if (s_scene_game.frame == frame) return 1;
     for (int d = 0; d <= scene_hist_depth_max(); d++) {
@@ -26534,12 +26676,15 @@ static void fbsnap_resolve_census(unsigned frame, int sx, int sy, int w, int h)
  * @return A malloc'd RGBA crop owned by the caller, or NULL when the
  *         compose or the crop fails. */
 static unsigned char *fbsnap_capture_crop(unsigned frame, int win, int sx, int sy, int w, int h,
-                                          int *out_w, int *out_h)
+                                          int *out_w, int *out_h) OP_REQUIRES(sim)
 {
     unsigned char *cap = NULL; int cw = 0, ch = 0;
     s_fbsnap_want_frame = frame;
     s_fbsnap_game_sel = fbsnap_use_game_scene(frame);
-    fbsnap_resolve_census(frame, sx, sy, w, h);
+    {   scene_live_t lv;
+        const scene_live_t *prev = ps_live_begin(&lv);
+        fbsnap_resolve_census(frame, sx, sy, w, h);
+        ps_live_end(prev); }
     {   rhi_rect ur = { 0, 0, 0, 0 };
         const uint16_t *under = win >= 0
             ? openpete_fb_snapshot_under(win, &ur.x, &ur.y, &ur.w, &ur.h) : NULL;
@@ -26629,7 +26774,7 @@ static int fbsnap_resolve_fault(void)
     return 1;
 }
 
-void openpete_native_render_snapshot_fb_window(void)
+void openpete_native_render_snapshot_fb_window(void) OP_REQUIRES(sim)
 {
     if (!s_nr.enabled) return;
     if (!openpete_fb_snapshot_pending()) return;

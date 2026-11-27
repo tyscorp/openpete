@@ -174,7 +174,7 @@ typedef struct {
  * the hull. OPENPETE_SHADOW_FOOTPRINT=0 clears the block's footprint term.
  * @param cpu Unused.
  * @param f The fan. */
-void   shadow_fan_feed(CPUState* cpu, const shadow_fan* f) OP_REQUIRES_SHARED(sim);
+void   shadow_fan_feed(CPUState* cpu, const shadow_fan* f) OP_REQUIRES(sim);
 /** @brief The caster height a player feeder stores beside its anchor (shadow_fan.caster_up).
  *
  * Reads the z word of the player position in the player state block

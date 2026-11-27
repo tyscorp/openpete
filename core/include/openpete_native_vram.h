@@ -102,7 +102,7 @@ void openpete_vram_install_ops(void);
  * @param w Width in texels.
  * @param h Height in rows.
  * @param src Source texels, @p w per row. */
-void openpete_vram_load (int x, int y, int w, int h, const uint16_t* src);
+void openpete_vram_load (int x, int y, int w, int h, const uint16_t* src) OP_REQUIRES_SHARED(sim);
 /** @brief Copy a rect within the VRAM model (the PSYQ MoveImage op).
  *
  * Replicates PsyCross's GR_CopyVRAM(NULL, sx, sy, w, h, dx, dy): the source
@@ -136,7 +136,7 @@ void openpete_vram_move (int src_x, int src_y, int w, int h, int dst_x, int dst_
  * @param g Green channel.
  * @param b Blue channel. */
 void openpete_vram_clear(int x, int y, int w, int h,
-                         uint8_t r, uint8_t g, uint8_t b);
+                         uint8_t r, uint8_t g, uint8_t b) OP_REQUIRES_SHARED(sim);
 
 typedef struct { int x, y, w, h; } openpete_vram_op_rect;
 /** @brief Copy out and reset the log of rects the VRAM ops wrote (verify census).

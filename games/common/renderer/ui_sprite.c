@@ -988,7 +988,7 @@ static int ui_run_fit(mod_fvec* v, size_t elem, unsigned init, const char* name,
  * @param spare Slots kept free after the addresses, for the caller to append to.
  * @param n Receives the address count.
  * @return The run's base, or NULL when it cannot grow; *n is then 0. */
-static uint32_t* scene_2d_prims(mod_fvec* v, int spare, int* n) {
+static uint32_t* scene_2d_prims(mod_fvec* v, int spare, int* n) OP_REQUIRES_SHARED(sim) {
     unsigned want = UI_PRIMS_INIT;
     for (;;) {
         if (!ui_run_fit(v, sizeof(uint32_t), UI_PRIMS_INIT, "ui.prims", UI_PRIMS_INIT, want)) {
@@ -1697,7 +1697,7 @@ static int at_mid_table_wait(void) {
  * moved out of the scene (openpete_native_scene_defer_2d) and re-enters the
  * next scene the game opens, or the live scene at the table's stitch, with
  * the rest of its table. Reads the link map build_link_rank_map left. */
-static void defer_open_period_2d(void) {
+static void defer_open_period_2d(void) OP_REQUIRES(sim) {
     if (!rank_by_link_on()) return;
     static int cen = -1;
     ENV_FLAG_LATCH(cen, "OPENPETE_UI_DEFER_CENSUS");
@@ -1721,7 +1721,7 @@ static void defer_open_period_2d(void) {
  * @param extra An address ranked with them (the fade quad), or 0 for none.
  * @param kn_out Receives the count of addresses.
  * @return The sorted addresses, or NULL when the run cannot grow. */
-static uint32_t* collect_scene_2d_sorted(mod_fvec* v, uint32_t extra, int* kn_out) {
+static uint32_t* collect_scene_2d_sorted(mod_fvec* v, uint32_t extra, int* kn_out) OP_REQUIRES_SHARED(sim) {
     int kn;
     uint32_t* known = scene_2d_prims(v, 1, &kn);
     *kn_out = 0;
@@ -1741,7 +1741,7 @@ static uint32_t* collect_scene_2d_sorted(mod_fvec* v, uint32_t extra, int* kn_ou
  * releases no batch, so rank_scene_2d does not run; the link map is built
  * over the scene's 2D and the under-player marks are set from it
  * (prim_under_player). Inert on a game ranked by the DrawOTag walk. */
-static void mark_unranked_under_player(void) {
+static void mark_unranked_under_player(void) OP_REQUIRES_SHARED(sim) {
     if (!under_player_on()) return;
     static mod_fvec known_v;
     int kn;
@@ -1767,7 +1767,7 @@ static void mark_unranked_under_player(void) {
  * fade's rank and the count of primitives after it. OPENPETE_OT_RING_PROBE prints
  * each unranked primitive, OPENPETE_UISPRITE_TRACE the map size and hits.
  * @param cpu The guest CPU state. */
-static void rank_scene_2d(CPUState* cpu) OP_REQUIRES_SHARED(sim) {
+static void rank_scene_2d(CPUState* cpu) OP_REQUIRES(sim) {
     s_walk_hits = 0;
     const uint32_t fade_prim = openpete_native_scene_fade_prim();
     { static mod_fvec known_v;
@@ -2322,7 +2322,7 @@ static unsigned s_freeze_retain_n = 0;
 
 unsigned ui_freeze_retain_count(void) { return s_freeze_retain_n; }
 
-void ui_freeze_retain_commit(void) OP_REQUIRES_SHARED(sim) {
+void ui_freeze_retain_commit(void) OP_REQUIRES(sim) {
     if (!ui_game.freeze_retained) return;
     uint8_t env[4];
     if (!cyclorama_native_present_env(env)) return;   /* no valid DB* yet */

@@ -218,7 +218,7 @@ unsigned ui_sprite_sprt_count(void);
  * clear-colour commit that reads the same DRAWENV. A no-op for a game
  * without freeze_retained or before the draw-buffer pointer is valid.
  * Writes no PSX RAM. */
-void ui_freeze_retain_commit(void) OP_REQUIRES_SHARED(sim);
+void ui_freeze_retain_commit(void) OP_REQUIRES(sim);
 /** @brief Returns the presents this run on which ui_freeze_retain_commit armed the backdrop.
  *
  * The engagement counter a capture reads to tell "retention was off" from
