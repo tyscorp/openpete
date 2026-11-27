@@ -2886,17 +2886,36 @@ static void otag_area_note_vram(int x, int y, int w, int h, int src_x, int src_y
     }
 }
 
-int openpete_native_shown_area_content(int disp_x, int disp_y, int disp_w, int disp_h) {
+/** @brief Return the first draw-area record whose clip rect lies inside a display rect.
+ *
+ * @param disp_x Display rect left, VRAM texels.
+ * @param disp_y Display rect top.
+ * @param disp_w Display rect width.
+ * @param disp_h Display rect height.
+ * @return The record index, or -1 when the rect is empty or holds none. */
+static int otag_area_shown(int disp_x, int disp_y, int disp_w, int disp_h) {
     if (disp_w <= 0 || disp_h <= 0) return -1;
     for (int i = 0; i < OTAG_AREA_MAX; i++) {
         const int ax = s_otag_area[i].x, ay = s_otag_area[i].y;
         const int aw = s_otag_area[i].w, ah = s_otag_area[i].h;
-        if (aw <= 0 || ax < disp_x || ay < disp_y || ax + aw > disp_x + disp_w || ay + ah > disp_y + disp_h)
-            continue;
-        return s_otag_area[i].kind == OTAG_AREA_CONTENT ? 1
-             : s_otag_area[i].kind == OTAG_AREA_CLEARED ? 0 : -1;
+        if (aw > 0 && ax >= disp_x && ay >= disp_y && ax + aw <= disp_x + disp_w && ay + ah <= disp_y + disp_h)
+            return i;
     }
     return -1;
+}
+
+int openpete_native_shown_area_content(int disp_x, int disp_y, int disp_w, int disp_h) {
+    const int i = otag_area_shown(disp_x, disp_y, disp_w, disp_h);
+    if (i < 0) return -1;
+    return s_otag_area[i].kind == OTAG_AREA_CONTENT ? 1
+         : s_otag_area[i].kind == OTAG_AREA_CLEARED ? 0 : -1;
+}
+
+void openpete_native_note_present_shown_area(int disp_x, int disp_y, int disp_w, int disp_h) {
+    const int i = otag_area_shown(disp_x, disp_y, disp_w, disp_h);
+    if (i < 0) { openpete_native_note_present_draw_area(0, 0, 0, 0, 1); return; }
+    openpete_native_note_present_draw_area(s_otag_area[i].x, s_otag_area[i].y,
+                                           s_otag_area[i].w, s_otag_area[i].h, 0);
 }
 
 void openpete_native_note_draw_otag(void) OP_REQUIRES_SHARED(sim) {

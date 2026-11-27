@@ -2655,6 +2655,18 @@ void openpete_native_note_put_draw_env(int isbg, int r, int g, int b) OP_REQUIRE
  * @param clip_h Clip rect height.
  * @param isbg The DRAWENV auto-clear flag. */
 void openpete_native_note_present_draw_area(int clip_x, int clip_y, int clip_w, int clip_h, int isbg);
+/** @brief Record the draw area a display rect shows as the area the scene being presented shows, uncleared, for the next canonical capture.
+ *
+ * Called instead of openpete_native_note_present_draw_area for a present
+ * that draws no table and keeps the displayed image (a kept repeat,
+ * cyclorama_native_repeat_resolve): the capture then reads the fade sum of
+ * the area on screen. The area is the first recorded draw clip inside the
+ * rect (openpete_native_shown_area_content); with none, no area is known.
+ * @param disp_x Display rect left, VRAM texels.
+ * @param disp_y Display rect top.
+ * @param disp_w Display rect width.
+ * @param disp_h Display rect height. */
+void openpete_native_note_present_shown_area(int disp_x, int disp_y, int disp_w, int disp_h);
 /** @brief Note a DrawOTag: when the game fed primitives since the last canonical capture, that content's env is the last PutDrawEnv's.
  *
  * Called by the DrawOTag thunk. A game that submits its OT before the VSync

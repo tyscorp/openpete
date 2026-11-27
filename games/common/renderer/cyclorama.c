@@ -995,6 +995,10 @@ int cyclorama_native_extract_faded(CPUState* cpu, cyclorama_native_tri* out, int
  * next one. */
 static uint8_t s_site_env[4] OP_GUARDED_BY(sim);     /* thread-roles: resolved by the commit on sim */
 static int     s_site_env_valid OP_GUARDED_BY(sim);  /* thread-roles: resolved by the commit on sim */
+/* A kept repeat present (cyclorama_native_repeat_resolve) shows the draw
+ * area inside this DISPENV rect, uncleared; valid while s_site_kept is 1. */
+static int     s_site_kept_disp[4] OP_GUARDED_BY(sim);  /* thread-roles: resolved by the commit on sim */
+static int     s_site_kept OP_GUARDED_BY(sim);          /* thread-roles: resolved by the commit on sim */
 /* The env the last canonical present cleared under (isbg, r0, g0, b0), kept
  * for a hold row; valid after the first commit that named one. */
 static uint8_t s_presented_env[4] OP_GUARDED_BY(sim);    /* thread-roles: latched by the commit on sim */
@@ -1036,10 +1040,10 @@ static int cur_db_env(uint8_t env[4]) {
  * The DISPENV (game_layout.db.dispenv; its display RECT at +0x00) is the
  * one the game puts with the next table; it names the area the last table
  * was drawn into (openpete_native_shown_area_content).
- * @param disp_y Receives the display rect top, or -1 when no buffer is named.
+ * @param disp Receives the display rect x, y, w, h; x and y -1 and w, h 0 when no buffer is named.
  * @return 1 content, 0 the fill of an empty table, -1 unknown. */
-static int cur_db_shown_content(int *disp_y) {
-    *disp_y = -1;
+static int cur_db_shown_content(int disp[4]) {
+    disp[0] = disp[1] = -1; disp[2] = disp[3] = 0;
     if (!cur_db_drawenv()) return -1;   /* no valid g_CurDB */
     const uint8_t* curp = (const uint8_t*)openpete_subtick_host_span(game_layout.db.cur_ptr, 4u);
     uint32_t curdb;
@@ -1048,7 +1052,7 @@ static int cur_db_shown_content(int *disp_y) {
     if (!de) return -1;
     int16_t r[4];
     memcpy(r, de, sizeof r);
-    *disp_y = r[1];
+    for (int i = 0; i < 4; i++) disp[i] = r[i];
     return openpete_native_shown_area_content(r[0], r[1], r[2], r[3]);
 }
 
@@ -1083,6 +1087,7 @@ static int repeat_site_mode(void) {
 
 void cyclorama_native_repeat_resolve(void) OP_REQUIRES(sim) {
     s_site_env_valid = 0;
+    s_site_kept = 0;
     if (!openpete_native_scene_canon_repeat()) return;
     uint8_t env[4];
     if (!cur_db_env(env)) return;              /* nothing names the env: hold */
@@ -1095,8 +1100,9 @@ void cyclorama_native_repeat_resolve(void) OP_REQUIRES(sim) {
      * present (ui_freeze_retain_commit) without composing the scene again
      * over VRAM the game may have reloaded since. */
     extern unsigned openpete_frame;
-    int disp_y = -1;
-    const int shown = cur_db_shown_content(&disp_y);
+    int disp[4];
+    const int shown = cur_db_shown_content(disp);
+    const int disp_y = disp[1];
     const int kept = mode == REPEAT_SITE_NONE && env[0] && shown == 1 && repeat_shown_on();
     if (repeat_census_on())
         fprintf(stderr, "[repeat] f=%u key=%u ra=%08x mode=%d isbg=%d disp_y=%d shown=%d -> %s\n",
@@ -1115,6 +1121,8 @@ void cyclorama_native_repeat_resolve(void) OP_REQUIRES(sim) {
         env[0] = 0;
         memcpy(s_site_env, env, sizeof s_site_env);
         s_site_env_valid = 1;
+        memcpy(s_site_kept_disp, disp, sizeof s_site_kept_disp);
+        s_site_kept = 1;
         openpete_native_scene_open_empty();
         return;
     }
@@ -1177,7 +1185,12 @@ static void cyc_env_clear_sync(void) OP_REQUIRES(sim) {
     /* The area the presented scene's OT draws into: the held-fade sum the
      * capture presents is that area's, not the PutDrawEnv latch's. */
     const uint8_t* de = cur_db_drawenv();
-    if (de) {
+    if (s_site_kept) {
+        /* A kept repeat draws no table: the present shows the displayed area
+         * as it stands, so its fade is that area's sum, not the next one's. */
+        openpete_native_note_present_shown_area(s_site_kept_disp[0], s_site_kept_disp[1],
+                                                s_site_kept_disp[2], s_site_kept_disp[3]);
+    } else if (de) {
         int16_t clip[4];
         memcpy(clip, de, sizeof clip);
         openpete_native_note_present_draw_area(clip[0], clip[1], clip[2], clip[3], de[0x18]);
