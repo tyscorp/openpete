@@ -196,7 +196,9 @@ open-options|1473|100|freeze|1650,1773,1815,1873
 open-options@terrain|1473|100|freeze|1815|--render-paths terrain,ui
 # open-atlas 1873: the guest draws Sparx over the atlas page beside the
 # highlighted world; native draws the page with no Sparx. Blessed pre-fix.
-open-atlas|1473|100|freeze|1773,1873
+# open-atlas 1697 and 1698: one repeat present (no table drawn) inside the
+# game's held-frame fade to black before the atlas loads; the PSX shows black.
+open-atlas|1473|100|freeze|1697,1698,1773,1873
 
 # open-atlas-turn-pages holds the atlas page-turn animation: the turning
 # sheet is a skewed per-vertex-shaded quad (POLY_GT4) covering up to half the
