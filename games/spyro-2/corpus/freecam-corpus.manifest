@@ -327,3 +327,7 @@ winter_tundra@sv-filled | pos=(84101, 63118, 37633) yaw=464 pitch=207 | | --sect
 # Hole: the sky patch behind the wall.
 metropolis@sv-game | pos=(83022, 120517, 31700) yaw=-968 pitch=160 | | --sector-visibility game
 metropolis@sv-filled | pos=(83022, 120517, 31700) yaw=-968 pitch=160 | | --sector-visibility filled
+# Hole: the underside of the rock arch over the water is missing.
+ocean_speedway | pos=(170430, 102142, 29299) yaw=1790 pitch=36
+# Hole: the tower faces at the right edge are missing.
+metro_speedway | pos=(84554, 109149, 16797) yaw=746 pitch=207
