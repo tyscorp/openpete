@@ -9366,16 +9366,19 @@ static void vram_journal_pop(void)
     free(e->pix); e->pix = NULL; e->pix_bytes = 0;
     s_vj_head = (s_vj_head + 1) % VRAM_JOURNAL; s_vj_n--;
 }
+static void freeze_bd_vram_keep_owed(void);
 /** @brief Record one VRAM journal entry's upload into the current frame's command buffer and write it into the composed VRAM image.
  *
  * A full entry uploads its whole-VRAM copy, or the mirror when it holds
  * none; any other entry uploads its packed rect texels, 4-byte aligned per
  * rect as sync_vram_texture_locked packed them. Each entry steps the
- * composed image's version (openpete_vram_composed_bump). The caller holds
- * the VRAM mutex.
+ * composed image's version (openpete_vram_composed_bump). The image is
+ * first kept for the live freeze backdrop when it owes a copy
+ * (freeze_bd_vram_keep_owed). The caller holds the VRAM mutex.
  * @param e Journal entry. */
 static void vram_journal_apply(const vram_jentry_t *e)
 {
+    freeze_bd_vram_keep_owed();
     uint16_t *comp = openpete_vram_composed();
     if (e->full) {   /* the mirror covers the PSX rows only, not the auxiliary bank */
         const rhi_rect all = { 0, 0, NR_VRAM_W, NR_VRAM_H };
@@ -9657,6 +9660,45 @@ static void upload_synced_textures(void)
         s_vram_aux_pending = false;
     }
     SDL_UnlockMutex(vram_mx());
+}
+
+/** @brief Make a kept VRAM copy the texels the frame being recorded samples, keeping the composed image it displaces.
+ *
+ * Writes the copy into the composed VRAM image and records its upload into
+ * the frame; vram_kept_end, recorded after the frame's draws, restores
+ * both. Call after upload_synced_textures. A failed allocation changes
+ * nothing.
+ * @param vram The kept copy, the mirror layout (NR_VRAM_W by NR_VRAM_H).
+ * @return The displaced composed image for vram_kept_end, or NULL when the copy is not in place. */
+static uint16_t *vram_kept_begin(const uint16_t *vram)
+{
+    const size_t bytes = (size_t)NR_VRAM_W * NR_VRAM_H * sizeof *vram;
+    const rhi_rect all = { 0, 0, NR_VRAM_W, NR_VRAM_H };
+    uint16_t *displaced = (uint16_t *)malloc(bytes);
+    if (!displaced) return NULL;
+    SDL_LockMutex(vram_mx());
+    uint16_t *comp = openpete_vram_composed();
+    memcpy(displaced, comp, bytes);
+    memcpy(comp, vram, bytes);
+    rhi_update_vram_rects(s_nr.dev, s_nr.vram_tex, comp, &all, 1);
+    openpete_vram_composed_bump();
+    SDL_UnlockMutex(vram_mx());
+    return displaced;
+}
+
+/** @brief Restore the composed VRAM image vram_kept_begin displaced, record its upload into the frame, and free it.
+ *
+ * @param displaced vram_kept_begin's return. */
+static void vram_kept_end(uint16_t *displaced)
+{
+    const rhi_rect all = { 0, 0, NR_VRAM_W, NR_VRAM_H };
+    SDL_LockMutex(vram_mx());
+    uint16_t *comp = openpete_vram_composed();
+    memcpy(comp, displaced, (size_t)NR_VRAM_W * NR_VRAM_H * sizeof *comp);
+    rhi_update_vram_rects(s_nr.dev, s_nr.vram_tex, comp, &all, 1);
+    openpete_vram_composed_bump();
+    SDL_UnlockMutex(vram_mx());
+    free(displaced);
 }
 
 void openpete_native_vram_aux_set(const uint8_t* image, size_t bytes)
@@ -21543,7 +21585,29 @@ static struct {
     unsigned            pins, drops, disp, fallback;
     freeze_target_t     ref;        /* OPENPETE_FREEZE_BD_DUMP: the last world present's scene */
     uint32_t            ref_id;     /* scene id of the slot ref holds, 0 for the live scene */
+    uint16_t           *vram;       /* the composed VRAM the kept slot was drawn against */
+    int                 vram_owed;  /* the composed image still is it; copy before the next write */
+    int                 vram_ok;    /* vram holds it */
 } s_bdl;
+
+/** @brief Copy the composed VRAM image for the kept freeze-backdrop slot before its first overwrite since the keep.
+ *
+ * freeze_bd_note_present marks a copy owed when it keeps a slot: the
+ * composed image is then the VRAM that slot was drawn against, and the
+ * journal entries of later scenes overwrite it before the backdrop render
+ * reads it. Called by vram_journal_apply under the VRAM mutex, on the
+ * presenting thread. A failed allocation leaves no copy, and the render
+ * samples the device VRAM. */
+static void freeze_bd_vram_keep_owed(void)
+{
+    if (!s_bdl.vram_owed) return;
+    s_bdl.vram_owed = 0;
+    const size_t bytes = (size_t)NR_VRAM_W * NR_VRAM_H * sizeof *s_bdl.vram;
+    if (!s_bdl.vram) s_bdl.vram = (uint16_t *)malloc(bytes);
+    if (!s_bdl.vram) return;
+    memcpy(s_bdl.vram, openpete_vram_composed(), bytes);
+    s_bdl.vram_ok = 1;
+}
 
 /** @brief Record whether the present being composed drew a world scene, and from which compose source.
  *
@@ -24951,10 +25015,15 @@ static int freeze_leg_probe(void) {
  *    the scene the player last saw: the ring slot of the last world present
  *    displayed, kept from retiring (freeze_bd_note_present), a sub-tick
  *    re-extract under eager presentation; the canonical pin stands in when
- *    the last world present had no ring slot of its own. The render's
- *    upload applies the VRAM journal up to the source's scene id, so it sees
- *    the texels the scene was drawn against unless an earlier present
- *    uploaded past that id (counted as vram_ahead);
+ *    the last world present had no ring slot of its own. Later presents
+ *    upload VRAM past the source's scene (the pause entry rewrites texture
+ *    pages), so the render samples a copy of the VRAM the source was drawn
+ *    against: for a kept slot the composed image as its present left it,
+ *    copied before the next journal write (freeze_bd_vram_keep_owed); for
+ *    the pin the mirror at the pin (hold_entry_keep_vram), since a run that
+ *    presents inline tags every journal entry with one scene id. Without a
+ *    copy the render's upload applies the journal up to the source's scene
+ *    id, and an earlier upload past that id is counted as vram_ahead;
  *  - headless, into shot_frozen at the capture's widen (freeze_src_settle),
  *    always the canonical pin:
  *    at the next present that is not a source, before its device services
@@ -24975,6 +25044,7 @@ static unsigned hold_bd_gen(void);
 static int hold_bd_take(unsigned *gen);
 static void hold_bd_give(int k);
 static const scene_slot_t *hold_bd_slot(int k);
+static const uint16_t *hold_bd_vram(int k);
 static void freeze_bd_note_render(int drew, int ahead);
 
 /** @brief Return whether OPENPETE_FREEZE_SRC_VERIFY is set to a non-zero value.
@@ -25052,9 +25122,11 @@ static int freeze_target_fit(freeze_target_t *t, float cap_wf, int w, int h)
  * @param sync Nonzero to drain guest VRAM writes into the device texture first.
  * @param nearcut When not NULL, the frame also records the retained cache's
  *        near-cut census (census_nearcut_record) and this receives whether
- *        it armed one. */
+ *        it armed one.
+ * @param vram When not NULL, the VRAM the scene was drawn against, sampled
+ *        in place of the device VRAM for this render (vram_kept_begin). */
 static void freeze_render_at(freeze_target_t *t, float wf, const openpete_render_res_plan_t *base,
-                             int sync, int *nearcut)
+                             int sync, int *nearcut, const uint16_t *vram)
 {
     if (base) wf = base->wf_render;
     if (!freeze_target_fit(t, wf, base ? base->bw : 0, base ? base->bh : 0)) return;
@@ -25064,6 +25136,11 @@ static void freeze_render_at(freeze_target_t *t, float wf, const openpete_render
     ensure_native_rtt(true);
     ensure_opaque_depth(od_serve(base));
     ensure_terrain_key_targets();
+    /* The key pass below draws at the target's extent, which may exceed the
+     * window's (a live backdrop at the reference width times the widen):
+     * images smaller than it clamp the pass and leave the terrain draw
+     * reading keys of another view past the clamp. */
+    if (openpete_native_key_resolve_on()) ensure_terrain_key_depth(t->w, t->h);
     uint32_t bg = ps_drawenv_clear() ? ps_drawenv_clear() : sbg;
     const float br  = (float)((bg >>  0) & 0xFF) / 255.0f;
     const float bgc = (float)((bg >>  8) & 0xFF) / 255.0f;
@@ -25072,6 +25149,7 @@ static void freeze_render_at(freeze_target_t *t, float wf, const openpete_render
     s_render_freeze_wf = wf;
     if (rhi_begin_frame_offline(s_nr.dev)) {
         upload_synced_textures();
+        uint16_t *displaced = vram ? vram_kept_begin(vram) : NULL;
         hd_flush_pending();
         openpete_native_hdfold_flush();
         native_depth_prepass(od_serve(base));
@@ -25081,6 +25159,7 @@ static void freeze_render_at(freeze_target_t *t, float wf, const openpete_render
         rhi_begin_render_target(s_nr.dev, t->tex, br, bgc, bb, 1.0f);
         draw_scene_with_matview(true);
         rhi_end_render_target(s_nr.dev, t->tex);
+        if (displaced) vram_kept_end(displaced);
         rhi_end_frame(s_nr.dev);
         t->valid = true;
         t->wf = wf;
@@ -25104,7 +25183,7 @@ static void freeze_render_into(freeze_target_t *t, float cap_wf, int sync, int *
 {
     openpete_render_res_plan_t bp;
     const int base = rr_capture_plan(cap_wf, &bp);
-    freeze_render_at(t, cap_wf, base ? &bp : NULL, sync, nearcut);
+    freeze_render_at(t, cap_wf, base ? &bp : NULL, sync, nearcut, NULL);
 }
 
 /** @brief Read a render target back into a malloc'd RGBA buffer.
@@ -25160,18 +25239,21 @@ typedef struct { unsigned gen; int ahead; int nearcut; } freeze_bd_render_t;
  * @param wf The widen.
  * @param base The base the target holds, or NULL.
  * @param sl The kept slot.
+ * @param vram The VRAM the slot's scene was drawn against (hold_entry_keep_vram), or NULL to
+ *        sample the device VRAM the journal brought up to the slot's scene id.
  * @param tally Nonzero to take the headless backdrop tally.
  * @param out Receives the VRAM-ahead verdict and the near-cut arm. */
 static void freeze_bd_render_slot(freeze_target_t *t, float wf, const openpete_render_res_plan_t *base,
-                                  const scene_slot_t *sl, int tally, freeze_bd_render_t *out)
+                                  const scene_slot_t *sl, const uint16_t *vram, int tally,
+                                  freeze_bd_render_t *out)
 {
     const scene_slot_t *prev = s_ps_slot;
     s_ps_slot = sl;
     openpete_mods_material_view_set(&sl->matview);
     ps_apply_geometry();
     openpete_tercache_frame_select(sl->stamp);
-    out->ahead = s_nr.vj_applied_set && (int32_t)(s_nr.vj_applied - sl->scene_id) > 0;
-    freeze_render_at(t, wf, base, 0, &out->nearcut);
+    out->ahead = !vram && s_nr.vj_applied_set && (int32_t)(s_nr.vj_applied - sl->scene_id) > 0;
+    freeze_render_at(t, wf, base, 0, &out->nearcut, vram);
     if (tally) census_backdrop_settle(out->nearcut, t->wf);
     freeze_bd_dump(t, s_nr.headless ? "shot" : "live", sl->frame);
     s_ps_slot = prev;
@@ -25182,7 +25264,8 @@ static void freeze_bd_render_slot(freeze_target_t *t, float wf, const openpete_r
 /** @brief Render the pinned freeze-backdrop source, the newest canonical source scene, into a target.
  *
  * The pinned entry is marked busy for the render, so no retain refills it
- * (freeze_bd_render_slot).
+ * (freeze_bd_render_slot). The render samples the VRAM kept with the entry
+ * at its pin, when it holds one.
  * @param t The target record.
  * @param wf The widen.
  * @param base The base the target holds, or NULL.
@@ -25195,7 +25278,7 @@ static int freeze_bd_render_pin(freeze_target_t *t, float wf, const openpete_ren
     *out = (freeze_bd_render_t){ 0, 0, 0 };
     const int k = hold_bd_take(&out->gen);
     if (k < 0) return 0;
-    freeze_bd_render_slot(t, wf, base, hold_bd_slot(k), tally, out);
+    freeze_bd_render_slot(t, wf, base, hold_bd_slot(k), hold_bd_vram(k), tally, out);
     hold_bd_give(k);
     return 1;
 }
@@ -25302,6 +25385,8 @@ typedef struct {
     scene_slot_t sl;       /* the kept scene and its compose inputs */
     int          refs;     /* areas naming the entry */
     int          busy;     /* composes reading it */
+    uint16_t    *vram;     /* the VRAM mirror at a freeze-backdrop pin (hold_entry_keep_vram) */
+    int          vram_ok;  /* vram holds this entry's scene */
 } hold_entry_t;
 static struct {
     hold_area_t  a[HOLD_AREAS];
@@ -25530,7 +25615,11 @@ static void freeze_bd_edge(void)
     int drew = 1;
     if (ds >= 0) {
         const scene_slot_t *sl = &s_ring[ds];
-        freeze_bd_render_slot(&s_nr.frozen_tex, wf, base, sl, 0, &r);
+        /* The composed VRAM still is the slot's while no write followed the keep. */
+        SDL_LockMutex(vram_mx());
+        const uint16_t *vram = s_bdl.vram_ok ? s_bdl.vram : NULL;
+        SDL_UnlockMutex(vram_mx());
+        freeze_bd_render_slot(&s_nr.frozen_tex, wf, base, sl, vram, 0, &r);
         /* The render's GPU reads retire with the frame after it. */
         SDL_LockMutex(ring_mx());
         s_ring[ds].presented_serial = rhi_frame_serial(s_nr.dev) + 1u;
@@ -25562,6 +25651,10 @@ static void freeze_bd_note_present(int slot, int did)
     const int was = s_ring_bd_keep;
     s_ring_bd_keep = keep;
     SDL_UnlockMutex(ring_mx());
+    SDL_LockMutex(vram_mx());
+    s_bdl.vram_owed = keep >= 0;
+    s_bdl.vram_ok = 0;
+    SDL_UnlockMutex(vram_mx());
     if (keep < 0 && was < 0) return;
     s_bdl.gen++;
     if (keep >= 0) s_bdl.pins++;
@@ -25572,6 +25665,11 @@ static void freeze_bd_note_present(int slot, int did)
  * @param k The entry.
  * @return The slot. */
 static const scene_slot_t *hold_bd_slot(int k) { return &s_hold.e[k].sl; }
+
+/** @brief Return the VRAM a pool entry kept at its pin (hold_entry_keep_vram).
+ * @param k The entry.
+ * @return The copy, or NULL when the entry holds none for its scene. */
+static const uint16_t *hold_bd_vram(int k) { return s_hold.e[k].vram_ok ? s_hold.e[k].vram : NULL; }
 
 /** @brief Count one backdrop render request: rendered, or lost when nothing was pinned.
  * @param drew Nonzero when a pinned scene was rendered.
@@ -25801,12 +25899,34 @@ static int hold_entry_fill(int k, uint32_t stamp, int *tc_miss) OP_REQUIRES_SHAR
     snap_copy(&sl->snap, &s_snap_live);
     sl->scene_id = s_scene_id_next;
     sl->kind = OP_PACE_CANONICAL; sl->alpha = 0.0; sl->paired = 0; sl->target_ns = 0;
+    s_hold.e[k].vram_ok = 0;
     unsigned m0 = 0, m1 = 0;
     openpete_tercache_hold_counts(NULL, &m0, NULL);
     openpete_tercache_hold_take(k, stamp);
     openpete_tercache_hold_counts(NULL, &m1, NULL);
     *tc_miss = m1 != m0 && openpete_tercache_build_content(stamp) > 0;
     return 1;
+}
+
+/** @brief Keep the VRAM the pool entry's scene is drawn against: the mirror, with the dirty rects drained into it.
+ *
+ * The VRAM journal orders its uploads by ring scene id, which a run that
+ * presents inline (no ring slot per tick) never advances, so a later
+ * render of the entry would sample texels the game wrote after the scene.
+ * The entry is filled unlocked (hold_entry_fill); a failed allocation
+ * leaves it without a copy, and its render then samples the device VRAM.
+ * @param k The entry. */
+static void hold_entry_keep_vram(int k) OP_REQUIRES_SHARED(sim)
+{
+    hold_entry_t *e = &s_hold.e[k];
+    const size_t bytes = (size_t)NR_VRAM_W * NR_VRAM_H * sizeof *s_nr.vram_mirror;
+    if (!e->vram) e->vram = (uint16_t *)malloc(bytes);
+    if (!e->vram || !s_nr.vram_mirror) return;
+    SDL_LockMutex(vram_mx());
+    sync_vram_texture_locked();
+    memcpy(e->vram, s_nr.vram_mirror, bytes);
+    SDL_UnlockMutex(vram_mx());
+    e->vram_ok = 1;
 }
 
 /** @brief File a filled pool entry under a draw area, ageing every other area that holds a scene.
@@ -25872,6 +25992,7 @@ static void hold_retain_canonical(void) OP_REQUIRES_SHARED(sim)
         SDL_UnlockMutex(hold_mx());
         return;
     }
+    if (src) hold_entry_keep_vram(k);
     SDL_LockMutex(hold_mx());
     if (file) hold_area_file(k, g);
     if (src) { hold_pin_backdrop(k); s_hold.bd_tc_miss += tc_miss ? 1u : 0u; }

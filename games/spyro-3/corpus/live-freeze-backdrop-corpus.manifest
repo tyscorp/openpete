@@ -1,0 +1,20 @@
+# Live freeze-backdrop corpus - tests/harness/check_live_freeze_backdrop.sh
+# (row format and launch-token convention as in
+# games/spyro-1/corpus/live-freeze-backdrop-corpus.manifest).
+#
+#   <bk2> | <frame-limit> | <dump VBL> | <pin VBL> | <launch tokens>
+#
+# The dump and pin columns are extract VBLs, which count from the level
+# start (--skip-to-level) and trail the movie's VBL by 574; the frame limit
+# is a movie VBL.
+#
+# open-options: the pause menu opens at movie VBL 1738 (the save prompt)
+# over the scene extracted at 1162 (movie VBL 1736), and the options window
+# from movie VBL 1745; 1190 is movie VBL 1764. Every live leg renders its
+# backdrop source on the first present of the pause, after the pause entry
+# has rewritten VRAM the source samples; the inline leg's source is that
+# pin, which the headless leg renders too. The window is 640x432, the
+# headless reference size, so the inline and headless renders share an
+# extent; a headless leg at 640x448 differs from the live render by 8
+# pixels at the player.
+open-options.bk2 | 1790 | 1190 | 1162 | --window 640x432 --legs all --aspect 4:3 --no-card --lod original

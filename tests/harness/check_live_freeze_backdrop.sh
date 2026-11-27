@@ -25,29 +25,40 @@
 # the render as bd-live-f<VBL>.png, VBL being that scene's extract VBL; the
 # reference of a leg is its newest bd-ref at or before the dump VBL.
 # Launch tokens follow the presentation corpus convention (KEY=VALUE with an
-# upper-case key is an environment entry).
+# upper-case key is an environment entry). A `--window WxH` token sets the
+# row's window for every leg, headless included (default 640x448); a
+# `--legs eager|inline|all` token picks the row's live legs: the eager legs
+# and the control (eager, the default), the inline leg alone (inline), or
+# both (all).
 #
 # Legs per row: one headless capture; one live leg per tick scale (default
-# 0.25 0.5 1, --scales "A B ..."), Xvfb at 640x448 (the reference size, so
-# the window picture and the backdrop share an extent), eager presentation
-# (--render-fps 120 --vsync 0); and the control, the live leg at the first
-# scale under OPENPETE_FREEZE_BD=0, which copies the finished picture of
-# every world present (mod HUD included) into the backdrop.
+# 0.25 0.5 1, --scales "A B ..."), Xvfb at the row's window (640x448 by
+# default, the reference size, so the window picture and the backdrop share
+# an extent), eager presentation (--render-fps 120 --vsync 0); the inline
+# leg, the live leg at the first scale with --render-fps 0, where every
+# present is inline, no ring slot is kept, and the backdrop is the render of
+# the canonical pin, the scene the headless leg renders; and the control,
+# the live leg at the first scale under OPENPETE_FREEZE_BD=0, which copies
+# the finished picture of every world present (mod HUD included) into the
+# backdrop.
 #
-# Pass criterion per live leg: the frozen_tex dump at the dump VBL equals
+# Pass criterion per eager leg: the frozen_tex dump at the dump VBL equals
 # the leg's reference, 0 differing pixels, and bd-live of the same VBL
-# equals it too. Engagement (refused as VACUOUS, never PASS): each live leg
+# equals it too. Engagement (refused as VACUOUS, never PASS): each eager leg
 # logged `eager: engaged`, presented at least one intermediate scene, wrote
 # a reference, and its `[freeze-bd]` line counts rendered >= 1 and
-# displayed >= 1 (a render of a kept slot, not the canonical fallback); the
-# row needs at least one live leg whose reference differs from bd-shot-f<pin>
-# (tickn>0), or the reference cannot tell the displayed scene from the
-# tick's own frame. The control reports its frozen dump against its own
-# reference (diff) for the record; it has no pass condition beyond
-# producing both images (--no-control skips it).
+# displayed >= 1 (a render of a kept slot, not the canonical fallback); a
+# row with eager legs needs at least one whose reference differs from
+# bd-shot-f<pin> (tickn>0), or the reference cannot tell the displayed scene
+# from the tick's own frame. Pass criterion of the inline leg: its frozen_tex
+# dump and its bd-live-f<pin> each equal bd-shot-f<pin>, 0 differing pixels;
+# engagement: its `[freeze-bd]` line counts rendered >= 1 and fallback >= 1
+# (a render of the canonical pin). The control reports its frozen dump
+# against its own reference (diff) for the record; it has no pass condition
+# beyond producing both images (--no-control skips it).
 #
 # Verdict line per leg:
-#   [live-freeze-bd] game=<g> bk2=<b> leg=<scale|control> ref=f<VBL>
+#   [live-freeze-bd] game=<g> bk2=<b> leg=<live-scale|inline-scale|control-scale> ref=f<VBL>
 #                    diff=<px> render_diff=<px> tickn=<px> rendered=<n>
 #                    displayed=<n> verdict=...
 #
@@ -91,14 +102,13 @@ done
 GAME="$(pg_parse_game "$@")" || exit 64
 pg_resolve "$GAME"
 
-WIDTH=640
-HEIGHT=448
+WINDOW=640x448
 LEG_RUNTIME=840
 LEG_TIMEOUT=900
 
 MANIFEST="$(pg_corpus_manifest "$GAME" live-freeze-backdrop-corpus.manifest)"
 pg_manifest "$MANIFEST" pipe
-op_xvfb_prefix live-freeze-bd "${WIDTH}x${HEIGHT}"
+op_xvfb_prefix live-freeze-bd "$WINDOW"
 [[ -x "$PG_BIN" ]] || { echo "live-freeze-bd: SKIP (no binary at $PG_BIN)"; exit 64; }
 [[ -f "$PG_DISC" ]] || { echo "live-freeze-bd: SKIP (no disc at $PG_DISC)"; exit 64; }
 
@@ -122,7 +132,7 @@ PY
 # One leg. The leg's directory and log are deleted before the run and the
 # log asserted after it, so no output of an earlier run is read as this
 # one's. stdin is closed: the row loop reads the manifest on its own stdin.
-run_leg() {  # dir movie flim dump mode(headless|live) scale bd(1|0)
+run_leg() {  # dir movie flim dump mode(headless|live|inline) scale bd(1|0)
     local dir="$1" movie="$2" flim="$3" dump="$4" mode="$5" scale="$6" bd="$7"
     rm -rf "${dir:?}"; mkdir -p "$dir"
     local -a env=(OPENPETE_VIBRATION=0 OPENPETE_FREEZE_BD_DUMP="$dir" "${ROW_ENV[@]}")
@@ -131,15 +141,17 @@ run_leg() {  # dir movie flim dump mode(headless|live) scale bd(1|0)
                    --frame-limit "$flim" --max-runtime-seconds "$LEG_RUNTIME" "${ROW_ARGS[@]}")
     if [[ "$mode" == headless ]]; then
         op_own_run env "${env[@]}" timeout -k 10 "$LEG_TIMEOUT" "$PG_BIN" --headless \
-            "${args[@]}" --window "${WIDTH}x${HEIGHT}" --screenshot-native-only \
+            "${args[@]}" --window "$ROW_WIN" --screenshot-native-only \
             --screenshot-on-frame "$dump" --screenshot-output "$dir/shot__{n}.png" \
             </dev/null >"$dir/run.log" 2>&1
     else
         env+=(OPENPETE_FREEZE_BD="$bd" OPENPETE_PT_DUMP="$dump" OPENPETE_PT_DUMP_COUNT=1
               OPENPETE_PT_DUMP_FROZEN=1 OPENPETE_PT_DUMP_PATH="$dir")
+        local -a pace=(--vsync 0 --render-fps 120)
+        [[ "$mode" == inline ]] && pace=(--render-fps 0)
         op_own_run env "${env[@]}" "${OP_XVFB[@]}" timeout -k 10 "$LEG_TIMEOUT" "$PG_BIN" \
-            "${args[@]}" --input-lock --background 1 --window "${WIDTH}x${HEIGHT}" \
-            --vsync 0 --render-fps 120 --tick-scale "$scale" --perf-stats off --osd off \
+            "${args[@]}" --input-lock --background 1 --window "$ROW_WIN" \
+            "${pace[@]}" --tick-scale "$scale" --perf-stats off --osd off \
             </dev/null >"$dir/run.log" 2>&1
     fi
     [[ -s "$dir/run.log" ]]
@@ -171,21 +183,39 @@ while IFS='|' read -r bk2 flim dump pin launch; do
     [[ -f "$movie" ]] || { echo "live-freeze-bd: SKIP ($movie missing)"; exit 64; }
     rows=$((rows + 1))
     pg_split_launch "${launch:-}"
+    # The harness's own tokens: the row's window and its leg set.
+    ROW_WIN="$WINDOW"; ROW_LEGS=eager; rest=(); next=""
+    for t in "${ROW_ARGS[@]}"; do
+        case "$next" in
+            window) ROW_WIN="$t"; next=""; continue;;
+            legs)   ROW_LEGS="$t"; next=""; continue;;
+        esac
+        case "$t" in
+            --window) next=window;;
+            --legs)   next=legs;;
+            *)        rest+=("$t");;
+        esac
+    done
+    ROW_ARGS=("${rest[@]}")
     tag="${bk2%.bk2}"
     hd="$OUT/$tag/headless"
 
     # The headless leg and the first live leg run side by side; the rest one
     # at a time, so at most two game processes run at once.
     legs=()
-    for s in $SCALES; do legs+=("live:$s:1"); done
-    (( CONTROL )) && legs+=("control:${SCALES%% *}:0")
+    if [[ "$ROW_LEGS" != inline ]]; then
+        for s in $SCALES; do legs+=("live:$s:1"); done
+    fi
+    [[ "$ROW_LEGS" != eager ]] && legs+=("inline:${SCALES%% *}:1")
+    (( CONTROL )) && [[ "$ROW_LEGS" != inline ]] && legs+=("control:${SCALES%% *}:0")
     run_leg "$hd" "$movie" "$flim" "$dump" headless 1 1 &
     hpid=$!
     first=1
     for l in "${legs[@]}"; do
         IFS=: read -r kind scale bd <<<"$l"
         d="$OUT/$tag/$kind-$scale"
-        run_leg "$d" "$movie" "$flim" "$dump" live "$scale" "$bd" || echo "  leg $d produced no log"
+        mode=live; [[ "$kind" == inline ]] && mode=inline
+        run_leg "$d" "$movie" "$flim" "$dump" "$mode" "$scale" "$bd" || echo "  leg $d produced no log"
         if (( first )); then wait "$hpid"; first=0; fi
     done
     (( first )) && wait "$hpid"
@@ -207,12 +237,21 @@ while IFS='|' read -r bk2 flim dump pin launch; do
         tickn="$(px_diff "$ref" "$shot")"
         rendered="$(bd_count "$log" rendered)"
         displayed="$(bd_count "$log" displayed)"
+        fallback="$(bd_count "$log" fallback)"
         eager=$(grep -ac 'eager: engaged' "$log" 2>/dev/null)
         inter=$(grep -aoE '[0-9]+ intermediate scene\(s\) presented' "$log" 2>/dev/null | tail -1 | cut -d' ' -f1)
         inter="${inter:-0}"
         verdict=PASS; why=""; rdiff="-"
         if [[ "$kind" == control ]]; then
             if ! [[ "$diff" =~ ^[0-9]+$ ]]; then verdict=VACUOUS; why="frozen dump or reference $diff"; fi
+        elif [[ "$kind" == inline ]]; then
+            # The reference is the headless render of the same pin.
+            rv="$pin"; tickn="-"
+            diff="$(px_diff "${frz:-$d/none.png}" "$shot")"
+            rdiff="$(px_diff "$d/bd-live-f$pin.png" "$shot")"
+            if (( rendered == 0 || fallback == 0 )); then verdict=VACUOUS; why="rendered=$rendered fallback=$fallback"
+            elif ! [[ "$diff" =~ ^[0-9]+$ && "$rdiff" =~ ^[0-9]+$ ]]; then verdict=VACUOUS; why="dump $diff/$rdiff"
+            elif (( diff != 0 || rdiff != 0 )); then verdict=FAIL; fi
         else
             rdiff="$(px_diff "$d/bd-live-f${rv:-none}.png" "$ref")"
             if (( eager == 0 || inter == 0 )); then verdict=VACUOUS; why="eager not engaged (engaged=$eager intermediates=$inter)"
@@ -225,7 +264,7 @@ while IFS='|' read -r bk2 flim dump pin launch; do
         echo "[live-freeze-bd] game=$GAME bk2=$bk2 leg=$kind-$scale ref=f${rv:-none} diff=$diff render_diff=$rdiff" \
              "tickn=$tickn rendered=$rendered displayed=$displayed intermediates=$inter verdict=$verdict${why:+ reason=$why}"
     done
-    if (( seen == 0 )); then
+    if (( seen == 0 )) && [[ "$ROW_LEGS" != inline ]]; then
         echo "[live-freeze-bd] game=$GAME bk2=$bk2 verdict=VACUOUS reason=no live reference differs from bd-shot-f$pin.png"
         failed=$((failed + 1))
     fi
