@@ -30,6 +30,11 @@ extern "C" int openpete_disc_cache_copy(const char* bin_path, uint64_t offset, v
 extern "C" void openpete_disc_cache_miss_served(int tag, uint64_t offset, size_t len, int64_t ns) {
     (void)tag; (void)offset; (void)len; (void)ns;
 }
+/** @brief Disc cache stub: the watchdog is never armed here. */
+extern "C" void openpete_disc_cache_direct_served(const char* bin_path, int tag, uint64_t offset,
+                                                  size_t len, int64_t ns) {
+    (void)bin_path; (void)tag; (void)offset; (void)len; (void)ns;
+}
 
 /** @brief Store a both-endian ISO9660 733 field (little-endian half used by the reader). */
 static void put733(uint8_t* p, uint32_t v) {

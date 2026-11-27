@@ -412,7 +412,9 @@ enum { OP_ROLE_LIST(OP_ROLE_ENUM_) };
  * body may carry OP_NO_THREAD_SAFETY_ANALYSIS. */
 #define OP_TSA_ACCESSOR_TABLE(ACCESSOR) \
     ACCESSOR("c:portal_sky_s23.c@F@psk_lock") /* thread-roles: acquires s_psk_lock through SDL_LockMutex */ \
-    ACCESSOR("c:portal_sky_s23.c@F@psk_unlock") /* thread-roles: releases s_psk_lock through SDL_UnlockMutex */
+    ACCESSOR("c:portal_sky_s23.c@F@psk_unlock") /* thread-roles: releases s_psk_lock through SDL_UnlockMutex */ \
+    ACCESSOR("c:disc_cache.c@F@dc_lock") /* thread-roles: acquires s_dc_lock through SDL_LockMutex */ \
+    ACCESSOR("c:disc_cache.c@F@dc_unlock") /* thread-roles: releases s_dc_lock through SDL_UnlockMutex */
 
 /* ESCAPE(usr, reason): a function that reaches role- or lock-owned state
  * through a pointer the analysis does not follow, with the protocol that

@@ -895,33 +895,8 @@ core/psx/cpu.c	-	s_unmapped	static	-	owed: declared with no form and no row befo
 core/psx/cpu.c	-	s_unmapped_kept	static	-	owed: declared with no form and no row before the new-global refusal
 core/psx/cpu.c	-	s_unmapped_n	static	-	owed: declared with no form and no row before the new-global refusal
 core/psx/cpu.c	census_init	armed	local	-	
-core/psx/disc_cache.c	-	s_abort	static	-	
-core/psx/disc_cache.c	-	s_acct	static	-	
-core/psx/disc_cache.c	-	s_active	static	-	
-core/psx/disc_cache.c	-	s_bps	static	-	
-core/psx/disc_cache.c	-	s_direct_ns	static	-	
-core/psx/disc_cache.c	-	s_fp	static	-	
-core/psx/disc_cache.c	-	s_have	static	-	
-core/psx/disc_cache.c	-	s_have_n	static	-	
-core/psx/disc_cache.c	-	s_img	static	-	
-core/psx/disc_cache.c	-	s_load_ns	static	-	
-core/psx/disc_cache.c	-	s_logged	static	-	
-core/psx/disc_cache.c	-	s_misses	static	-	
-core/psx/disc_cache.c	-	s_misses_by_tag	static	-	
-core/psx/disc_cache.c	-	s_nchunks	static	-	
-core/psx/disc_cache.c	-	s_nsec	static	-	
-core/psx/disc_cache.c	-	s_order	static	seal	1 writer(s), all before openpete_run
-core/psx/disc_cache.c	-	s_order_at	static	-	
-core/psx/disc_cache.c	-	s_order_n	static	-	
-core/psx/disc_cache.c	-	s_path	static	-	
 core/psx/disc_cache.c	-	s_psx_img	static	-	
 core/psx/disc_cache.c	-	s_psx_result	static	atomic	1 storing function(s), none reads it
-core/psx/disc_cache.c	-	s_sec	static	-	
-core/psx/disc_cache.c	-	s_seq	static	-	
-core/psx/disc_cache.c	-	s_size	static	-	
-core/psx/disc_cache.c	-	s_t0	static	-	
-core/psx/disc_cache.c	-	s_thr	static	-	
-core/psx/disc_cache.c	-	s_want	static	-	
 core/psx/disc_image.c	-	s_game	static	-	
 core/psx/dispatch.c	-	openpete_halt_at_pc	extern	-	
 core/psx/dispatch.c	-	openpete_halt_cpu_dump_path	extern	-	

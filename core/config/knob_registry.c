@@ -1797,10 +1797,14 @@ static const knob_desc_t g_builtin[] = {
       "share costs tens of ms per burst and lands as a late tick). auto "
       "(default) turns it on when the image sits on a network, VM-shared "
       "or optical filesystem (9p such as WSL's /mnt/c, NFS, SMB, FUSE; on "
-      "Windows a UNC path, a mapped network drive or a CD-ROM drive) and "
-      "off on a local disk; the boot log states the decision. Shows whether "
-      "the cache attached. 0 = read the file per sector, 1 = always "
-      "resident. The game reads the same bytes either way.",
+      "Windows a UNC path, a mapped network drive or a CD-ROM drive); on "
+      "any other disk it times the boot reads with the OS file cache "
+      "bypassed and keeps the cache when the disk reads under 188 MB/s or "
+      "a 256 KB read's p99 passes 1.39 ms, else frees it and turns it back "
+      "on if the game's reads in one tick ever take over 8.36 ms. The log "
+      "states the numbers and each decision. Shows whether the cache is "
+      "attached. 0 = read the file per sector, 1 = always resident. The "
+      "game reads the same bytes either way.",
       KNOB_ENUM, KNOB_RESTART_ONLY, ENUM_ROW(k_disccache_names), 0, 0,
       disccache_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "auto",

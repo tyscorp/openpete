@@ -62,13 +62,20 @@ void openpete_logf(openpete_log_level_t level, const char* subsystem, const char
 
 /** @brief Wait for the loader to finish every chunk. */
 static void dc_join(void) {
-    if (s_thr) { SDL_WaitThread(s_thr, NULL); s_thr = NULL; }
+    dc_lock();
+    SDL_Thread* t = s_thr;
+    s_thr = NULL;
+    dc_unlock();
+    if (t) SDL_WaitThread(t, NULL);
 }
 
 /** @brief Resets the module's statics between cases. */
 static void dc_reset(void) {
     openpete_disc_cache_shutdown();
-    s_active = 0; s_img = NULL; s_have = NULL; s_sec = NULL; s_thr = NULL; s_misses = 0;
+    SDL_SetAtomicInt(&s_state, DC_DETACHED);
+    dc_lock();
+    s_abort = 0; s_img = NULL; s_have = NULL; s_sec = NULL; s_thr = NULL; s_misses = 0;
+    dc_unlock();
     s_reads = 0;
 }
 
@@ -126,14 +133,20 @@ static int case_unread(const dc_fixture_t* fx) {
     s_short_left = -1;              /* every loader read of chunk 1 is short */
     if (!dc_load(fx, "B")) return 1;
     int fail = 0;
-    if (s_have[1] != DC_UNREAD) { fprintf(stderr, "FAIL B: chunk 1 state %u\n", s_have[1]); fail++; }
+    dc_lock();
+    const unsigned chunk1 = s_have[1];
+    dc_unlock();
+    if (chunk1 != DC_UNREAD) { fprintf(stderr, "FAIL B: chunk 1 state %u\n", chunk1); fail++; }
     if (openpete_disc_cache_copy(disc_image_bin_path(fx->img), DC_CHUNK, fx->got, 16u, OPENPETE_DISC_TAG_LIBCD) != 0)
         { fprintf(stderr, "FAIL B: an unread chunk was served from memory\n"); fail++; }
     memset(fx->got, 0xCD, fx->size);
     int r = disc_image_read_bytes(fx->img, 0, fx->got, fx->size, OPENPETE_DISC_TAG_LIBCD);
     if (r != OPENPETE_DISC_MISS) { fprintf(stderr, "FAIL B: read result %d, want miss\n", r); fail++; }
     if (memcmp(fx->got, fx->file, fx->size) != 0) { fprintf(stderr, "FAIL B: bytes differ from the file\n"); fail++; }
-    if (s_misses != 1) { fprintf(stderr, "FAIL B: %llu misses counted, want 1\n", (unsigned long long)s_misses); fail++; }
+    dc_lock();
+    const unsigned long long misses_after = s_misses;
+    dc_unlock();
+    if (misses_after != 1) { fprintf(stderr, "FAIL B: %llu misses counted, want 1\n", misses_after); fail++; }
     r = disc_image_read_bytes(fx->img, 0, fx->got, 4096u, OPENPETE_DISC_TAG_LIBCD);
     if (r != OPENPETE_DISC_HIT) { fprintf(stderr, "FAIL B: chunk 0 read result %d, want hit\n", r); fail++; }
     dc_reset();

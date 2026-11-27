@@ -175,16 +175,19 @@ int disc_image_read_bytes(disc_image_t* img, uint64_t offset, void* dst,
                     : (img->size - offset < len ? (size_t)(img->size - offset) : len);
     if (in_image < len) memset(out + in_image, 0, len - in_image);
     int result = OPENPETE_DISC_DIRECT;
-    int64_t t0 = 0;
-    if (img->mode == DISC_READ_CACHED && in_image) {
+    const int cached = img->mode == DISC_READ_CACHED && in_image;
+    if (cached) {
         int c = openpete_disc_cache_copy(img->bin, offset, out, in_image, tag);
         if (c == 1) return in_image == len ? OPENPETE_DISC_HIT : -1;
-        if (c == 0) { result = OPENPETE_DISC_MISS; t0 = op_now(); }
+        if (c == 0) result = OPENPETE_DISC_MISS;
     }
+    const int64_t t0 = cached ? op_now() : 0;
     size_t got = file_pread(img->fp, offset, out, in_image);
     if (got < in_image) memset(out + got, 0, in_image - got);
     if (result == OPENPETE_DISC_MISS)
         openpete_disc_cache_miss_served(tag, offset, in_image, op_now() - t0);
+    else if (cached)
+        openpete_disc_cache_direct_served(img->bin, tag, offset, in_image, op_now() - t0);
     return got == len ? result : -1;
 }
 

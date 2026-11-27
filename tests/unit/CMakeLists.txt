@@ -1142,6 +1142,7 @@ add_test(NAME bugreport_redact_test COMMAND bugreport_redact_test)
 add_executable(disc_cache_short_read_test
     disc_cache_short_read_test.c
     ${CMAKE_SOURCE_DIR}/core/psx/disc_image.c
+    ${CMAKE_SOURCE_DIR}/core/psx/disc_fs_probe.c
     ${CMAKE_SOURCE_DIR}/core/psx/exe_loader.cpp
     ${CMAKE_SOURCE_DIR}/core/diag/disc_trace.c
     ${CMAKE_SOURCE_DIR}/core/runtime/openpete_time.c
@@ -1156,6 +1157,31 @@ if(WIN32)
 endif()
 set_target_properties(disc_cache_short_read_test PROPERTIES C_STANDARD 11 CXX_STANDARD 20)
 add_test(NAME disc_cache_short_read_test COMMAND disc_cache_short_read_test)
+
+# disc_cache_auto_test - --disc-cache auto end to end on a synthetic image:
+# a fast file detaches and a cold burst re-attaches it through the watchdog;
+# a slow file keeps the cache. The link wraps pread (and pread64) with the
+# test's, which injects the latency.
+if(NOT WIN32)
+    add_executable(disc_cache_auto_test
+        disc_cache_auto_test.c
+        ${CMAKE_SOURCE_DIR}/core/psx/disc_image.c
+        ${CMAKE_SOURCE_DIR}/core/psx/disc_cache.c
+        ${CMAKE_SOURCE_DIR}/core/psx/disc_fs_probe.c
+        ${CMAKE_SOURCE_DIR}/core/psx/exe_loader.cpp
+        ${CMAKE_SOURCE_DIR}/core/diag/disc_trace.c
+        ${CMAKE_SOURCE_DIR}/core/runtime/openpete_time.c
+        ${CMAKE_SOURCE_DIR}/core/runtime/thread_roles.c)
+    target_include_directories(disc_cache_auto_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+        ${CMAKE_SOURCE_DIR}/core/include/psxrt
+        ${CMAKE_SOURCE_DIR}/third_party/PsyCross/include)
+    target_link_libraries(disc_cache_auto_test PRIVATE SDL3::SDL3-static)
+    target_link_options(disc_cache_auto_test PRIVATE -Wl,--wrap=pread,--wrap=pread64)
+    set_target_properties(disc_cache_auto_test PROPERTIES C_STANDARD 11 CXX_STANDARD 20)
+    add_test(NAME disc_cache_auto_test_fast COMMAND disc_cache_auto_test fast)
+    add_test(NAME disc_cache_auto_test_slow COMMAND disc_cache_auto_test slow)
+endif()
 
 # disc_fs_probe_test - the --disc-cache auto classifier on injected statfs
 # f_type values, Windows drive types and UNC paths, and the probe on the
@@ -1176,6 +1202,7 @@ add_executable(disc_image_test
     disc_image_test.c
     ${CMAKE_SOURCE_DIR}/core/psx/disc_image.c
     ${CMAKE_SOURCE_DIR}/core/psx/disc_cache.c
+    ${CMAKE_SOURCE_DIR}/core/psx/disc_fs_probe.c
     ${CMAKE_SOURCE_DIR}/core/psx/exe_loader.cpp
     ${CMAKE_SOURCE_DIR}/core/diag/disc_trace.c
     ${CMAKE_SOURCE_DIR}/core/runtime/openpete_time.c
@@ -1206,6 +1233,7 @@ add_executable(disc_build_test
     ${CMAKE_SOURCE_DIR}/games/spyro-3/disc_builds.c
     ${CMAKE_SOURCE_DIR}/core/psx/disc_image.c
     ${CMAKE_SOURCE_DIR}/core/psx/disc_cache.c
+    ${CMAKE_SOURCE_DIR}/core/psx/disc_fs_probe.c
     ${CMAKE_SOURCE_DIR}/core/psx/exe_loader.cpp
     ${CMAKE_SOURCE_DIR}/core/host/sha256.c
     ${CMAKE_SOURCE_DIR}/core/diag/disc_trace.c
