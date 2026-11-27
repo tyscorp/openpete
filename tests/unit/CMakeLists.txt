@@ -1157,6 +1157,16 @@ endif()
 set_target_properties(disc_cache_short_read_test PROPERTIES C_STANDARD 11 CXX_STANDARD 20)
 add_test(NAME disc_cache_short_read_test COMMAND disc_cache_short_read_test)
 
+# disc_fs_probe_test - the --disc-cache auto classifier on injected statfs
+# f_type values, Windows drive types and UNC paths, and the probe on the
+# host's temporary directory.
+add_executable(disc_fs_probe_test
+    disc_fs_probe_test.c
+    ${CMAKE_SOURCE_DIR}/core/psx/disc_fs_probe.c)
+target_include_directories(disc_fs_probe_test PRIVATE ${CMAKE_SOURCE_DIR}/core/include)
+set_target_properties(disc_fs_probe_test PROPERTIES C_STANDARD 11)
+add_test(NAME disc_fs_probe_test COMMAND disc_fs_probe_test)
+
 # disc_image_test - the disc reader on synthetic raw images written by the
 # test: PVD, root and one-subdirectory lookup, ';1' and case folding, the
 # 2048-byte refusal, sector and user-data reads, cache hits and misses

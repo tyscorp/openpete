@@ -159,6 +159,14 @@ typedef enum {
     OPENPETE_CADENCE_FILL,        /* every affordable scene, spread over the slots */
 } openpete_cadence_t;
 
+/* --disc-cache values, in the order of the flag's vocabulary 0|1|auto. */
+typedef enum {
+    OPENPETE_DISC_CACHE_UNSET = -1,  /* options only: not yet resolved */
+    OPENPETE_DISC_CACHE_OFF = 0,     /* read the file per sector */
+    OPENPETE_DISC_CACHE_ON,          /* resident image */
+    OPENPETE_DISC_CACHE_AUTO,        /* default: on when the image's filesystem is slow */
+} openpete_disc_cache_mode_t;
+
 /* All command-line options live here. The struct tag exists so
  * headers can forward-declare it without pulling this whole file in. */
 typedef struct openpete_options {
@@ -362,11 +370,12 @@ typedef struct openpete_options {
      * -1 = unset between openpete_options_init and the end of the parse. */
     int         terrain_cache;
 
-    /* Disc image resident in memory (default on): PsyCross reads the .bin
-     * from a host array filled by a background loader instead of fread on
-     * the sim thread. --disc-cache 0 / OPENPETE_DISC_CACHE=0 = the file
-     * path, for A/B. Display/timing-only; bytes identical. -1 = unset
-     * between openpete_options_init and the end of the parse. */
+    /* Disc image resident in memory: PsyCross reads the .bin from a host
+     * array filled by a background loader instead of fread on the sim
+     * thread. 1 = on, 0 = the file path, OPENPETE_DISC_CACHE_AUTO (the
+     * default) = on only when the image's filesystem is slow
+     * (openpete_disc_fs_slow). Display/timing-only; bytes identical. -1 =
+     * unset between openpete_options_init and the end of the parse. */
     int         disc_cache;
 
     /* VBLs of guest time every level load waits, spent by deferring the

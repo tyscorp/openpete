@@ -13,6 +13,7 @@ static const char *const v_texmap[]   = { "perspective", "affine", NULL };
 static const char *const v_lod[]      = { "original", "extended", NULL };
 static const char *const v_tervis[]   = { "game", "frustum", "filled", "auto", NULL };
 static const char *const v_cadence[]  = { "even", "fill", NULL };
+static const char *const v_disccache[] = { "0", "1", "auto", NULL };
 static const char *const v_fog[]      = { "original", "per-pixel", "off", NULL };
 static const char *const v_renderer[] = { "psycross", "vk", NULL };
 static const char *const v_logfmt[]   = { "plain", "json", NULL };
@@ -79,7 +80,7 @@ static const cfg_knob_t g_schema[] = {
 
     /* -------- Paths -------- */
     { "disc",             "--disc",             NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
-    { "disc_cache",       "--disc-cache",       "OPENPETE_DISC_CACHE",   CFG_BOOL,   NULL,       NULL,       NULL,       0 },
+    { "disc_cache",       "--disc-cache",       "OPENPETE_DISC_CACHE",   CFG_ENUM,   v_disccache, NULL,       NULL,       0 },
     { "load_delay",       "--load-delay",       "OPENPETE_LOAD_DELAY",   CFG_INT,    NULL,       NULL,       NULL,       0 },
     { "texpack_dir",      "--texpack-dir",      "OPENPETE_TEXPACK_DIR",  CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "sfxpack_dir",      "--sfxpack-dir",      "OPENPETE_SFXPACK_DIR",  CFG_STRING, NULL,       NULL,       NULL,       0 },

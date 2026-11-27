@@ -343,7 +343,8 @@ static double exthreads_get(const knob_desc_t *k) {
     (void)k;
     return openpete_workpool_threads();   /* resolved count (auto expanded) */
 }
-/** @brief 1 when the disc cache is active, else 0. */
+static const char *const k_disccache_names[] = { "0", "1", "auto" };
+/** @brief Whether the disc cache attached, as its k_disccache_names index: 1 when active, else 0. */
 static double disccache_get(const knob_desc_t *k) {
     (void)k;
     return openpete_disc_cache_active() ? 1 : 0;
@@ -1790,21 +1791,26 @@ static const knob_desc_t g_builtin[] = {
           "own basename and then to the lone .bin beside it." },
 
     { "disc_cache", "Disc cache", "Paths", "--disc-cache", "OPENPETE_DISC_CACHE",
-      "Disc image resident in memory (default on): a background loader "
-      "fills a host array in the game's boot order; a resident sector is a "
-      "memcpy and a missing one is read from the file at once (a read over "
-      "a network share costs tens of ms per burst and lands as a late tick). "
-      "Shows whether "
-      "the cache attached. 0 = read the file per sector. The game reads the "
-      "same bytes either way.",
-      KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      "Disc image resident in memory: a background loader fills a host "
+      "array in the game's boot order; a resident sector is a memcpy and a "
+      "missing one is read from the file at once (a read over a network "
+      "share costs tens of ms per burst and lands as a late tick). auto "
+      "(default) turns it on when the image sits on a network, VM-shared "
+      "or optical filesystem (9p such as WSL's /mnt/c, NFS, SMB, FUSE; on "
+      "Windows a UNC path, a mapped network drive or a CD-ROM drive) and "
+      "off on a local disk; the boot log states the decision. Shows whether "
+      "the cache attached. 0 = read the file per sector, 1 = always "
+      "resident. The game reads the same bytes either way.",
+      KNOB_ENUM, KNOB_RESTART_ONLY, ENUM_ROW(k_disccache_names), 0, 0,
       disccache_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
-      .def_str = "1",
-      .help_arg = "0|1", .help_order = 30,
+      .def_str = "auto",
+      .help_arg = "0|1|auto", .help_order = 30,
       .help_text = "keep the disc image resident in memory, filled by a background\n"
-          "loader in the game's boot order (default {def}): a resident sector is\n"
-          "a copy, a missing one is read from the file at once. 0 = read\n"
-          "the file per sector. The game reads the same bytes either way." },
+          "loader in the game's boot order: a resident sector is a copy, a\n"
+          "missing one is read from the file at once. auto = on when the image\n"
+          "is on a network, VM-shared or CD-ROM filesystem, off on a local\n"
+          "disk; 0 = read the file per sector; 1 = always. Default {def}.\n"
+          "The game reads the same bytes either way." },
 
     { "load_delay", "Load delay (VBLs)", "Paths", "--load-delay", "OPENPETE_LOAD_DELAY",
       "VBLs of guest time every level load waits: the load's disc reads land "

@@ -1151,10 +1151,11 @@ static void hand_over_game_window_icon(const openpete_options_t* opts) {
 /** @brief Open the sector image behind --disc as the session's disc and attach the disc cache to it.
  *
  * The path may be the cue or the bin; the resolver covers both and the
- * error names every candidate it tried. With --disc-cache the cache starts
- * loading here, before the EXE is read, so every later read of the image
- * (the EXE, PsyCross's libcd and XA, the host paths) goes through it. A
- * second call changes nothing.
+ * error names every candidate it tried. With --disc-cache 1, or auto on a
+ * slow filesystem (openpete_disc_fs_slow; the decision and its reason are
+ * logged), the cache starts loading here, before the EXE is read, so every
+ * later read of the image (the EXE, PsyCross's libcd and XA, the host
+ * paths) goes through it. A second call changes nothing.
  * @param opts The parsed options; disc_path must be set.
  * @return OPENPETE_EXIT_OK, or OPENPETE_EXIT_SETUP_ERROR when no readable
  *         image resolves or disc_image refuses it (a 2048-byte image). */
@@ -1173,7 +1174,13 @@ static int open_game_disc(const openpete_options_t* opts) {
     disc_image_t* img = disc_image_open(bin, DISC_READ_CACHED, OPENPETE_DISC_TAG_NONE);
     if (!img) return OPENPETE_EXIT_SETUP_ERROR;
     disc_image_set_game(img);
-    if (opts->disc_cache) (void)openpete_disc_cache_attach(disc_image_bin_path(img));
+    int want = opts->disc_cache != OPENPETE_DISC_CACHE_OFF;
+    if (opts->disc_cache == OPENPETE_DISC_CACHE_AUTO) {
+        char why[96];
+        want = openpete_disc_fs_slow(disc_image_bin_path(img), why, sizeof why);
+        OPL_INFO_F("boot", "disc cache: auto -> %s (%s)", want ? "on" : "off", why);
+    }
+    if (want) (void)openpete_disc_cache_attach(disc_image_bin_path(img));
     return OPENPETE_EXIT_OK;
 }
 

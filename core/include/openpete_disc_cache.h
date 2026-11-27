@@ -124,6 +124,41 @@ uint64_t openpete_disc_cache_tag_misses(int tag);
  *        run, in ns; 0 until the loader finishes. */
 void openpete_disc_cache_census(uint64_t* misses, int64_t* direct_ns,
                                 size_t* bytes, int64_t* load_ns);
+
+/* --disc-cache auto attaches the cache only when the image sits on a slow
+ * filesystem: one whose reads cross a network or a VM boundary. */
+
+/** @brief Classify a Linux statfs f_type as slow (9p, NFS, CIFS, SMB, SMB2, FUSE) or local.
+ *
+ * @param f_type The statfs f_type value.
+ * @param why Receives the filesystem name, prefixed "local " when local; an
+ *        unlisted value is local and named by its hex value.
+ * @param cap Size of @p why.
+ * @return 1 when slow, else 0. */
+int openpete_disc_fs_classify_ftype(uint64_t f_type, char* why, size_t cap);
+/** @brief Classify a Windows image location as slow (a UNC path, a remote or CD-ROM drive) or local.
+ *
+ * A UNC path (two leading separators naming a server share, the long
+ * form with the UNC prefix, and the wsl$ and wsl.localhost shares of a WSL
+ * distribution) is slow whatever @p drive_type says.
+ * @param drive_type The GetDriveTypeW value of the image's volume root.
+ * @param path The image path as given, or NULL to classify by drive type alone.
+ * @param why Receives the reason, prefixed "local" when local.
+ * @param cap Size of @p why.
+ * @return 1 when slow, else 0. */
+int openpete_disc_fs_classify_windows(unsigned drive_type, const char* path,
+                                      char* why, size_t cap);
+/** @brief Query the filesystem holding a path and classify it.
+ *
+ * Linux: statfs and openpete_disc_fs_classify_ftype. Windows: the full
+ * path's volume root, GetDriveTypeW and openpete_disc_fs_classify_windows.
+ * macOS: statfs, slow when MNT_LOCAL is clear. A failed query, or another
+ * platform, is local.
+ * @param path The image path.
+ * @param why Receives the reason the boot log prints.
+ * @param cap Size of @p why.
+ * @return 1 when slow, else 0. */
+int openpete_disc_fs_slow(const char* path, char* why, size_t cap);
 #ifdef __cplusplus
 }
 #endif

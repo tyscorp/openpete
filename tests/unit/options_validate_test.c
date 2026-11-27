@@ -239,13 +239,46 @@ static void env_spellings(void) {
     unsetenv_portable("OPENPETE_RUN_RECOMP");
 }
 
+/** @brief --disc-cache and OPENPETE_DISC_CACHE: 0, 1 and auto parse, other text is refused when typed and is auto from the env, and the flag beats the env. */
+static void disc_cache_modes(void) {
+    openpete_options_t o;
+    static const char* const none[] = { "--no-config" };
+    static const char* const dc_auto[] = { "--no-config", "--disc-cache", "auto" };
+    static const char* const dc0[] = { "--no-config", "--disc-cache", "0" };
+    static const char* const dc1[] = { "--no-config", "--disc-cache", "1" };
+    static const char* const dc_bad[] = { "--no-config", "--disc-cache", "yes" };
+    g_case = "--disc-cache 0|1|auto";
+    CHECK(parse(&o, 3, dc_auto) == OPENPETE_EXIT_OK && o.disc_cache == OPENPETE_DISC_CACHE_AUTO,
+          "disc_cache = %d, want auto", o.disc_cache);
+    CHECK(parse(&o, 3, dc0) == OPENPETE_EXIT_OK && o.disc_cache == OPENPETE_DISC_CACHE_OFF,
+          "disc_cache = %d, want 0", o.disc_cache);
+    CHECK(parse(&o, 3, dc1) == OPENPETE_EXIT_OK && o.disc_cache == OPENPETE_DISC_CACHE_ON,
+          "disc_cache = %d, want 1", o.disc_cache);
+    CHECK(parse(&o, 3, dc_bad) == OPENPETE_EXIT_SETUP_ERROR, "--disc-cache yes was accepted");
+
+    g_case = "OPENPETE_DISC_CACHE";
+    setenv_portable("OPENPETE_DISC_CACHE", "0");
+    CHECK(parse(&o, 1, none) == OPENPETE_EXIT_OK && o.disc_cache == OPENPETE_DISC_CACHE_OFF,
+          "disc_cache = %d, want 0 from the env", o.disc_cache);
+    CHECK(parse(&o, 3, dc_auto) == OPENPETE_EXIT_OK && o.disc_cache == OPENPETE_DISC_CACHE_AUTO,
+          "disc_cache = %d, want the typed auto over OPENPETE_DISC_CACHE=0", o.disc_cache);
+    setenv_portable("OPENPETE_DISC_CACHE", "1");
+    CHECK(parse(&o, 1, none) == OPENPETE_EXIT_OK && o.disc_cache == OPENPETE_DISC_CACHE_ON,
+          "disc_cache = %d, want 1 from the env", o.disc_cache);
+    setenv_portable("OPENPETE_DISC_CACHE", "yes");
+    CHECK(parse(&o, 1, none) == OPENPETE_EXIT_OK && o.disc_cache == OPENPETE_DISC_CACHE_AUTO,
+          "disc_cache = %d, want auto for an unparsed env value", o.disc_cache);
+    unsetenv_portable("OPENPETE_DISC_CACHE");
+}
+
 /** @brief The env spellings resolved after the flags: defaults, env values, the [env] table, and a typed flag beating the env. */
 static void resolved_env_fields(void) {
     openpete_options_t o;
     static const char* const none[] = { "--no-config" };
     g_case = "defaults";
     CHECK(parse(&o, 1, none) == OPENPETE_EXIT_OK, "the default parse failed");
-    CHECK(o.notex == 0 && o.wireframe == 0 && o.terrain_cache == 1 && o.disc_cache == 1,
+    CHECK(o.notex == 0 && o.wireframe == 0 && o.terrain_cache == 1 &&
+          o.disc_cache == OPENPETE_DISC_CACHE_AUTO,
           "notex %d wireframe %d terrain_cache %d disc_cache %d", o.notex, o.wireframe,
           o.terrain_cache, o.disc_cache);
     CHECK(o.load_delay == -1, "load_delay = %d, want -1 for run.c", o.load_delay);
@@ -549,6 +582,7 @@ int main(void) {
     env_spellings();
     window_values();
     resolved_env_fields();
+    disc_cache_modes();
     effective_resolves_sentinels();
     tick_scale_range();
     mod_hot_reload_spellings();

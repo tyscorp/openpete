@@ -152,6 +152,7 @@ add_library(openpete_core STATIC
     psx/psx_bios_kernel_seed.c
     psx/cdrom_mmio.c
     psx/disc_cache.c
+    psx/disc_fs_probe.c
     psx/disc_image.c
     psx/disc_build.c
     psx/disc_build_boot.c
@@ -751,6 +752,8 @@ if(NOT CMAKE_HOST_WIN32)
     #   - config/paths.c      GetModuleFileNameA (the exe directory, which
     #                         is the root of the portable data layout)
     #   - host/atomic_file.c  MoveFileExW (replace a file in one step)
+    #   - psx/disc_fs_probe.c GetDriveTypeW (is the disc image on a network
+    #                         or CD-ROM drive, for --disc-cache auto)
     # The rest of core/ must remain game-agnostic AND platform-agnostic,
     # so keep the grep-guard but list the exempt TUs by name. New core
     # TUs that need Win32 APIs MUST be added here AND keep their
@@ -767,7 +770,7 @@ if(NOT CMAKE_HOST_WIN32)
     add_custom_target(openpete_core_purity_check ALL
         COMMAND ${CMAKE_COMMAND} -E echo "Checking core/ purity..."
         COMMAND bash -c "! grep -rE '0x800[0-9a-fA-F]{4}' ${CMAKE_SOURCE_DIR}/core/ --include='*.c' --include='*.h' --include='*.cpp' --include='*.hpp' | grep -vE '^[^:]+:[[:space:]]*#[[:space:]]*define'"
-        COMMAND bash -c "! grep -rE 'CreateFiber|<windows.h>' ${CMAKE_SOURCE_DIR}/core/ --include='*.c' --include='*.h' --include='*.cpp' --include='*.hpp' --exclude='crash.c' --exclude='openpete_time.c' --exclude='openpete_frame_time_log.c' --exclude='mod_loader.c' --exclude='host_spawn.c' --exclude='paths.c' --exclude='log_file.c' --exclude='window_restack.c' --exclude='atomic_file.c' --exclude='disc_image.c' --exclude='mod_arena.c' --exclude='rewind_pages.c' --exclude='bugreport_write.c' --exclude='bugreport_redact.c'"
+        COMMAND bash -c "! grep -rE 'CreateFiber|<windows.h>' ${CMAKE_SOURCE_DIR}/core/ --include='*.c' --include='*.h' --include='*.cpp' --include='*.hpp' --exclude='crash.c' --exclude='openpete_time.c' --exclude='openpete_frame_time_log.c' --exclude='mod_loader.c' --exclude='host_spawn.c' --exclude='paths.c' --exclude='log_file.c' --exclude='window_restack.c' --exclude='atomic_file.c' --exclude='disc_image.c' --exclude='disc_fs_probe.c' --exclude='mod_arena.c' --exclude='rewind_pages.c' --exclude='bugreport_write.c' --exclude='bugreport_redact.c'"
         COMMENT "core/ purity check: no Spyro addresses, no Win32-only APIs"
         VERBATIM)
 

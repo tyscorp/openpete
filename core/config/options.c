@@ -1001,11 +1001,11 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->hide_classes = NULL;
     opts->psycross_native_raster = 0;  /* reference renders on the window-derived square-pixel grid */
     opts->texture_mapping = OPENPETE_TEXTURE_MAPPING_PERSPECTIVE;  /* --texture-mapping affine for the PSX texture swim */
-    /* Retained-terrain GPU cache and the resident disc image, both default
-     * on; -1 = unset until resolve_env_spellings applies the env spelling
-     * (OPENPETE_TERRAIN_CACHE, OPENPETE_DISC_CACHE) or the default. */
+    /* Retained-terrain GPU cache (default on) and the resident disc image
+     * (default auto); -1 = unset until resolve_env_spellings applies the env
+     * spelling (OPENPETE_TERRAIN_CACHE, OPENPETE_DISC_CACHE) or the default. */
     opts->terrain_cache = -1;
-    opts->disc_cache    = -1;
+    opts->disc_cache    = OPENPETE_DISC_CACHE_UNSET;
     opts->scan_guard    = -1;   /* resolve_env_spellings: OPENPETE_SCAN_GUARD, else 1 */
     opts->mod_hot_reload = -1;  /* resolve_env_spellings: OPENPETE_MOD_HOT_RELOAD, else 0 */
     /* -1 = the game's own default (game_get_load_delay_default), resolved by
@@ -1027,6 +1027,17 @@ void openpete_options_init(openpete_options_t* opts) {
 static int cadence_parse(const char* v, openpete_cadence_t* out) {
     if (strcmp(v, "even") == 0) { *out = OPENPETE_CADENCE_EVEN; return 0; }
     if (strcmp(v, "fill") == 0) { *out = OPENPETE_CADENCE_FILL; return 0; }
+    return -1;
+}
+
+/** @brief Parse a --disc-cache value: 0, 1 or auto.
+ * @param v The value text.
+ * @param out Receives the mode; untouched on failure.
+ * @return 0 on success, -1 for any other text. */
+static int disc_cache_parse(const char* v, int* out) {
+    if (strcmp(v, "0") == 0)    { *out = OPENPETE_DISC_CACHE_OFF;  return 0; }
+    if (strcmp(v, "1") == 0)    { *out = OPENPETE_DISC_CACHE_ON;   return 0; }
+    if (strcmp(v, "auto") == 0) { *out = OPENPETE_DISC_CACHE_AUTO; return 0; }
     return -1;
 }
 
@@ -1428,7 +1439,11 @@ static int parse_one_flag(openpete_options_t* opts, int argc, char** argv,
         opts->lod = OPENPETE_LOD_EXTENDED;   /* deprecated alias for --lod extended */
     } else if (strcmp(a, "--disc-cache") == 0) {
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-        opts->disc_cache = atoi(v) != 0; i++;
+        if (disc_cache_parse(v, &opts->disc_cache) != 0) {
+            fprintf(stderr, "openpete: --disc-cache expects 0|1|auto, got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        i++;
     } else if (strcmp(a, "--load-delay") == 0) {
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
         opts->load_delay = atoi(v); i++;
@@ -2335,8 +2350,9 @@ static void env_switch(int* field, const char* name, int def, int by_atoi) {
  * and after the config resolver has applied the openpete.toml [env] tables.
  * OPENPETE_NOTEX, OPENPETE_WIREFRAME, OPENPETE_HIDE_HUD and
  * OPENPETE_MOD_HOT_RELOAD are on unless they start with '0' (default 0);
- * OPENPETE_TERRAIN_CACHE and OPENPETE_DISC_CACHE take atoi's verdict
- * (default 1); OPENPETE_SCAN_GUARD is off when it starts with '0' (default
+ * OPENPETE_TERRAIN_CACHE takes atoi's verdict (default 1);
+ * OPENPETE_DISC_CACHE takes 0, 1 or auto (default auto, also for any other
+ * text); OPENPETE_SCAN_GUARD is off when it starts with '0' (default
  * 1); OPENPETE_HIDE_CLASSES is taken as written;
  * OPENPETE_SECTOR_VISIBILITY=game selects the game's verdict and =filled
  * the filled set (default frustum). OPENPETE_LOAD_DELAY is applied with atoi when set; unset,
@@ -2349,7 +2365,6 @@ static void resolve_env_spellings(openpete_options_t* opts) {
     env_switch(&opts->wireframe,      "OPENPETE_WIREFRAME",      0, 0);
     env_switch(&opts->hide_hud,       "OPENPETE_HIDE_HUD",       0, 0);
     env_switch(&opts->terrain_cache,  "OPENPETE_TERRAIN_CACHE",  1, 1);
-    env_switch(&opts->disc_cache,     "OPENPETE_DISC_CACHE",     1, 1);
     env_switch(&opts->scan_guard,     "OPENPETE_SCAN_GUARD",     1, 0);
     env_switch(&opts->mod_hot_reload, "OPENPETE_MOD_HOT_RELOAD", 0, 0);
     if (!opts->hide_classes && env_value("OPENPETE_HIDE_CLASSES", &e))
@@ -2359,6 +2374,9 @@ static void resolve_env_spellings(openpete_options_t* opts) {
     if (opts->sector_visibility == OPENPETE_SECTOR_VIS_UNSET &&
         !(env_value("OPENPETE_SECTOR_VISIBILITY", &e) && sector_vis_parse(e, &opts->sector_visibility) == 0))
         opts->sector_visibility = OPENPETE_SECTOR_VIS_AUTO;
+    if (opts->disc_cache == OPENPETE_DISC_CACHE_UNSET &&
+        !(env_value("OPENPETE_DISC_CACHE", &e) && disc_cache_parse(e, &opts->disc_cache) == 0))
+        opts->disc_cache = OPENPETE_DISC_CACHE_AUTO;
     if (opts->cadence == OPENPETE_CADENCE_UNSET &&
         !(env_value("OPENPETE_CADENCE", &e) && cadence_parse(e, &opts->cadence) == 0))
         opts->cadence = OPENPETE_CADENCE_EVEN;
@@ -2382,7 +2400,7 @@ void openpete_options_effective(const openpete_options_t* in,
     if (out->wireframe < 0)             out->wireframe = 0;
     if (out->hide_hud < 0)              out->hide_hud = 0;
     if (out->terrain_cache < 0)         out->terrain_cache = 1;
-    if (out->disc_cache < 0)            out->disc_cache = 1;
+    if (out->disc_cache < 0)            out->disc_cache = OPENPETE_DISC_CACHE_AUTO;
     if (out->scan_guard < 0)            out->scan_guard = 1;
     if (out->mod_hot_reload < 0)        out->mod_hot_reload = 0;
     if (out->sector_visibility == OPENPETE_SECTOR_VIS_UNSET)
