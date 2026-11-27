@@ -128,24 +128,28 @@ keyword) builds:
 
 The build record `<tag>_game_build` (`games/common/game_build.h`) is
 generated from `games/common/game_build.c.in` into the game's build `gen/`
-directory: the game's entry, its module name and host-to-module
+directory: its module name and host-to-module
 forwarders, its first-boot pipeline, and the registration of the tables
 generated from its manifests. The executable's entry
 (`games/common/game_entry.cpp`) selects one record among the linked games,
 in order by the serial of the disc named by `--disc` or `--ingest`, by
-`--game`, by the invoked executable name, installs it and runs its entry.
+`--game`, by the invoked executable name, installs it and runs the one
+game entry, `openpete_game_main` (`games/common/game_main.cpp`).
 When the executable links several games and none of these names one, the
 launcher picks before any game is installed (`games/common/game_pick.cpp`):
 it lists every game's library entries, and the game recorded on the entry
-it boots (a selector pick or a dropped disc) is installed; that game's entry
+it boots (a selector pick or a dropped disc) is installed; the game entry
 then boots the same entry. `--help`, the reports, `--compile-mods`, the
 batch modes and the surface dump take the first linked game. A game's
 known disc hashes, which label library entries, sit on its runtime
 descriptor (`known_discs`).
 
-Keywords: `MAIN` names the game's entry (default `openpete_game_main`,
-`games/common/game_main.cpp`, which Spyro 2 and 3 use; Spyro 1 has
-`spyro1_main`). `FEATURE_LIST`, `ORCHESTRATOR`, `INTERP_REGIONS`,
+What the entry does differently per game is a field of the runtime
+descriptor: `mod_desc` (the mod layer's descriptor), `mod_disc_configure`
+(mod services that read the identified disc, Spyro 1's WAD asset overlay)
+and `dump_sfx_pack` (the `--dump-sfx-pack` census, Spyro 1's).
+
+Keywords: `FEATURE_LIST`, `ORCHESTRATOR`, `INTERP_REGIONS`,
 `TERRAIN_GAME`, `MOBY_GAME` and `PLAYER_GAME` name the game's feature list
 and native-renderer TUs; each is optional, and a game without one names no
 table for it in its runtime descriptor, which binds the inert default
@@ -153,7 +157,9 @@ table for it in its runtime descriptor, which binds the inert default
 `ICON_SOURCE`, `SYMBOLS_MANIFEST`, `MODULE_LINKAGE` and `MODULE_SOURCES`
 override the defaults; `MOD_SDK` generates and stages the game's mod SDK;
 `FIRST_BOOT_SOURCES` with `FIRST_BOOT_EXTRACT` adds the first-boot module
-build under `OPENPETE_RECOMP_FIRST_BOOT` (the launcher presets). A game
+build under `OPENPETE_RECOMP_FIRST_BOOT` (the launcher presets); `EXTRACT`
+in place of `FIRST_BOOT_EXTRACT` names a carve compiled from `SOURCES`, so
+every build answers `--extract-recomp-inputs` (Spyro 1). A game
 listed in `OPENPETE_GAMES` whose `generated/` holds no recompiled output
 stops the configure; `-DOPENPETE_GAMES=<ids>` narrows the list.
 
@@ -266,8 +272,7 @@ which carries the three games today:
 
 ## 8. What stays Spyro-1-specific
 
-- Spyro 1 has its own entry (`games/spyro-1/main.cpp`, `spyro1_main`); it
-  is the one game `games/shipped.toml` lists. The executable's Win32 icon,
+- The executable's Win32 icon,
   application manifest and VERSIONINFO are OpenPete's, from
   `games/common/openpete.rc.in` and `games/common/openpete.manifest`, and
   belong to no game. Every game has the launcher

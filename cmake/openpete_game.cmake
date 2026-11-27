@@ -2,9 +2,6 @@
 # executables that link the games.
 #
 # openpete_add_game(<id>
-#     [MAIN <symbol>]                 # the game's entry, `int f(int, char**)`
-#                                     # in one of its sources; default
-#                                     # openpete_game_main (games/common/game_main.cpp)
 #     [FEATURE_LIST <file>]           # the feature list; default none
 #     [ORCHESTRATOR <file>]           # sub-tick re-extract orchestrator; default none
 #     [INTERP_REGIONS <file>]         # interp ring region table; default none
@@ -18,7 +15,11 @@
 #                                     # linkage under OPENPETE_RECOMP_FIRST_BOOT);
 #                                     # default none: a missing module is refused
 #     [FIRST_BOOT_EXTRACT <symbol>]   # with FIRST_BOOT_SOURCES: the carve of the
-#                                     # pipeline's inputs (game_build.h)
+#                                     # pipeline's inputs (game_build.h), compiled
+#                                     # with the pipeline
+#     [EXTRACT <symbol>]              # in place of FIRST_BOOT_EXTRACT: the carve,
+#                                     # defined in SOURCES, so every build of the
+#                                     # game answers --extract-recomp-inputs
 #     [SYMBOLS_MANIFEST <file>]       # curated alias table -> gen/<tag>_symbols.gen.h
 #     [MOD_SDK]                       # generate and stage the game's mod SDK
 #                                     # (cmake/openpete_mod_sdk.cmake)
@@ -478,7 +479,7 @@ endfunction()
 function(openpete_add_game GAME_ID)
     cmake_parse_arguments(G
         "MOD_SDK"
-        "MAIN;FEATURE_LIST;ORCHESTRATOR;INTERP_REGIONS;TERRAIN_GAME;MOBY_GAME;PLAYER_GAME;MODULE_LINKAGE;SYMBOLS_MANIFEST;FIRST_BOOT_EXTRACT"
+        "FEATURE_LIST;ORCHESTRATOR;INTERP_REGIONS;TERRAIN_GAME;MOBY_GAME;PLAYER_GAME;MODULE_LINKAGE;SYMBOLS_MANIFEST;FIRST_BOOT_EXTRACT;EXTRACT"
         "SOURCES;MODULE_SOURCES;FIRST_BOOT_SOURCES"
         ${ARGN})
     if(G_UNPARSED_ARGUMENTS)
@@ -521,9 +522,6 @@ function(openpete_add_game GAME_ID)
             "(an empty list configures the core alone).")
     endif()
 
-    if(NOT G_MAIN)
-        set(G_MAIN openpete_game_main)
-    endif()
     if(NOT G_MODULE_LINKAGE)
         set(G_MODULE_LINKAGE ${OPENPETE_RECOMP_LINKAGE})
     endif()
@@ -539,8 +537,8 @@ function(openpete_add_game GAME_ID)
     set(_first_boot OFF)
     if(G_MODULE_LINKAGE STREQUAL "shared" AND OPENPETE_RECOMP_FIRST_BOOT AND G_FIRST_BOOT_SOURCES)
         set(_first_boot ON)
-        if(NOT G_FIRST_BOOT_EXTRACT)
-            message(FATAL_ERROR "openpete_add_game(${GAME_ID}): FIRST_BOOT_SOURCES needs FIRST_BOOT_EXTRACT")
+        if(NOT G_FIRST_BOOT_EXTRACT AND NOT G_EXTRACT)
+            message(FATAL_ERROR "openpete_add_game(${GAME_ID}): FIRST_BOOT_SOURCES needs FIRST_BOOT_EXTRACT or EXTRACT")
         endif()
     endif()
 
@@ -811,9 +809,20 @@ function(openpete_add_game GAME_ID)
     # headers it includes.
     set(GB_ID ${GAME_ID})
     set(GB_TAG ${_tag})
-    set(GB_MAIN ${G_MAIN})
     set(GB_IMPORTS_HEADER ${CMAKE_CURRENT_SOURCE_DIR}/module_imports.h)
-    set(GB_EXTRACT ${G_FIRST_BOOT_EXTRACT})
+    # The carve: EXTRACT's in every build, FIRST_BOOT_EXTRACT's with the
+    # pipeline that compiles it.
+    if(G_EXTRACT AND G_FIRST_BOOT_EXTRACT)
+        message(FATAL_ERROR "openpete_add_game(${GAME_ID}): EXTRACT and FIRST_BOOT_EXTRACT are exclusive")
+    endif()
+    set(GB_EXTRACT ${G_EXTRACT})
+    set(GB_HAS_EXTRACT 0)
+    if(G_EXTRACT)
+        set(GB_HAS_EXTRACT 1)
+    elseif(_first_boot)
+        set(GB_EXTRACT ${G_FIRST_BOOT_EXTRACT})
+        set(GB_HAS_EXTRACT 1)
+    endif()
     set(GB_WINDOW_LO "")
     set(GB_WINDOW_HI "")
     if(G_MODULE_LINKAGE STREQUAL "shared")

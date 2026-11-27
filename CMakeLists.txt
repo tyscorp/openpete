@@ -2341,7 +2341,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                                 shader-step-during shader-step-after shader-step-order input picker
                                 sky-cache sky-reveal
                                 preview preview-hold preview-stop
-                                quit-copy quit-translate quit-build quit-assets quit-east-once
+                                quit-copy quit-translate quit-build quit-assets quit-mods quit-east-once
                                 quit-east-twice quit-escape quit-close quit-page-sigterm error-refuse error-staged error-build ingest-retry
                                 error-link mods-chip exit-return exit-return-env exit-direct exit-close exit-fullscreen unsupported-mark)
             add_test(NAME launcher_flow_${_launcher_case}

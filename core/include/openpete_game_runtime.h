@@ -114,6 +114,14 @@ typedef struct openpete_game_runtime {
 
     /* The mod layer's descriptor (openpete_mods_set_game_desc). */
     const game_mod_desc_t* (*mod_desc)(void);
+    /* The game's mod services that read the identified disc (Spyro 1's WAD
+     * asset overlay), given its path once, after mod_desc registers and
+     * before any mod compiles or loads; NULL: none. */
+    void (*mod_disc_configure)(const char* disc_path);
+    /* --dump-sfx-pack: census the disc's sound banks into out_dir as an sfx
+     * pack, the extra_wads list included, and return 0 on success; NULL:
+     * the game has no census and the flag is refused. */
+    int (*dump_sfx_pack)(const char* cue_path, const char* out_dir, const char* extra_wads);
 } openpete_game_runtime_t;
 
 /** @brief Register the running game's descriptor and bind the core state it carries.

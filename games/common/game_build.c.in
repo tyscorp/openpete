@@ -14,12 +14,12 @@
 
 #define GB_SHARED      @GB_SHARED@
 #define GB_FIRST_BOOT  @GB_FIRST_BOOT@
+#define GB_HAS_EXTRACT @GB_HAS_EXTRACT@
 #define GB_REGIONS     @GB_REGIONS@
 #define GB_BOOT_ORDER  @GB_BOOT_ORDER@
 #define GB_SAVE_ICON   @GB_SAVE_ICON@
 
 extern const openpete_game_runtime_t @GB_TAG@_game_runtime;
-int @GB_MAIN@(int argc, char** argv);
 
 #if GB_REGIONS
 #include "gameplay_state_regions.gen.h"
@@ -91,13 +91,14 @@ static int @GB_TAG@_bind_module_funcs(void* (*need)(const char* name)) {
 
 #if GB_FIRST_BOOT
 #include "recomp_attach.h"
+#endif
+#if GB_HAS_EXTRACT
 int @GB_EXTRACT@(const char* cue_path, const char* out_dir, const char* manifest_path);
 #endif
 
 const openpete_game_build_t @GB_TAG@_game_build = {
     .id       = "@GB_ID@",
     .runtime  = &@GB_TAG@_game_runtime,
-    .main     = @GB_MAIN@,
 #if GB_SHARED
     .module_name       = "@GB_TAG@-recomp",
     .bind_module_funcs = @GB_TAG@_bind_module_funcs,
@@ -105,9 +106,11 @@ const openpete_game_build_t @GB_TAG@_game_build = {
 #if GB_FIRST_BOOT
     .build_module          = openpete_recomp_first_boot_build,
     .library_module_path   = openpete_recomp_first_boot_module_path,
-    .extract_recomp_inputs = @GB_EXTRACT@,
     .overlay_window_lo     = "@GB_WINDOW_LO@",
     .overlay_window_hi     = "@GB_WINDOW_HI@",
+#endif
+#if GB_HAS_EXTRACT
+    .extract_recomp_inputs = @GB_EXTRACT@,
 #endif
     .state_regions_register   = @GB_TAG@_state_regions_register,
     .disc_boot_order_register = @GB_TAG@_disc_boot_order_register,

@@ -157,6 +157,9 @@ Cases:
             view's gesture, on the build step: quit-east-once (one East: the quit chip, Press again
             to quit, takes the step chip's place and goes after 2 s, the build completes and the game plays), quit-east-twice,
             quit-escape and quit-close (each quits at once, with the step case's checks).
+            quit-mods: for each game, a quit event while the pick compiles a stale source-only mod
+            (mods/crash-dummy under --mods-dir): the compile stops and the mod stays stale, the game
+            does not start (no hand-off), the step case's checks, and the next launch compiles the mod.
             quit-page-sigterm: SIGTERM sent from outside to the idle game page ends the process,
             exit 0, within QUIT_BOUND_MS.
   shader-step-*  T8's shader step on the launcher's ahead compile (windowed, a cold pipeline
@@ -1483,14 +1486,19 @@ def leftovers(d, stopped_cache=None):
     return found
 
 
-def quit_case(a, name, setup, quit_at, expect, extra_env=None, next_launch=False):
-    """One quit during work: seed, run windowed with the scripted gesture, then check the stop, its time and its leftovers."""
+def quit_case(a, name, setup, quit_at, expect, extra_env=None, next_launch=None, args=None):
+    """One quit during work: seed, run windowed with the scripted gesture, then check the stop, its time and its leftovers.
+
+    `setup(d)` seeds the case directory and returns the game whose asset cache the stop must leave empty, or
+    None; `args(d)` adds arguments to the run; `next_launch(a, d, bad)` runs the launch after the quit, appends
+    its problems to `bad` and returns its detail."""
     d = cl.case_dir(a.out, name)
     os.makedirs(os.path.join(d, "tmp"))
     stopped_cache = setup(d)
     env = {"OPENPETE_PRECOMPILE_AHEAD": "1", "OPENPETE_LAUNCHER_QUIT_AT": quit_at, "TMPDIR": os.path.join(d, "tmp")}
     env.update(extra_env or {})
-    rc, log, ms = quit_launch(a, d, "run", ["--launcher-window", "1280x800", "--frame-limit", "30"], env)
+    rc, log, ms = quit_launch(a, d, "run", ["--launcher-window", "1280x800", "--frame-limit", "30"]
+                              + (args(d) if args else []), env)
     bad = ordered(log, r"scripted quit point reached", r"quit during work \(", expect,
                   r"quit during work: the work stopped and the launcher closed")
     m = QUIT_CLOSED.search(log)
@@ -1517,13 +1525,19 @@ def quit_case(a, name, setup, quit_at, expect, extra_env=None, next_launch=False
               f"bound {bound:.0f} ms ({inflight.group(1) + ' ms compile in flight' if inflight else 'none in flight'}); "
               if ms is not None else "") + f"leftovers: {counts}; entries {len(entries)}"
     if next_launch:
-        rc2, log2 = headless(a, d, "next", ["--game", "spyro-1", "--frame-limit", "1"])
-        mods = stamped(d, "spyro-1")
-        if rc2 != 0 or "launch-time module rebuild of spyro-1" not in log2 or not mods or not whole_module(mods[0]):
-            bad.append(f"next launch: exit {rc2}, rebuild {'ran' if 'launch-time module rebuild' in log2 else 'not run'}, "
-                       f"module {'whole' if mods and whole_module(mods[0]) else 'absent or partial'}")
-        detail += "; next launch rebuilt in the background and played" if not bad else ""
+        detail += "; " + next_launch(a, d, bad)
     return verdict(name, bad, detail)
+
+
+def next_rebuild(a, d, bad):
+    """The launch after a stopped module build rebuilds Spyro 1's module in the background and plays."""
+    rc2, log2 = headless(a, d, "next", ["--game", "spyro-1", "--frame-limit", "1"])
+    mods = stamped(d, "spyro-1")
+    if rc2 != 0 or "launch-time module rebuild of spyro-1" not in log2 or not mods or not whole_module(mods[0]):
+        bad.append(f"next launch: exit {rc2}, rebuild {'ran' if 'launch-time module rebuild' in log2 else 'not run'}, "
+                   f"module {'whole' if mods and whole_module(mods[0]) else 'absent or partial'}")
+        return "next launch failed"
+    return "next launch rebuilt in the background and played"
 
 
 def seed_unbuilt(d):
@@ -1554,7 +1568,7 @@ def case_quit_translate(a):
 def case_quit_build(a):
     """A quit event while the compiles run kills them; the next launch rebuilds in the background."""
     need_first_boot(a)
-    return quit_case(a, "quit-build", seed_unbuilt, "build+1500:quit", BUILD_EXPECT, PICK1, next_launch=True)
+    return quit_case(a, "quit-build", seed_unbuilt, "build+1500:quit", BUILD_EXPECT, PICK1, next_launch=next_rebuild)
 
 
 def case_quit_assets(a):
@@ -1565,6 +1579,45 @@ def case_quit_assets(a):
     return quit_case(a, "quit-assets", setup, "assets+300:quit",
                      r"launcher assets of spyro-1 not updated \(stopped\)",
                      dict(PICK1, OPENPETE_ASSET_JOB_DELAY_MS="60000"))
+
+
+QUIT_MOD = "crash-dummy"   # a source-only mod every game compiles
+
+
+def quit_mods_game(a, game):
+    """A quit event while the pick compiles a stale source-only mod of `game`: the compile stops, the mod stays
+    stale, the game does not start, and the next launch compiles the mod."""
+    def setup(d):
+        if has_first_boot(a):
+            seed_built(a, d, game, 1)
+        else:
+            seed_entry(d, game, 1)
+        shutil.copytree(os.path.join(ROOT, "mods", QUIT_MOD), os.path.join(d, "mods", QUIT_MOD),
+                        ignore=shutil.ignore_patterns(".build"))
+        return None
+
+    def mods_dir(d):
+        return ["--mods-dir", os.path.join(d, "mods")]
+
+    def next_mods(a, d, bad):
+        rc2, log2 = headless(a, d, "next", ["--game", game, "--frame-limit", "1"] + mods_dir(d))
+        compiled = re.search(rf"{QUIT_MOD} \[{game}\]: compiling", log2) is not None
+        if rc2 != 0 or not compiled or "compile failed" in log2:
+            bad.append(f"next launch: exit {rc2}, mod {'compiled' if compiled else 'not compiled'}")
+            return "next launch failed"
+        return "next launch compiled the mod"
+
+    return quit_case(a, f"quit-mods-{game}", setup, "mods:quit",
+                     rf"{QUIT_MOD} \[{game}\]: compile stopped; the mod stays stale",
+                     {"OPENPETE_LAUNCHER_SELECT_GAME": game}, next_launch=next_mods, args=mods_dir)
+
+
+def case_quit_mods(a):
+    """A quit event during the mod compile on boot ends the run in the launcher, for each game."""
+    rc = 0
+    for game in cl.GAMES:
+        rc |= quit_mods_game(a, game)
+    return rc
 
 
 def case_quit_east_twice(a):
@@ -3002,7 +3055,7 @@ CASES = {"startup": case_startup, "resolution": case_resolution, "multi-install"
          "preview": case_preview, "preview-hold": case_preview_hold,
          "preview-stop": case_preview_stop,
          "quit-copy": case_quit_copy, "quit-translate": case_quit_translate, "quit-build": case_quit_build,
-         "quit-assets": case_quit_assets, "quit-east-once": case_quit_east_once,
+         "quit-assets": case_quit_assets, "quit-mods": case_quit_mods, "quit-east-once": case_quit_east_once,
          "quit-east-twice": case_quit_east_twice, "quit-escape": case_quit_escape, "quit-close": case_quit_close,
          "exit-return": case_exit_return, "exit-return-env": case_exit_return_env, "exit-direct": case_exit_direct, "exit-close": case_exit_close,
          "exit-fullscreen": case_exit_fullscreen,

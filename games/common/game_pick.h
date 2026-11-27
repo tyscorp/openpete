@@ -47,7 +47,7 @@ const openpete_game_build_t* openpete_game_pick(int argc, char** argv, int* exit
 /** @brief Return a linked game's launcher entry: its id, name, known discs, its library module path and its module build, all naming the game explicitly.
  *
  * The pick lists every game's entry in its neutral descriptor; each game's
- * own entry (openpete_game_main, Spyro 1's) begins its launcher with it.
+ * entry (openpete_game_main) begins its launcher with the running game's.
  * @param b The game.
  * @return The entry, or NULL for a game this executable does not link. */
 const openpete_launcher_game* openpete_game_launcher_entry(const openpete_game_build_t* b);

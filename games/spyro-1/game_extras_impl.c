@@ -37,6 +37,7 @@
 #include "openpete_fillpick.h"
 #include "features/levelwarp.h"
 #include "features/state_watch.h"
+#include "mods/mod_wad_overlay.h"
 #include "psyq/psyq_thunk_state.h"
 
 #include <ctype.h>
@@ -44,7 +45,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* mods/mod_level_ops.c - same private-decl pattern main.cpp uses. */
+/* mods/mod_level_ops.c, declared here: the TU has no header. */
 void spyro1_mod_level_capture_stock_counts(CPUState* cpu);
 
 /** @brief Snapshot the shipped level target tables, install the write census and register the resident-overlay probe, before any guest instruction runs.
@@ -773,6 +774,8 @@ void spyro1_interp_register(void);                             /* renderer/inter
 
 /* Spyro 1's mod-layer descriptor (mods/mod_game_desc.c). */
 const game_mod_desc_t* spyro1_mod_desc(void);
+/* The sfx pack census (sfx_census.cpp). */
+int spyro1_dump_sfx_pack(const char* cue_path, const char* out_dir, const char* extra_wads);
 
 /* The known disc's asset input hashes (FNV-1a 64): each level's sky
  * payload in level-table order, the glyph font bytes, and the logo's
@@ -916,4 +919,6 @@ const openpete_game_runtime_t spyro1_game_runtime = {
     .psyq                 = &spyro1_psyq_hooks,
     .override_dispatch    = spyro1_override_dispatch,
     .mod_desc             = spyro1_mod_desc,
+    .mod_disc_configure   = spyro1_mod_wad_configure,
+    .dump_sfx_pack        = spyro1_dump_sfx_pack,
 };

@@ -188,7 +188,7 @@ int main(int argc, char** argv) {
     install_others_first(b);
     openpete_game_build_install(b);
     install_dump();
-    const int rc = b->main(argc, argv);
+    const int rc = openpete_game_main(argc, argv);
     openpete_launcher_return_settle(rc);
     return rc;
 }

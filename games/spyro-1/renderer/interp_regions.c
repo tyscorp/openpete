@@ -11,7 +11,7 @@
  *   This TU defines spyro1_interp_register(), which hands the descriptor rows
  *   below to the shared generator (renderer/interp_regions_gen.h); the
  *   generator assigns each row its ring region index and registers the built
- *   table. main.cpp calls it once at startup before openpete_run(), through
+ *   table. openpete_game_main calls it once at startup before openpete_run(), through
  *   game_interp_register and the runtime descriptor. The
  *   weak-symbol override pattern is avoided because MinGW's PE/COFF linker
  *   mis-resolves it, leaving the weak NULL in place at runtime and crashing

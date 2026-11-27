@@ -1,6 +1,6 @@
 // core/include/openpete.h - runtime entry point + program options.
 //
-// Each game's `main.cpp` is a tiny wrapper that fills in `openpete_options_t`
+// The game entry (games/common/game_main.cpp) fills in `openpete_options_t`
 // and calls `openpete_run()`. All command-line parsing, window setup,
 // screenshot logic, and the run loop live in core/.
 
@@ -159,8 +159,7 @@ typedef enum {
     OPENPETE_CADENCE_FILL,        /* every affordable scene, spread over the slots */
 } openpete_cadence_t;
 
-/* All command-line options live here. Per-game main.cpp may override
- * `display_name` before passing to `openpete_run`. The struct tag exists so
+/* All command-line options live here. The struct tag exists so
  * headers can forward-declare it without pulling this whole file in. */
 typedef struct openpete_options {
     /* Identity (filled by per-game main; rest from CLI) */

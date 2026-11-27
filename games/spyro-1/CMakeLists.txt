@@ -23,7 +23,6 @@ endif()
 
 include(${CMAKE_SOURCE_DIR}/cmake/openpete_game.cmake)
 openpete_add_game(spyro-1
-    MAIN           spyro1_main
     FEATURE_LIST   feature_list.c
     ORCHESTRATOR   renderer/reextract.c
     INTERP_REGIONS renderer/interp_regions.c
@@ -35,7 +34,6 @@ openpete_add_game(spyro-1
     SOURCES
         # The builds a disc of this game can hold (openpete_disc_build.h).
         disc_builds.c
-        main.cpp
         psyq_hooks.cpp
 
         # The native renderer's game half: the feeders and the interp region
@@ -90,7 +88,8 @@ openpete_add_game(spyro-1
         # The first-boot module build: extract (dist/recomp_extract.cpp
         # above), recompile, compile, link.
         ${CMAKE_SOURCE_DIR}/games/common/recomp_build.cpp
-    FIRST_BOOT_EXTRACT spyro1_extract_first_boot_inputs)
+    # The carve is in SOURCES, so every build answers --extract-recomp-inputs.
+    EXTRACT spyro1_extract_first_boot_inputs)
 
 # SoundTable slot names (tools/gen_sfx_names.py over the decomp's
 # sound_table.h): one table shared by the sfx resolver, the sfx pack's

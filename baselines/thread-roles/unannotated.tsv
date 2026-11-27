@@ -4771,7 +4771,6 @@ games/spyro-1/game_extras_impl.c	spyro1_on_frame_pre	s_ui_range_done	local	-
 games/spyro-1/game_extras_impl.c	spyro1_override_dispatch	s_in_a2c	local	-	
 games/spyro-1/game_extras_impl.c	spyro1_override_dispatch	s_in_traced_call	local	-	
 games/spyro-1/game_extras_impl.c	srend_noop_hit	s_mask	local	once	= -1, one filler, first reference tests it
-games/spyro-1/main.cpp	start_session	library_module_path	local	seal	1 writer(s), all before openpete_run
 games/spyro-1/mods/mod_game_desc.c	spyro1_mod_desc	s_built	local	-	
 games/spyro-1/mods/mod_game_desc.c	spyro1_mod_desc	s_desc	local	-	
 games/spyro-1/mods/mod_level_ops.c	-	s_hooks_installed	static	-	

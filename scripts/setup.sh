@@ -24,7 +24,7 @@ OPENPETE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # OPENPETE_DISC). The rebuild is not byte-identical to the Redump image, so it
 # is checked for presence only; the library labels the Redump SHA256 at
 # ingest (core/launcher/library.cpp, the known-disc table in
-# games/spyro-1/main.cpp).
+# games/spyro-1/game_extras_impl.c).
 DISC_BIN_DEFAULT="$OPENPETE_ROOT/games/spyro-1/spyro-1/build/SCUS-94228.bin"
 
 DISC_BIN="${OPENPETE_DISC:-$DISC_BIN_DEFAULT}"

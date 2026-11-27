@@ -3,7 +3,7 @@
 //
 // The game's runtime descriptor (core/include/openpete_game_runtime.h) holds
 // what its sources define. This record holds what the build derives for the
-// game: its entry, its recomp-module name and host->module forwarders, its
+// game: its recomp-module name and host->module forwarders, its
 // first-boot pipeline, and the tables generated from its manifests (the
 // gameplay-state regions, the disc boot order, the save-header location). cmake/openpete_game.cmake
 // generates one per game, `<tag>_game_build`, from game_build.c.in, and one
@@ -11,7 +11,7 @@
 // links: one game for a per-game executable, every built game for the one
 // executable of a shared-linkage Linux or MinGW build.
 // games/common/game_entry.cpp
-// selects a game from the list, installs it and runs its entry.
+// selects a game from the list, installs it and runs openpete_game_main.
 
 #ifndef OPENPETE_GAME_BUILD_H
 #define OPENPETE_GAME_BUILD_H
@@ -30,9 +30,6 @@ extern "C" {
 typedef struct openpete_game_build {
     const char* id;          /* "spyro-1": the game's config-scope id */
     const openpete_game_runtime_t* runtime;
-    /* The game's entry after selection: parse, identify, attach, run
-     * (openpete_game_main for a game with no entry of its own). */
-    int (*main)(int argc, char** argv);
 
     /* Shared linkage: the module's file name without the platform suffix
      * ("spyro1-recomp"), and the binder of the game's host->module
@@ -44,11 +41,12 @@ typedef struct openpete_game_build {
 
     /* The first-boot module build (shared linkage under
      * OPENPETE_RECOMP_FIRST_BOOT, games/common/recomp_build.cpp); every
-     * member NULL in a build without one. build_module and
-     * library_module_path are the pipeline's entries (recomp_attach.h);
-     * extract_recomp_inputs writes PSX.EXE and the manifest's overlays
-     * carved from the disc; the window strings are recomp.conf's
-     * OVERLAY_RANGE bounds as C literals. */
+     * member NULL in a build without one, except extract_recomp_inputs
+     * where the game compiles its carve into every build (Spyro 1).
+     * build_module and library_module_path are the pipeline's entries
+     * (recomp_attach.h); extract_recomp_inputs writes PSX.EXE and the
+     * manifest's overlays carved from the disc; the window strings are
+     * recomp.conf's OVERLAY_RANGE bounds as C literals. */
     int (*build_module)(const char* disc_path, const char* out_module_path);
     int (*library_module_path)(const struct openpete_game_build* b, const char* entry_dir,
                                char* out, size_t cap);
@@ -148,16 +146,18 @@ void game_disc_boot_order_register(void);
  * before a game is installed. */
 void game_save_icon_register(void);
 
-/** @brief Run a game with no host-side entry of its own: the launcher, identification, the one full parse, the module attach and the core loop.
+/** @brief Run the installed game: the launcher, identification, the one full parse, the module attach and the core loop.
  *
  * Defined in games/common/game_main.cpp; runs after the process entry has
  * installed the game. Resolves the game-neutral settings, answers --help and
  * the configuration or keys report, opens the log; --compile-mods compiles
- * every mod for each staged game and exits before any game is identified.
- * Otherwise runs the launcher (the disc from the library when none is
+ * every mod for each staged game and exits before any game is identified;
+ * --extract-recomp-inputs and --dump-sfx-pack run on the identified disc and
+ * exit. Otherwise runs the launcher (the disc from the library when none is
  * named), identifies the game and refuses another, runs the one full parse,
- * registers the mod-layer descriptor, attaches the recompiled module,
- * compiles stale mods, hands the launcher's window and device to the game,
+ * registers the mod layer, attaches the recompiled module, compiles stale
+ * mods, ends the run when the player quits during the module build or the
+ * mod compile, hands the launcher's window and device to the game,
  * registers the gameplay-state regions and the interpolation and re-extract
  * tables, sets the root counter 2 the game's boot reads, and runs the core
  * loop. Writes the surface dump and exits when OPENPETE_SURFACE_DUMP is set.
@@ -165,7 +165,8 @@ void game_save_icon_register(void);
  * @param argv The arguments.
  * @return The exit status: openpete_run's result, 0 after --help, a report
  *         or a quit in the launcher, or the startup failure's status; under
- *         --compile-mods 0 when every mod compiled, else 1. */
+ *         --compile-mods 0 when every mod compiled, under a batch mode 0
+ *         when its output was written, else 1. */
 int openpete_game_main(int argc, char** argv);
 
 #ifdef __cplusplus

@@ -162,8 +162,8 @@ void openpete_config_set_game_id(const char* id);
  *
  * Registered by the game before openpete_config_apply. A function pointer
  * rather than a weak symbol: MinGW's PE/COFF linker mis-resolves weak
- * overrides across static libraries (the same reason main.cpp registers
- * its other game hooks explicitly). Unregistered = no [disc.*] scopes. */
+ * overrides across static libraries (the same reason the game entry
+ * registers its other game hooks explicitly). Unregistered = no [disc.*] scopes. */
 typedef int (*openpete_disc_identity_fn)(const char* disc_path,
                                          char* serial, size_t serial_cap,
                                          char* sha, size_t sha_cap);

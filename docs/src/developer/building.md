@@ -740,7 +740,7 @@ is `fc866b2a02e010a6658f8af2de28bb3001eb33513e5924af014e35643c6dee37`
 Greatest Hits and Collectors' Edition pressings. The disc library labels
 an ingested image with this SHA256 "Spyro the Dragon (NTSC-U)" and any other
 by its file name (`core/launcher/library.cpp`, the known-disc table in
-`games/spyro-1/main.cpp`).
+`games/spyro-1/game_extras_impl.c`).
 
 Development runs use the disc rebuilt from the decomp output,
 `games/spyro-1/spyro-1/build/SCUS-94228.cue`, the default of every script

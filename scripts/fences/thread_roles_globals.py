@@ -528,7 +528,7 @@ def census_tu(ci, tu, ctx, fence, read):
     entry_order = {}  # caller usr of the boot chain -> [(line, callee name, callee usr)]
     seen = set()
     fn_ref = (K.FUNCTION_DECL, K.CXX_METHOD, K.CONSTRUCTOR, K.FUNCTION_TEMPLATE)
-    ENTRY = ("main", "spyro1_main", "openpete_game_main")
+    ENTRY = ("main", "openpete_game_main")
 
     def body(top, usr):
         for c, chain in s.walk_body(top):
@@ -636,7 +636,7 @@ def stores_of(refs):
 
 def boot_only(fns_writing, data):
     """-> True when every function in fns_writing is reached by direct calls
-    only, every chain ending in a boot entry (main, spyro1_main,
+    only, every chain ending in a boot entry (main,
     openpete_game_main) at a call that precedes openpete_run in that entry,
     and none is address-taken or reached through openpete_run."""
     callers = data["callers"]
