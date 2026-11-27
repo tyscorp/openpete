@@ -116,8 +116,10 @@ open-pause-menu|1473|200||1473,1491
 #
 # open-guidebook: the guidebook open on its contents page, 1553 and 1571. The
 # right-hand column (entry names, placeholder dashes, per-cent signs) is
-# quad-form glyph text; the digits are sprite text.
-open-guidebook|1533|200||1553,1571
+# quad-form glyph text; the digits are sprite text. 1500 and 1503 are inside
+# the pause panel's page turn (1494-1504, func_8004BF94 folding every primitive
+# of the panel after it is emitted): the panel's glyph text folds with the page.
+open-guidebook|1533|200||1500,1503,1553,1571
 #
 # glimmer-pogo-dialogue: the first dialogue in Glimmer. At 1573 the large
 # semi-transparent text box and the speaker's name box are both open; the
