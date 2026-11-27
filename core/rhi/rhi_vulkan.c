@@ -759,6 +759,7 @@ struct rhi_device {
      * pool; each rhi_texture owns a descriptor set allocated from the pool. */
     VkSampler             vram_sampler;
     VkSampler             linear_sampler;   /* LINEAR twin for HD replacement art */
+    VkSampler             mip_sampler;      /* trilinear, for rhi_create_rgba8_mipped images */
     VkDescriptorSetLayout vram_set_layout;
     /* Descriptor pools, oldest first; desc_alloc appends one when every
      * pool is out of memory, up to RHI_DESC_POOLS_MAX. */
@@ -1169,7 +1170,8 @@ struct rhi_texture {
     uint64_t        retire_serial;     /* frame serial at retirement */
     uint32_t        width, height;
     uint32_t        bpp;       /* bytes per pixel (2 = R16_UINT VRAM, 4 = RGBA8) */
-    VkImageLayout   layout;    /* current layout, for re-upload transitions */
+    uint32_t        levels;    /* mip levels; above 1 an upload carries the whole chain */
+    VkImageLayout   layout;    /* current layout, for re-upload transitions (every level shares it) */
 
     /* Render-target extras (is_rt only): a depth attachment + a framebuffer so
      * geometry can be rendered into `image` via rt_pass (rt_rp, or rt_ds_rp for a
@@ -3153,6 +3155,15 @@ static bool create_descriptor_infra(rhi_device *dev)
     if (vkCreateSampler(dev->device, &si, NULL, &dev->linear_sampler) != VK_SUCCESS) {
         RHI_LOG("vkCreateSampler (linear) failed\n"); return false;
     }
+    /* Trilinear variant for mip-chained images (rhi_create_rgba8_mipped): the
+     * LOD clamps to the view's last level, so one sampler serves every chain
+     * length. A fragment at or above 1:1 (lod <= 0) reads level 0 through the
+     * LINEAR mag filter, which is linear_sampler's result. */
+    si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    si.maxLod = VK_LOD_CLAMP_NONE;
+    if (vkCreateSampler(dev->device, &si, NULL, &dev->mip_sampler) != VK_SUCCESS) {
+        RHI_LOG("vkCreateSampler (mip) failed\n"); return false;
+    }
     VkDescriptorSetLayoutBinding b = {
         .binding = 0,
         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -4654,6 +4665,7 @@ static void device_objects_destroy(rhi_device *dev)
     vkDestroyDescriptorSetLayout(dev->device, dev->quad_set_layout, NULL);
     if (dev->vram_sampler)   vkDestroySampler(dev->device, dev->vram_sampler, NULL);
     if (dev->linear_sampler) vkDestroySampler(dev->device, dev->linear_sampler, NULL);
+    vkDestroySampler(dev->device, dev->mip_sampler, NULL);   /* VK_NULL_HANDLE is a no-op */
 
     for (int i = 0; i < RHI_STAGE_RING; i++) {
         if (dev->pimg_avail[i]) vkDestroySemaphore(dev->device, dev->pimg_avail[i], NULL);
@@ -5434,7 +5446,7 @@ static void image_barrier(VkCommandBuffer cb, VkImage img,
         .image = img,
         .subresourceRange = {
             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .levelCount = 1, .layerCount = 1,
+            .levelCount = VK_REMAINING_MIP_LEVELS, .layerCount = 1,
         },
     };
     vkCmdPipelineBarrier(cb, src_stage, dst_stage, 0, 0, NULL, 0, NULL, 1, &b);
@@ -6401,7 +6413,7 @@ void rhi_destroy_buffer(rhi_device *dev, rhi_buffer *buf)
  *
  * No host staging is kept: in-frame uploads take the device upload ring and
  * out-of-frame uploads a temporary buffer. The descriptor set binds the image view
- * with the shared NEAREST sampler; its layout (one combined image sampler at
+ * with the shared NEAREST sampler, or the trilinear one for a mip chain; its layout (one combined image sampler at
  * binding 0) is format-agnostic, so it serves the VRAM (usampler2D) and the
  * RGBA8 (sampler2D) shaders alike. Outside a frame the image is
  * transitioned to SHADER_READ_ONLY_OPTIMAL by a one-shot submit before
@@ -6413,15 +6425,16 @@ void rhi_destroy_buffer(rhi_device *dev, rhi_buffer *buf)
  * @param height Height in pixels.
  * @param fmt Image format.
  * @param bpp Bytes per pixel of @p fmt.
+ * @param levels Mip levels.
  * @return The texture, or NULL when any creation step fails (partial
  *         resources are destroyed). */
 static rhi_texture *create_sampled_image(rhi_device *dev, uint32_t width,
                                          uint32_t height, VkFormat fmt,
-                                         uint32_t bpp)
+                                         uint32_t bpp, uint32_t levels)
 {
     rhi_texture *t = calloc(1, sizeof(*t));
     if (!t) return NULL;
-    t->width = width; t->height = height; t->bpp = bpp;
+    t->width = width; t->height = height; t->bpp = bpp; t->levels = levels;
     t->layout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     VkImageCreateInfo ici = {
@@ -6429,7 +6442,7 @@ static rhi_texture *create_sampled_image(rhi_device *dev, uint32_t width,
         .imageType = VK_IMAGE_TYPE_2D,
         .format = fmt,
         .extent = { width, height, 1 },
-        .mipLevels = 1, .arrayLayers = 1,
+        .mipLevels = levels, .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .tiling = VK_IMAGE_TILING_OPTIMAL,
         .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
@@ -6464,7 +6477,7 @@ static rhi_texture *create_sampled_image(rhi_device *dev, uint32_t width,
         .format = fmt,
         .subresourceRange = {
             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .levelCount = 1, .layerCount = 1,
+            .levelCount = levels, .layerCount = 1,
         },
     };
     if (vkCreateImageView(dev->device, &vci, NULL, &t->view) != VK_SUCCESS) {
@@ -6478,7 +6491,7 @@ static rhi_texture *create_sampled_image(rhi_device *dev, uint32_t width,
         RHI_LOG("vram descriptor set allocation failed\n"); goto fail;
     }
     VkDescriptorImageInfo dii = {
-        .sampler = dev->vram_sampler,
+        .sampler = levels > 1 ? dev->mip_sampler : dev->vram_sampler,
         .imageView = t->view,
         .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
     };
@@ -6520,21 +6533,27 @@ rhi_texture *rhi_create_vram(rhi_device *dev, uint32_t width, uint32_t height)
 {
     /* R16_UINT: one uint per PSX VRAM pixel, sampled via texelFetch (the PSX
      * shader does its own integer indexing - no GPU filtering/normalization). */
-    return create_sampled_image(dev, width, height, VK_FORMAT_R16_UINT, 2);
+    return create_sampled_image(dev, width, height, VK_FORMAT_R16_UINT, 2, 1);
 }
 
 rhi_texture *rhi_create_u32x4(rhi_device *dev, uint32_t width, uint32_t height)
 {
     /* R32G32B32A32_UINT: four 32-bit words per texel, read with texelFetch
      * through a usampler2D (no filtering, no normalization). */
-    return create_sampled_image(dev, width, height, VK_FORMAT_R32G32B32A32_UINT, 16);
+    return create_sampled_image(dev, width, height, VK_FORMAT_R32G32B32A32_UINT, 16, 1);
 }
 
 rhi_texture *rhi_create_rgba8(rhi_device *dev, uint32_t width, uint32_t height)
 {
     /* R8G8B8A8_UNORM: bytes laid out R,G,B,A - matches a GL_RGBA readback;
      * sampled as a normal sampler2D (e.g. another renderer's frame for A/B). */
-    return create_sampled_image(dev, width, height, VK_FORMAT_R8G8B8A8_UNORM, 4);
+    return create_sampled_image(dev, width, height, VK_FORMAT_R8G8B8A8_UNORM, 4, 1);
+}
+
+rhi_texture *rhi_create_rgba8_mipped(rhi_device *dev, uint32_t width, uint32_t height)
+{
+    return create_sampled_image(dev, width, height, VK_FORMAT_R8G8B8A8_UNORM, 4,
+                                rhi_mip_levels(width, height));
 }
 
 /** @brief Return a render target's depth image usage flags.
@@ -7066,30 +7085,42 @@ static void record_pending_inits(rhi_device *dev)
  * command buffer, which must be before the frame's first render pass
  * (callers upload right after rhi_begin_frame or between passes); the
  * payload is staged in the device upload ring. Outside a frame the upload
- * is a blocking one-shot through a temporary buffer.
+ * is a blocking one-shot through a temporary buffer. A texture with a mip
+ * chain takes every level, packed tight from level 0 down, in one copy of
+ * one region per level.
  * @param dev Device.
  * @param tex Sampled texture; NULL or a render target is ignored.
- * @param pixels width * height * bpp bytes. */
+ * @param pixels width * height * bpp bytes, or the packed chain
+ *               (rhi_rgba8_mip_chain_bytes) for a texture with mip levels. */
 static void update_image(rhi_device *dev, rhi_texture *tex, const void *pixels)
 {
     if (!tex || !tex->uploadable) return;
     if (!pixels) { RHI_LOG("update_image: NULL pixels (tex %ux%u)\n", tex->width, tex->height); return; }
-    const size_t bytes = (size_t)tex->width * tex->height * tex->bpp;
+    const uint32_t levels = tex->levels > 1 ? tex->levels : 1u;
+    VkBufferImageCopy regions[32];
+    size_t bytes = 0;
+    for (uint32_t i = 0, w = tex->width, h = tex->height; i < levels && i < 32u; i++) {
+        regions[i] = (VkBufferImageCopy){
+            .bufferOffset = bytes,
+            .imageSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                  .mipLevel = i, .layerCount = 1 },
+            .imageExtent = { w, h, 1 },
+        };
+        bytes += (size_t)w * h * tex->bpp;
+        w = w > 1 ? w / 2 : 1;
+        h = h > 1 ? h / 2 : 1;
+    }
     upload_ctx u;
     if (!upload_begin(dev, bytes, &u)) return;
     memcpy(u.map, pixels, bytes);
+    for (uint32_t i = 0; i < levels; i++) regions[i].bufferOffset += u.off;
     image_barrier(u.cb, tex->image, tex->layout,
                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                   VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                   VK_PIPELINE_STAGE_TRANSFER_BIT);
-    VkBufferImageCopy region = {
-        .bufferOffset = u.off,
-        .imageSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
-        .imageExtent = { tex->width, tex->height, 1 },
-    };
     vkCmdCopyBufferToImage(u.cb, u.src, tex->image,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, levels, regions);
     image_barrier(u.cb, tex->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                   VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,

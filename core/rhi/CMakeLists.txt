@@ -321,6 +321,7 @@ add_custom_command(
 add_library(openpete_rhi STATIC
     rhi_vulkan.c
     rhi_memtype.c
+    rhi_mip.c
     rhi_gpu_audit.c
     rhi_pipe_census.c
     rhi_pcache_file.c
@@ -347,6 +348,7 @@ set_target_properties(openpete_rhi PROPERTIES
 set_property(GLOBAL PROPERTY OPENPETE_RHI_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/rhi_vulkan.c
     ${CMAKE_CURRENT_SOURCE_DIR}/rhi_memtype.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/rhi_mip.c
     ${CMAKE_CURRENT_SOURCE_DIR}/rhi_gpu_audit.c
     ${CMAKE_CURRENT_SOURCE_DIR}/rhi_pipe_census.c
     ${CMAKE_CURRENT_SOURCE_DIR}/rhi_pcache_file.c

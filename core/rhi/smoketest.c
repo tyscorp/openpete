@@ -25,6 +25,12 @@
  *                a compute pass writes words read back to the host and the
  *                vertex records a draw of the same present reads, both
  *                compared exactly (skipped where compute is unavailable).
+ *                A mip-chained image (rhi_create_rgba8_mipped) drawn at 1:1
+ *                must equal the linear sampler's result, and drawn
+ *                minified must alias no more than the linear sampler
+ *                (a 1-texel checker over a low band, measured against the
+ *                band); OPENPETE_SMOKE_MIP_TIMING adds the chain's build
+ *                and upload cost per image size.
  *   --compute-control  the compute case alone with a perturbed input, whose
  *                every word and present must mismatch: exit 0 when detected.
  */
@@ -37,6 +43,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #define VRAM_W 1024
 #define VRAM_H 512
@@ -692,6 +699,246 @@ static int run_compute(rhi_device *dev, rhi_pipeline *pipe, rhi_buffer *vb, bool
     return rc;
 }
 
+/* ---- headless case: minification of a mip-chained image ---- */
+
+/* Output rect sizes in eighths of the source: 1:1, then the minification
+ * range of a window drawn between full and half size and below it. */
+static const int k_mm_eighths[] = { 8, 7, 6, 5, 4, 3 };
+#define MM_SCALES ((int)(sizeof k_mm_eighths / sizeof k_mm_eighths[0]))
+#define MM_PI 3.14159265358979323846
+
+/** @brief Return the low band of the test image at a source position: 128 plus a 64x32-texel-period sine product of amplitude 50.
+ *
+ * @param x Source x in texels (texel centres at +0.5).
+ * @param y Source y in texels.
+ * @return The level. */
+static double mm_low(double x, double y)
+{
+    return 128.0 + 50.0 * sin(2.0 * MM_PI * x / 64.0) * sin(2.0 * MM_PI * y / 32.0);
+}
+
+/** @brief Return one source texel of the test image: the low band plus a 1-texel checker of amplitude 60.
+ *
+ * The checker sits at the source's Nyquist frequency, above the output's
+ * at every minified scale, so a correct minification removes it entirely
+ * and whatever of it reaches the output is aliasing.
+ * @param x Texel column.
+ * @param y Texel row.
+ * @return The level, rounded. */
+static uint8_t mm_texel(int x, int y)
+{
+    const double v = mm_low(x + 0.5, y + 0.5) + (((x ^ y) & 1) ? 60.0 : -60.0);
+    return (uint8_t)(v + 0.5);
+}
+
+/** @brief Draw a texture over the top-left ow x oh pixels of the offscreen target and read the target back.
+ *
+ * @param dev Headless device.
+ * @param pipe The blit pipeline.
+ * @param vb Six-vertex buffer.
+ * @param tex Texture drawn with UV 0..1 over the rect.
+ * @param ow Rect width in pixels.
+ * @param oh Rect height in pixels.
+ * @param px Receives SC_W x SC_H RGBA bytes.
+ * @return false when the frame or the readback failed. */
+static bool mm_draw(rhi_device *dev, rhi_pipeline *pipe, rhi_buffer *vb, rhi_texture *tex,
+                    int ow, int oh, uint8_t *px)
+{
+    rhi_vertex q[6];
+    make_quad(q, -1.0f, 1.0f, -1.0f + 2.0f * (float)ow / SC_W, 1.0f - 2.0f * (float)oh / SC_H,
+              0.0f, 0.0f, 1.0f, 1.0f, 0xFFFFFFFFu);
+    rhi_wait_idle(dev);
+    rhi_update_buffer(vb, q, sizeof q);
+    if (!rhi_begin_frame(dev)) return false;
+    rhi_begin_offscreen(dev, 0.0f, 0.0f, 0.0f, 1.0f);
+    rhi_bind_pipeline(dev, pipe);
+    rhi_bind_vertex_buffer(dev, vb);
+    rhi_bind_vram(dev, tex);
+    rhi_draw(dev, 6, 0);
+    rhi_end_offscreen(dev);
+    rhi_end_frame(dev);
+    int w = 0, h = 0;
+    return rhi_read_offscreen(dev, px, (size_t)SC_W * SC_H * 4, &w, &h) && w == SC_W && h == SC_H;
+}
+
+/** @brief Return the aliasing energy of a readback's rect: the RMS of its red channel less the low band at each pixel's source position.
+ *
+ * Pixels within two source texels of the rect's edge are left out, where
+ * clamp-to-edge addressing, not minification, sets the value.
+ * @param px Readback, SC_W x SC_H RGBA.
+ * @param w Source width.
+ * @param h Source height.
+ * @param ow Rect width.
+ * @param oh Rect height.
+ * @return The RMS in levels. */
+static double mm_alias(const uint8_t *px, int w, int h, int ow, int oh)
+{
+    const double sx = (double)w / ow, sy = (double)h / oh;
+    const int mx = (int)(2.0 / sx) + 1, my = (int)(2.0 / sy) + 1;
+    double se = 0.0; long n = 0;
+    for (int y = my; y < oh - my; y++)
+        for (int x = mx; x < ow - mx; x++) {
+            const double d = px[(y * SC_W + x) * 4] - mm_low((x + 0.5) * sx, (y + 0.5) * sy);
+            se += d * d; n++;
+        }
+    return n ? sqrt(se / (double)n) : 0.0;
+}
+
+/** @brief Draw one scale through both textures and report its line; return whether the scale passes.
+ *
+ * At 1:1 (eighths 8) the two readbacks must be identical and equal the
+ * source (the rect is texel-aligned, so the linear tap lands on texel
+ * centres). Minified, the mip chain's aliasing energy must not exceed the
+ * linear sampler's by more than half a level (8-bit rounding).
+ * @param dev Headless device.
+ * @param pipe The blit pipeline.
+ * @param vb Six-vertex buffer.
+ * @param tex The linear texture, then the mip-chained one.
+ * @param src Level 0 of the source, w x h RGBA.
+ * @param w Source width.
+ * @param h Source height.
+ * @param eighths Output size in eighths of the source.
+ * @param a Readback scratch for the linear draw, SC_W x SC_H RGBA.
+ * @param b Readback scratch for the mip-chained draw, the same size.
+ * @param la Receives the linear sampler's aliasing energy.
+ * @return true when the scale passes, false on a failed check, frame or readback. */
+static bool mm_scale(rhi_device *dev, rhi_pipeline *pipe, rhi_buffer *vb, rhi_texture *const tex[2],
+                     const uint8_t *src, int w, int h, int eighths, uint8_t *a, uint8_t *b,
+                     double *la)
+{
+    const int ow = (w * eighths + 4) / 8, oh = (h * eighths + 4) / 8;
+    *la = 0.0;
+    if (!mm_draw(dev, pipe, vb, tex[0], ow, oh, a) || !mm_draw(dev, pipe, vb, tex[1], ow, oh, b)) {
+        printf("rhi_smoketest: mip minify: frame or readback failed\n");
+        return false;
+    }
+    long diff = 0, off_src = 0;
+    for (int y = 0; y < oh; y++)
+        for (int x = 0; x < ow; x++) {
+            diff += memcmp(&a[(y * SC_W + x) * 4], &b[(y * SC_W + x) * 4], 3) != 0;
+            off_src += a[(y * SC_W + x) * 4] != src[((size_t)y * w + x) * 4];
+        }
+    const bool unit = eighths == 8;
+    *la = mm_alias(a, w, h, ow, oh);
+    const double ma = mm_alias(b, w, h, ow, oh);
+    const bool pass = unit ? (diff == 0 && off_src == 0) : ma <= *la + 0.5;
+    printf("rhi_smoketest: mip minify %dx%d -> %dx%d: %s aliasing rms linear=%.2f mip=%.2f px_differ=%ld%s\n",
+           w, h, ow, oh, pass ? "PASS" : "FAIL", *la, ma, diff,
+           unit ? (off_src ? " (1:1 differs from source)" : " (1:1 equals source)") : "");
+    return pass;
+}
+
+/** @brief Measure one source size through the linear and the mip-chained sampler at every scale.
+ *
+ * Each scale is checked by mm_scale; the linear sampler must alias by over
+ * 5 levels at some minified scale, or the case did not engage.
+ * @param dev Headless device.
+ * @param pipe The blit pipeline.
+ * @param vb Six-vertex buffer.
+ * @param w Source width, at most SC_W.
+ * @param h Source height, at most SC_H.
+ * @return true when the checks hold. */
+static bool mm_case(rhi_device *dev, rhi_pipeline *pipe, rhi_buffer *vb, int w, int h)
+{
+    uint8_t *src = malloc(rhi_rgba8_mip_chain_bytes((uint32_t)w, (uint32_t)h));
+    uint8_t *a = malloc((size_t)SC_W * SC_H * 4), *b = malloc((size_t)SC_W * SC_H * 4);
+    rhi_texture *const tex[2] = { rhi_create_rgba8(dev, (uint32_t)w, (uint32_t)h),
+                                  rhi_create_rgba8_mipped(dev, (uint32_t)w, (uint32_t)h) };
+    bool ok = src && a && b && tex[0] && tex[1];
+    for (int i = 0; ok && i < w * h; i++) {
+        uint8_t *t = &src[(size_t)i * 4];
+        t[0] = t[1] = t[2] = mm_texel(i % w, i / w);
+        t[3] = 255;
+    }
+    if (ok) {
+        ok = rhi_rgba8_build_mips(src, (uint32_t)w, (uint32_t)h);
+        rhi_texture_set_filter_linear(dev, tex[0]);
+        rhi_update_rgba8(dev, tex[0], src);
+        rhi_update_rgba8(dev, tex[1], src);
+    }
+    double engaged = 0.0, la = 0.0;
+    for (int i = 0; ok && i < MM_SCALES; i++) {
+        ok = mm_scale(dev, pipe, vb, tex, src, w, h, k_mm_eighths[i], a, b, &la);
+        if (k_mm_eighths[i] != 8 && la > engaged) engaged = la;
+    }
+    if (ok && engaged <= 5.0) {
+        printf("rhi_smoketest: mip minify %dx%d: VACUOUS linear aliasing peaks at %.2f\n", w, h, engaged);
+        ok = false;
+    }
+    rhi_wait_idle(dev);
+    for (int i = 0; i < 2; i++) if (tex[i]) rhi_destroy_texture(dev, tex[i]);
+    free(src); free(a); free(b);
+    return ok;
+}
+
+/** @brief Return the median of five values, sorting them in place.
+ *
+ * @param t Five values.
+ * @return The third smallest. */
+static double mm_median5(double t[5])
+{
+    for (int i = 1; i < 5; i++)
+        for (int j = i; j > 0 && t[j] < t[j - 1]; j--) { const double x = t[j]; t[j] = t[j - 1]; t[j - 1] = x; }
+    return t[2];
+}
+
+/** @brief Print, per image size, the CPU time of building the mip chain and the wall time of a blocking upload with and without it.
+ *
+ * Outside a frame rhi_update_rgba8 submits a one-shot and waits for it, so
+ * the upload time includes the device's copy of every level. Each figure is
+ * the median of five runs.
+ * @param dev Headless device. */
+static void mm_timing(rhi_device *dev)
+{
+    static const int k_sizes[][2] = { { 853, 432 }, { 640, 432 }, { 1920, 1080 }, { 2560, 1440 }, { 3840, 2160 } };
+    for (size_t s = 0; s < sizeof k_sizes / sizeof k_sizes[0]; s++) {
+        const int w = k_sizes[s][0], h = k_sizes[s][1];
+        uint8_t *px = malloc(rhi_rgba8_mip_chain_bytes((uint32_t)w, (uint32_t)h));
+        if (!px) return;
+        for (size_t i = 0; i < (size_t)w * h * 4; i++) px[i] = (uint8_t)(i * 2654435761u >> 24);
+        double build[5], up[2][5];
+        for (int r = 0; r < 5; r++) {
+            uint64_t t0 = SDL_GetTicksNS();
+            rhi_rgba8_build_mips(px, (uint32_t)w, (uint32_t)h);
+            build[r] = (double)(SDL_GetTicksNS() - t0) / 1000.0;
+            for (int m = 0; m < 2; m++) {
+                rhi_texture *tex = m ? rhi_create_rgba8_mipped(dev, (uint32_t)w, (uint32_t)h)
+                                     : rhi_create_rgba8(dev, (uint32_t)w, (uint32_t)h);
+                t0 = SDL_GetTicksNS();
+                rhi_update_rgba8(dev, tex, px);
+                up[m][r] = (double)(SDL_GetTicksNS() - t0) / 1000.0;
+                rhi_destroy_texture(dev, tex);
+            }
+        }
+        printf("rhi_smoketest: mip chain %dx%d: build=%.0f us upload plain=%.0f us chained=%.0f us\n",
+               w, h, mm_median5(build), mm_median5(up[0]), mm_median5(up[1]));
+        free(px);
+    }
+}
+
+/** @brief Run the mip-chain minification case on an even and an odd source size, then print the chain timing under OPENPETE_SMOKE_MIP_TIMING.
+ *
+ * @param dev Headless device.
+ * @param vb Six-vertex buffer.
+ * @return 0 on PASS, 1 otherwise. */
+static int run_mip_minify(rhi_device *dev, rhi_buffer *vb)
+{
+    const rhi_pipeline_desc desc = {
+        .vert_spv = "psx_sample.vert.spv", .frag_spv = "blit.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = false,
+        .uses_vram = true, .push_const_size = 0,
+    };
+    rhi_pipeline *pipe = rhi_create_pipeline(dev, &desc);
+    if (!pipe) { printf("rhi_smoketest: mip minify pipeline setup failed\n"); return 1; }
+    bool ok = mm_case(dev, pipe, vb, SC_W, SC_H);
+    ok &= mm_case(dev, pipe, vb, SC_W - 3, SC_H - 1);
+    printf("rhi_smoketest: mip minify: %s\n", ok ? "PASS" : "FAIL");
+    if (getenv("OPENPETE_SMOKE_MIP_TIMING")) mm_timing(dev);
+    rhi_wait_idle(dev);
+    rhi_destroy_pipeline(dev, pipe);
+    return ok ? 0 : 1;
+}
+
 /** @brief Answer the RHI's knob lookups: the environment, with OPENPETE_GPU_TIMERS on unless the environment sets it.
  *
  * @param name Knob name.
@@ -703,12 +950,12 @@ static const char *smoke_knob(const char *name)
     return v;
 }
 
-/** @brief Run the retained-storage and image-plus-storage cases.
+/** @brief Run the retained-storage, image-plus-storage and mip-minification cases.
  *
  * @param dev Headless device.
  * @param pipe The storage_pull pipeline.
  * @param vb Six-vertex buffer for the vertex input.
- * @return 0 when both pass, 1 otherwise. */
+ * @return 0 when every case passes, 1 otherwise. */
 static int run_storage_cases(rhi_device *dev, rhi_pipeline *pipe, rhi_buffer *vb)
 {
     rhi_storage *st = rhi_storage_create(dev, 6 * sizeof(sc_vert));
@@ -721,6 +968,7 @@ static int run_storage_cases(rhi_device *dev, rhi_pipeline *pipe, rhi_buffer *vb
            ok && over == 0 ? "PASS" : "FAIL", drawn, (unsigned long long)over);
     int rc = ok && over == 0 ? 0 : 1;
     if (run_texstore(dev, vb) != 0) rc = 1;
+    if (run_mip_minify(dev, vb) != 0) rc = 1;
     rhi_wait_idle(dev);
     rhi_storage_destroy(dev, st);
     return rc;

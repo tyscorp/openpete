@@ -14018,7 +14018,8 @@ static int s_hd_fb_n;
  * texel edges, so a dump fed straight back in renders bit-identically.
  * Anything else (arbitrary-resolution HD art) keeps LINEAR smoothing. */
 /* own: a copy the queue owns and frees (framebuffer snapshots, whose
- * source image the guest thread may free before the upload); NULL for
+ * source image the guest thread may free before the upload; the copy is
+ * the packed mip chain, uploaded through rhi_create_rgba8_mipped); NULL for
  * pack and mod pixels, which their owners keep for the session. */
 static struct {
     uint64_t key; const unsigned char *px; unsigned char *own;
@@ -14138,6 +14139,42 @@ static void hd_evict_fb_snapshots(void)
 
 #define HD_CREATE_PER_FRAME 12
 
+/** @brief Create, upload and choose the sampler of the GPU texture for one queued upload, freeing the entry's owned copy.
+ *
+ * A framebuffer snapshot (an owned copy) arrives as its packed mip chain
+ * (fbsnap_chain_copy) and gets an rhi_create_rgba8_mipped texture, so a
+ * window drawn minified (a pause shrink) reads the level matching its
+ * footprint; its trilinear sampler equals the linear one at or above 1:1.
+ * Pack and mod pixels get a single-level texture.
+ * @param i Index into s_hd_pending.
+ * @return The texture, or NULL when creation failed. */
+static rhi_texture *hd_make_texture(int i)
+{
+    unsigned char *own = s_hd_pending[i].own;
+    const bool snapshot = own != NULL;
+    const int bw = s_hd_pending[i].box_w, bh = s_hd_pending[i].box_h;
+    const int w  = s_hd_pending[i].w,     h  = s_hd_pending[i].h;
+    rhi_texture *t = snapshot ? rhi_create_rgba8_mipped(s_nr.dev, (uint32_t)w, (uint32_t)h)
+                              : rhi_create_rgba8(s_nr.dev, (uint32_t)w, (uint32_t)h);
+    if (t) rhi_update_rgba8(s_nr.dev, t, s_hd_pending[i].px);
+    free(own);                                  /* staged: the upload copied it */
+    if (!t || snapshot) return t;
+    /* Filter choice. An image that is an exact integer multiple of the
+     * texel box it replaces samples NEAREST: its blocks align with texel
+     * boundaries, so every screen pixel resolves to the texel the stock
+     * VRAM sampler would have fetched and a dump dropped straight back in
+     * renders bit-identically (measured: 0 differing pixels at 1x and at
+     * 7x/12x). Everything else - arbitrary-resolution HD art, mod-
+     * registered textures - keeps LINEAR, which is what it has always had.
+     * Linear cannot reproduce stock at ANY scale: its error comes from
+     * sample points straddling block edges, and that fraction is scale-
+     * invariant (7x/12x and 14x/24x measured pixel-for-pixel identical). */
+    const int exact = bw > 0 && bh > 0 &&
+                      w % bw == 0 && h % bh == 0 && w / bw > 0 && h / bh > 0;
+    if (!exact) rhi_texture_set_filter_linear(s_nr.dev, t);
+    return t;
+}
+
 /** @brief Create and upload queued HD replacement textures, at most the per-present cap, after evicting dead snapshot textures.
  *
  * Call outside any render pass. Entries past the cap stay queued for the
@@ -14168,28 +14205,8 @@ static void hd_flush_pending(void)
             free(own);
             continue;
         }
-        rhi_texture *t = rhi_create_rgba8(s_nr.dev, (uint32_t)s_hd_pending[i].w,
-                                          (uint32_t)s_hd_pending[i].h);
-        if (!t) { free(own); continue; }
-        rhi_update_rgba8(s_nr.dev, t, s_hd_pending[i].px);
-        free(own);                              /* staged: the upload copied it */
-        /* Filter choice. An image that is an exact integer multiple of the
-         * texel box it replaces samples NEAREST: its blocks align with texel
-         * boundaries, so every screen pixel resolves to the texel the stock
-         * VRAM sampler would have fetched and a dump dropped straight back in
-         * renders bit-identically (measured: 0 differing pixels at 1x and at
-         * 7x/12x). Everything else - arbitrary-resolution HD art, mod-
-         * registered textures - keeps LINEAR, which is what it has always had.
-         * Linear cannot reproduce stock at ANY scale: its error comes from
-         * sample points straddling block edges, and that fraction is scale-
-         * invariant (7x/12x and 14x/24x measured pixel-for-pixel identical). */
-        {
-            int bw = s_hd_pending[i].box_w, bh = s_hd_pending[i].box_h;
-            int w  = s_hd_pending[i].w,     h  = s_hd_pending[i].h;
-            int exact = bw > 0 && bh > 0 &&
-                        w % bw == 0 && h % bh == 0 && w / bw > 0 && h / bh > 0;
-            if (!exact) rhi_texture_set_filter_linear(s_nr.dev, t);
-        }
+        rhi_texture *t = hd_make_texture(i);
+        if (!t) continue;
         s_hd_cache[idx].key = key;
         s_hd_cache[idx].tex = t;
         if (own) s_hd_fb_slot[s_hd_fb_n++] = idx;
@@ -15821,6 +15838,27 @@ static int draw_run_material(const tex_run* r, int ov_mark, int blend_class,
     return 1;
 }
 
+/** @brief Copy a stored framebuffer-snapshot image with its full mip chain, for an upload through rhi_create_rgba8_mipped.
+ *
+ * The copy is taken under the store's lock (openpete_fb_snapshot_copy) and
+ * grown to the packed chain, whose levels rhi_rgba8_build_mips fills with
+ * box (area) averages; a minified draw of the window then samples the level
+ * matching its footprint. Runs once per stored image.
+ * @param idx Window slot index, or OPENPETE_FB_SNAPSHOT_AREA_BASE plus a draw area index.
+ * @param key The image's key.
+ * @param sw Receives level 0 width.
+ * @param sh Receives level 0 height.
+ * @return A malloc'd chain owned by the caller, or NULL when the image is gone or allocation fails. */
+static unsigned char* fbsnap_chain_copy(int idx, uint64_t key, int* sw, int* sh)
+{
+    unsigned char* px = openpete_fb_snapshot_copy(idx, key, sw, sh);
+    if (!px) return NULL;
+    unsigned char* chain = realloc(px, rhi_rgba8_mip_chain_bytes((uint32_t)*sw, (uint32_t)*sh));
+    if (!chain) { free(px); return NULL; }
+    if (!rhi_rgba8_build_mips(chain, (uint32_t)*sw, (uint32_t)*sh)) { free(chain); return NULL; }
+    return chain;
+}
+
 /** @brief Draw a framebuffer-window run through its snapshot's HD texture, queueing the texture's upload on first sight.
  *
  * The run's texture page carries the snapshot index; its UVs are pixels of
@@ -15850,7 +15888,7 @@ static void draw_fb_snapshot_run(const tex_run* r, int idx, int texel_space,
     rhi_texture* tex = hd_cache_lookup(key);
     if (!tex) {
         if (!hd_pending_has(key)) {
-            unsigned char* copy = openpete_fb_snapshot_copy(idx, key, &sw, &sh);
+            unsigned char* copy = fbsnap_chain_copy(idx, key, &sw, &sh);
             if (copy) hd_pending_add(key, NULL, copy, sw, sh, 0, 0);
         }
         return;
@@ -26747,7 +26785,7 @@ static void fbsnap_queue_upload(int idx)
     uint64_t key = 0; int sw = 0, sh = 0;
     if (!openpete_fb_snapshot_image(idx, &key, &sw, &sh)) return;
     if (hd_cache_lookup(key) || hd_pending_has(key)) return;
-    unsigned char *copy = openpete_fb_snapshot_copy(idx, key, &sw, &sh);
+    unsigned char *copy = fbsnap_chain_copy(idx, key, &sw, &sh);
     if (copy) hd_pending_add(key, NULL, copy, sw, sh, 0, 0);
 }
 

@@ -3013,6 +3013,48 @@ void rhi_update_vram_rects(rhi_device *dev, rhi_texture *tex,
  * @param height Height in texels.
  * @return The texture, or NULL on failure. */
 rhi_texture *rhi_create_rgba8(rhi_device *dev, uint32_t width, uint32_t height);
+/** @brief Create an R8G8B8A8_UNORM sampled image with a full mip chain, sampled trilinearly.
+ *
+ * Levels run to 1x1 (rhi_mip_levels), each max(1, floor(size / 2)) of the
+ * one above. rhi_update_rgba8 takes the whole chain packed from level 0 down
+ * (rhi_rgba8_mip_chain_bytes; rhi_rgba8_build_mips fills it). The sampler is
+ * LINEAR min/mag with LINEAR mip interpolation and no LOD clamp below the
+ * last level, so a minified draw blends the two levels nearest its
+ * footprint, and a draw at or above 1:1 reads level 0 through the LINEAR
+ * filter as the sampler of rhi_texture_set_filter_linear does. Binds like
+ * rhi_create_rgba8.
+ * @param dev Device the image is created on.
+ * @param width Width in texels.
+ * @param height Height in texels.
+ * @return The texture, or NULL on failure. */
+rhi_texture *rhi_create_rgba8_mipped(rhi_device *dev, uint32_t width, uint32_t height);
+/** @brief Return the mip level count of a full chain for an image size: floor(log2(max(width, height))) + 1.
+ *
+ * @param width Width in texels.
+ * @param height Height in texels.
+ * @return The level count, 1 for a 1x1 or empty image. */
+uint32_t rhi_mip_levels(uint32_t width, uint32_t height);
+/** @brief Return the bytes of a full RGBA8 mip chain packed tight from level 0 down.
+ *
+ * @param width Level 0 width.
+ * @param height Level 0 height.
+ * @return The byte count. */
+size_t rhi_rgba8_mip_chain_bytes(uint32_t width, uint32_t height);
+/** @brief Fill every level above 0 of a packed RGBA8 mip chain whose level 0 is written.
+ *
+ * Each texel of a level is the box (area) average of the level above over
+ * its footprint, [i*src/dst, (i+1)*src/dst) per axis, with each axis's
+ * overlap weights quantized to 1/256 and one rounding at the end; on an
+ * even span that is the rounded 2x2 box mean, and an odd span weighs its
+ * edge texels by their fractional overlap instead of dropping or
+ * point-sampling them. Integer arithmetic throughout, so the chain is
+ * identical on every machine.
+ * @param chain rhi_rgba8_mip_chain_bytes bytes, level 0 first.
+ * @param width Level 0 width.
+ * @param height Level 0 height.
+ * @return false when the scratch allocation fails (levels above 0 unwritten)
+ *         or the size is empty. */
+bool rhi_rgba8_build_mips(uint8_t *chain, uint32_t width, uint32_t height);
 /** @brief Create a texelFetch-only R32G32B32A32_UINT image, sampled through a usampler2D.
  *
  * Bound with rhi_bind_texture_set or a pair bind and written through
@@ -3027,7 +3069,8 @@ rhi_texture *rhi_create_u32x4(rhi_device *dev, uint32_t width, uint32_t height);
  * Upload semantics are rhi_update_vram's.
  * @param dev Device.
  * @param tex Texture; NULL or a render target is ignored.
- * @param pixels width * height * 4 bytes; NULL logs and uploads nothing. */
+ * @param pixels width * height * 4 bytes, or the packed chain for an
+ *               rhi_create_rgba8_mipped texture; NULL logs and uploads nothing. */
 void rhi_update_rgba8(rhi_device *dev, rhi_texture *tex, const void *pixels);
 
 /* Sub-rect uploads from TIGHT per-rect source buffers (pixels = w*h*4 RGBA8

@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 5bf5d6cdde7c67002c48583c1edb4a5eea8fc5db
+# head: 84933f514422ee433607d9c3449fb32a23140759
 file	function	score	marked	accepted
 core/config/config.c	materialize	32	0	
 core/config/config.c	openpete_config_report	42	0	
@@ -49,7 +49,6 @@ core/renderer/native_render.c	alpha_census	53	0
 core/renderer/native_render.c	compose_variant	30	0	
 core/renderer/native_render.c	draw_osd_overlay	52	0	
 core/renderer/native_render.c	draw_tex_runs	89	0	
-core/renderer/native_render.c	hd_flush_pending	28	0	
 core/renderer/native_render.c	key_ident_check	33	0	
 core/renderer/native_render.c	native_depth_prepass	72	0	
 core/renderer/native_render.c	native_postfx_run	47	0	
