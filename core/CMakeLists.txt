@@ -115,7 +115,7 @@ add_library(openpete_core STATIC
     # Recording and savestates: true-VFR gameplay video capture (--record;
     # links libav* in-process and reads the present FBO so output is
     # bars-free at internal resolution), BizHawk .bk2 movie replay (--bk2)
-    # and record (--bk2-record), save states (F2/F4 quick save/load), the
+    # and record (--bk2-record), save states (quick save/load keys), the
     # rewind keyframe ring (--rewind N seconds; Backspace scrubs back;
     # driver in run.c, see openpete_rewind.h), and the guest-state
     # discontinuity broadcast (host caches derived from guest RAM register
