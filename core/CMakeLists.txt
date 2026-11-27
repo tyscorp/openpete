@@ -217,6 +217,7 @@ add_library(openpete_core STATIC
     mods/handoff.c
     mods/mod_loader.c
     mods/mod_games.c
+    mods/mod_modset.c
     mods/mod_draw.c
     mods/mod_services.c
     mods/mod_registry.c

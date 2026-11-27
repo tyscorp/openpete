@@ -669,7 +669,8 @@ const char* openpete_mods_crash_attribution(uint32_t* addr_out) {
  * link's disabled flag is taken from its owner's live-toggle state. Live
  * frames on the chain have their link index advanced past the insert, so
  * registration from inside a running chain keeps base() pointing at the
- * next link. Sets openpete_mods_active. With OPENPETE_MOD_LINK_CALLS set,
+ * next link. Sets openpete_mods_active and reports the link to
+ * openpete_mods_link_registered. With OPENPETE_MOD_LINK_CALLS set,
  * the first registration arms a stderr dump of every call-counter row at
  * process exit.
  * @param addr the guest function's vaddr; 0 fails.
@@ -730,6 +731,7 @@ int openpete_mods_chain_add_ovl(uint32_t addr, uint32_t overlay,
     for (int f = 0; f < s_frame_depth; f++)
         if (s_frames[f].chain == chain) s_frames[f].link++;
     openpete_mods_active = 1;
+    openpete_mods_link_registered(owner_id, addr, overlay);
     return 0;
 }
 

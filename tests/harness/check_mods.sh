@@ -831,6 +831,63 @@ early_refusal "modset mismatch" "$WORK/canary-ms" "$WORK/canary.state" \
 early_refusal "ledger prefix mismatch" "$WORK/canary-diff" "$WORK/diff.state" \
     "arena ledger: row #0 diverges.*REFUSING"
 
+# ── 13b2. the modset tag fixes the mod order ───────────────────────────
+# A state records the ordered modset tag ("v2:", the set, "#" and a hash of
+# the mods' entry and late-link sequence), since that order decides which
+# mod's code runs first. The
+# same file loads under the same order, is refused under the same two mods
+# reversed with the order named, and, rewritten to the order-free tag a
+# file from before the ordered form carries, loads under either order.
+state_tag() { # state_tag <state> [<new tag> <out>]: print, or rewrite, the modset tag
+    python3 - "$@" <<'PY'
+import struct, sys
+b = bytearray(open(sys.argv[1], "rb").read())
+assert struct.unpack_from("<I", b, 4)[0] == 7, "state file version is not 7"
+tag_n = struct.unpack_from("<I", b, 80)[0]
+reg_n = struct.unpack_from("<I", b, 120)[0]
+at = len(b) - reg_n - tag_n
+if len(sys.argv) == 2:
+    print(b[at:at + tag_n].decode())
+else:
+    new = sys.argv[2].encode()
+    b[at:at + tag_n] = new
+    struct.pack_into("<I", b, 80, len(new))
+    open(sys.argv[3], "wb").write(b)
+PY
+}
+say "modset order: a state loads under its own mod order only"
+fixture "$WORK/ord-ab" chain-duo-a chain-duo-b
+fixture "$WORK/ord-ba" chain-duo-b chain-duo-a
+rm -f "$WORK/ord.state" "$WORK/ord-old.state"
+out="$(run_game "$WORK/ord-ab" 2600 --skip-to-level 10 --card-dir "$CANARY_CARDS" \
+        --state-save-on-frame 2000 --state-save-output "$WORK/ord.state" \
+        --state-load-on-frame 2400 --state-load-input "$WORK/ord.state")"
+ord_tag="$([ -e "$WORK/ord.state" ] && state_tag "$WORK/ord.state")"
+if [[ "$ord_tag" =~ ^v2:chain-duo-a@0\.1\.0\+chain-duo-b@0\.1\.0#[0-9a-f]{16}$ ]] && \
+   printf '%s\n' "$out" | grep -q "savestate: loaded"; then
+    ok "modset order: saved under [$ord_tag], loaded under the same order"
+else
+    bad "modset order: tag [${ord_tag:-no file}] or the same-order load failed"
+fi
+out="$(run_game "$WORK/ord-ba" 2600 --skip-to-level 10 --card-dir "$CANARY_CARDS" \
+        --state-load-on-frame 2200 --state-load-input "$WORK/ord.state")"
+if printf '%s\n' "$out" | grep -q "MODSET MISMATCH (order).*load refused" && \
+   ! printf '%s\n' "$out" | grep -q "savestate: loaded"; then
+    ok "modset order: reversed order refused, naming the order"
+else
+    bad "modset order: reversed order was not refused as an order mismatch"
+fi
+[ -e "$WORK/ord.state" ] && \
+    state_tag "$WORK/ord.state" "chain-duo-a@0.1.0+chain-duo-b@0.1.0" "$WORK/ord-old.state"
+out="$(run_game "$WORK/ord-ba" 2600 --skip-to-level 10 --card-dir "$CANARY_CARDS" \
+        --state-load-on-frame 2200 --state-load-input "$WORK/ord-old.state")"
+if printf '%s\n' "$out" | grep -q "records no order; compared as a set" && \
+   printf '%s\n' "$out" | grep -q "savestate: loaded"; then
+    ok "modset order: an order-free tag loads as a set under another order"
+else
+    bad "modset order: the order-free tag was not admitted as a set"
+fi
+
 # ── 13c. rewind keyframes share arena pages ─────────────────────────────
 # A rewind keyframe stores the arena as reference-counted 4 KiB pages: a
 # full copy at the keyframe, then a compare against the newest other valid

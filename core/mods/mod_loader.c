@@ -263,6 +263,19 @@ typedef struct { char path[MOD_PATH_MAX]; } mod_src_t;
 /* One declared dependency id. */
 typedef struct { char id[MOD_ID_MAX]; } mod_dep_t;
 
+/* One override-order event of a mod (openpete_modset_event_t without the
+ * id), stamped with its place in the session's sequence. */
+typedef struct {
+    int      seq;     /* 1-based, unique across every mod */
+    int      kind;    /* openpete_modset_event_kind_t */
+    uint32_t addr;    /* LINK: the chain's guest vaddr */
+    uint32_t overlay; /* LINK: the link's overlay binding */
+} mod_order_ev_t;
+
+struct openpete_mod;
+static void mod_order_note(struct openpete_mod* mod, int kind, uint32_t addr,
+                           uint32_t overlay);
+
 struct openpete_mod {
     int   load_index;    /* position in the live table, set at the copy
                           * into it; the table is chunked, so the index
@@ -349,6 +362,10 @@ struct openpete_mod {
     int   entered;       /* openpete_mod_entry has run; load-all rows
                           * defer it to their first enable so a
                           * boot-disabled mod runs zero code */
+    int   in_entry;      /* its entry is running: links it registers are
+                          * implied by the entry's order event */
+    mod_fvec order_ev;   /* mod_order_ev_t; its override-order events
+                          * (mod_order_note), in session order */
     int   has_assets;    /* assets/ overlay root exists (boot-scoped) */
     /* Set by a deferred entry on the guest thread, taken by the renderer's
      * next compose (openpete_mods_take_entered), which queues the mod's
@@ -454,6 +471,7 @@ static void mod_rows_free(struct openpete_mod* m) {
     mod_fvec_free(&m->bindings);
     mod_fvec_free(&m->mat_rows);
     mod_fvec_free(&m->levels);
+    mod_fvec_free(&m->order_ev);
 }
 
 /** @brief Give up a mod's row ownership without freeing, after the rows moved to another struct.
@@ -466,6 +484,7 @@ static void mod_rows_disown(struct openpete_mod* m) {
     memset(&m->cfg_rows, 0, sizeof m->cfg_rows);
     memset(&m->mat_rows, 0, sizeof m->mat_rows);
     memset(&m->levels, 0, sizeof m->levels);
+    memset(&m->order_ev, 0, sizeof m->order_ev);
 }
 
 /** @brief Drop every row of a mod, keeping the table storage, for a re-parse in place.
@@ -587,10 +606,12 @@ static int mod_check_abi(void* dl, const char* id, const char* path) {
  * latches, stops the rumble slots it drove, removes its chain links,
  * present hooks, registry rows, postfx passes, materials and shaders (postfx
  * before shaders, which retires the pipelines), and clears its UI body and
- * toggle hook. Runs before a reload re-enters the mod, and after a failed
- * entry: an entry that registered and then returned nonzero must not leave
- * its registrations live under an id the loader has declared disabled. */
+ * toggle hook, and records a STRIP override-order event. Runs before a
+ * reload re-enters the mod, and after a failed entry: an entry that
+ * registered and then returned nonzero must not leave its registrations
+ * live under an id the loader has declared disabled. */
 static void mod_strip_registrations(struct openpete_mod* mod) {
+    mod_order_note(mod, OPENPETE_MODSET_EV_STRIP, 0, 0);
     openpete_host_mouse_request_capture(
         OPENPETE_MOUSE_CAP_MOD0 + mod->load_index, 0);
     memset(mod->mouse_mark, 0, sizeof mod->mouse_mark);
@@ -2028,9 +2049,12 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     openpete_mods_config_load(mod, mod->dir, mod->log_tag);
     (void)config_compute_key(mod->dir, mod->cfg_key);
     (void)openpete_mods_shader_watch_key(mod->dir, mod->shader_key);
+    mod_order_note(mod, OPENPETE_MODSET_EV_ENTRY, 0, 0);
     openpete_mods_arena_entry_begin(mod->id); /* replay its allocations */
     openpete_mods_guard_enter(mod->id);
+    mod->in_entry = 1;
     const int entry_rc = entry(&s_api, mod);
+    mod->in_entry = 0;
     openpete_mods_guard_leave();
     openpete_mods_arena_entry_end(mod->id);
     if (entry_rc != 0) {
@@ -2638,50 +2662,160 @@ static int mod_is_mutative(const struct openpete_mod* m) {
     return (m->dl != NULL) || (mod_level_count(m) > 0);
 }
 
-/* The cached save modset tag; mod_enter_deferred clears s_tag_built. */
-static char s_tag[1024];
-static int  s_tag_built = 0;
+/* The cached modset tags: one heap block holding the set tag, its NUL,
+ * the ordered tag and its NUL; NULL when unbuilt or when the allocation
+ * failed. mod_enter_deferred clears s_tag_built. */
+static char* s_tag;
+static int   s_tag_built = 0;
 
-const char* openpete_mods_modset_tag(void) {
-    if (s_tag_built) return s_tag;
-    s_tag_built = 1;
-    s_tag[0] = '\0';
-    /* Sorted id order -> order-independent canonical form. Only mods
-     * whose entry has RUN can have diverged the session - deferred-
-     * entry load-all rows join the tag at their first enable (the
-     * enable path clears s_tag_built; memcard reads the tag per
-     * check/write, so later writes carry the grown tag). */
-    mod_fvec pick;
-    const struct openpete_mod** picked;
-    int n = 0;
-    mod_fvec_init(&pick, sizeof(struct openpete_mod*), 64, NULL, 0);
-    for (int i = 0; i < mod_count(); i++)
-        if (mod_at(i)->entered && mod_is_mutative(mod_at(i))) {
-            const struct openpete_mod** slot =
-                (const struct openpete_mod**)mod_fvec_push(&pick);
-            if (!slot) break;
-            *slot = mod_at(i);
-            n++;
+/* Returned by both accessors when the tag block cannot be allocated: no
+ * stored tag equals it, so a load is refused rather than admitted under
+ * the empty (vanilla) tag. */
+#define MODSET_TAG_FAILED "(modset tag allocation failed)"
+
+/** @brief Return a mod's override-order event @p i, or NULL past the end. */
+static const mod_order_ev_t* mod_order_at(const struct openpete_mod* m,
+                                          size_t i) {
+    return (const mod_order_ev_t*)mod_fvec_at(&m->order_ev, i);
+}
+
+/** @brief Record an override-order event of @p mod with the session's next sequence number, and drop the cached modset tags.
+ *
+ * The next number is one above the newest any mod holds, so the sequence
+ * needs no counter beside the mod table.
+ * @param mod The mod.
+ * @param kind An openpete_modset_event_kind_t.
+ * @param addr LINK: the chain's guest vaddr; else 0.
+ * @param overlay LINK: the link's overlay binding; else 0. */
+static void mod_order_note(struct openpete_mod* mod, int kind, uint32_t addr,
+                           uint32_t overlay) {
+    int seq = 0;
+    for (int i = 0; i < mod_count(); i++) {
+        const size_t n = mod_fvec_count(&mod_at(i)->order_ev);
+        if (n && mod_order_at(mod_at(i), n - 1)->seq > seq)
+            seq = mod_order_at(mod_at(i), n - 1)->seq;
+    }
+    if (!mod->order_ev.elem_size)
+        mod_fvec_init(&mod->order_ev, sizeof(mod_order_ev_t), 8, NULL, 0);
+    mod_order_ev_t* e = (mod_order_ev_t*)mod_fvec_push(&mod->order_ev);
+    if (!e) {
+        OPL_ERROR_F("mods", "%s: override-order event allocation failed",
+                    mod->id);
+    } else {
+        e->seq = seq + 1;
+        e->kind = kind;
+        e->addr = addr;
+        e->overlay = overlay;
+    }
+    s_tag_built = 0;
+}
+
+void openpete_mods_link_registered(const char* owner_id, uint32_t addr,
+                                   uint32_t overlay) {
+    if (!owner_id) return;
+    for (int i = 0; i < mod_count(); i++) {
+        struct openpete_mod* m = mod_at(i);
+        if (strcmp(m->id, owner_id) != 0) continue;
+        if (!m->in_entry)
+            mod_order_note(m, OPENPETE_MODSET_EV_LINK, addr, overlay);
+        return;
+    }
+}
+
+/** @brief Hash the override-order events of the entered mutative mods, merged in session order. */
+static uint64_t modset_order_hash(void) {
+    mod_fvec ev;
+    mod_fvec_init(&ev, sizeof(openpete_modset_event_t), 64, NULL, 0);
+    mod_fvec seqs;
+    mod_fvec_init(&seqs, sizeof(int), 64, NULL, 0);
+    for (int i = 0; i < mod_count(); i++) {
+        const struct openpete_mod* m = mod_at(i);
+        if (!m->entered || !mod_is_mutative(m)) continue;
+        for (size_t k = 0; k < mod_fvec_count(&m->order_ev); k++) {
+            const mod_order_ev_t* o = mod_order_at(m, k);
+            openpete_modset_event_t* e =
+                (openpete_modset_event_t*)mod_fvec_push(&ev);
+            int* sq = (int*)mod_fvec_push(&seqs);
+            if (!e || !sq) break;
+            e->kind = (openpete_modset_event_kind_t)o->kind;
+            e->id = m->id;
+            e->addr = o->addr;
+            e->overlay = o->overlay;
+            *sq = o->seq;
         }
-    picked = (const struct openpete_mod**)mod_fvec_data(&pick);
+    }
+    /* Insertion sort by sequence number: each mod's run is already in
+     * order, and the merged count is the session's event count. */
+    openpete_modset_event_t* e = (openpete_modset_event_t*)mod_fvec_data(&ev);
+    int* sq = (int*)mod_fvec_data(&seqs);
+    const int n = (int)mod_fvec_count(&seqs);
     for (int i = 1; i < n; i++) {
-        const struct openpete_mod* m = picked[i];
+        const openpete_modset_event_t ke = e[i];
+        const int ks = sq[i];
         int j = i - 1;
-        while (j >= 0 && strcmp(picked[j]->id, m->id) > 0) {
-            picked[j + 1] = picked[j];
+        while (j >= 0 && sq[j] > ks) {
+            e[j + 1] = e[j];
+            sq[j + 1] = sq[j];
             j--;
         }
-        picked[j + 1] = m;
+        e[j + 1] = ke;
+        sq[j + 1] = ks;
     }
-    size_t off = 0;
-    for (int i = 0; i < n; i++) {
-        int w = snprintf(s_tag + off, sizeof s_tag - off, "%s%s@%s",
-                         i ? "+" : "", picked[i]->id, picked[i]->version);
-        if (w < 0 || (size_t)w >= sizeof s_tag - off) break;
-        off += (size_t)w;
-    }
-    return s_tag;
+    const uint64_t h = openpete_modset_order_hash(e, n);
+    mod_fvec_free(&ev);
+    mod_fvec_free(&seqs);
+    return h;
 }
+
+/** @brief Build the cached tag block from the entered mutative mods and their order events. */
+static void modset_tags_build(void) {
+    mod_fvec pick;
+    int n = 0;
+    s_tag_built = 1;
+    free(s_tag);
+    s_tag = NULL;
+    mod_fvec_init(&pick, sizeof(openpete_modset_member_t), 64, NULL, 0);
+    for (int i = 0; i < mod_count(); i++) {
+        const struct openpete_mod* m = mod_at(i);
+        if (!m->entered || !mod_is_mutative(m)) continue;
+        openpete_modset_member_t* slot =
+            (openpete_modset_member_t*)mod_fvec_push(&pick);
+        if (!slot) break;
+        slot->id = m->id;
+        slot->version = m->version;
+        n++;
+    }
+    const openpete_modset_member_t* ms =
+        (const openpete_modset_member_t*)mod_fvec_data(&pick);
+    const size_t set_len = openpete_modset_format_set(NULL, 0, ms, n);
+    const uint64_t oh = modset_order_hash();
+    const size_t ord_len = openpete_modset_format_order(NULL, 0, ms, n, oh);
+    s_tag = (char*)malloc(set_len + ord_len + 2);
+    if (s_tag) {
+        openpete_modset_format_set(s_tag, set_len + 1, ms, n);
+        openpete_modset_format_order(s_tag + set_len + 1, ord_len + 1, ms, n,
+                                     oh);
+    } else {
+        OPL_ERROR_F("mods", "modset tag: allocation of %zu bytes failed",
+                    set_len + ord_len + 2);
+    }
+    mod_fvec_free(&pick);
+}
+
+/* Only mods whose entry has run can have diverged the session; a
+ * deferred-entry row joins at its first enable, which clears s_tag_built,
+ * and memcard reads the tag per check and write, so later writes carry the
+ * grown tag. */
+const char* openpete_mods_modset_tag(void) {
+    if (!s_tag_built) modset_tags_build();
+    return s_tag ? s_tag : MODSET_TAG_FAILED;
+}
+
+const char* openpete_mods_modset_order_tag(void) {
+    if (!s_tag_built) modset_tags_build();
+    return s_tag ? s_tag + strlen(s_tag) + 1 : MODSET_TAG_FAILED;
+}
+
 
 
 
@@ -4971,9 +5105,12 @@ static int mod_run_entry(struct openpete_mod* mod) {
                     mod->id);
         return -1; /* keep the .so resident; it is inert without chains */
     }
+    mod_order_note(mod, OPENPETE_MODSET_EV_ENTRY, 0, 0);
     openpete_mods_arena_entry_begin(mod->id);
     openpete_mods_guard_enter(mod->id);
+    mod->in_entry = 1;
     int rc = entry(&s_api, mod);
+    mod->in_entry = 0;
     openpete_mods_guard_leave();
     openpete_mods_arena_entry_end(mod->id);
     if (rc != 0) {
@@ -5134,6 +5271,7 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir,
             OPL_INFO_F("mods", "loaded %s v%s (declarative)", mod->id,
                        mod->version);
             mod->entered = 1;
+            mod_order_note(mod, OPENPETE_MODSET_EV_ENTRY, 0, 0);
             mod_register_materials(mod);   /* a manifest-only mod IS its rows */
             mod_register_assets(mod);
             return 0;
@@ -5231,10 +5369,11 @@ static int mod_enter_deferred(struct openpete_mod* mod) {
         if (mod_run_entry(mod) != 0) return -1;
     } else {
         mod->entered = 1; /* assets-only: the overlay root IS the mod */
+        mod_order_note(mod, OPENPETE_MODSET_EV_ENTRY, 0, 0);
         mod_register_materials(mod);
     }
     mod_register_assets(mod);
-    s_tag_built = 0; /* the modset tag now includes this mod if divergent */
+    s_tag_built = 0; /* the modset tags now include this mod if divergent */
     atomic_store(&mod->late_entered, 1);
     return 0;
 }

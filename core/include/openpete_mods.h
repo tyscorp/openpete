@@ -968,17 +968,126 @@ void openpete_mods_time_report(unsigned ticks_elapsed);
  *         override is running on this thread. */
 const char* openpete_mods_crash_attribution(uint32_t* addr_out);
 
-/** @brief Return the save modset tag, the canonical identity of the gameplay-relevant loaded modset.
+/** @brief Return the set modset tag, the order-free identity of the gameplay-relevant loaded modset.
  *
  * The form is "id@ver+id@ver" with ids sorted, over the mods whose entry
  * has run and that mod_is_mutative classifies as changing gameplay state;
  * the empty string is vanilla. Built on the first call and cached; the
  * first enable of a deferred-entry mod drops the cache, so the tag grows
- * with it and does not shrink on a disable. core/host/memcard.c tags cards
- * and warns on a mismatch; core/record/savestate.c records and compares
- * it.
+ * with it and does not shrink on a disable. Memory cards and their
+ * `.modsave` snapshots carry this form (core/host/memcard.c,
+ * core/mods/mod_save.c) and warn on a mismatch; a savestate compares a
+ * file written before the ordered form existed against it.
  * @return The tag, owned by the loader. */
 const char* openpete_mods_modset_tag(void);
+
+/** @brief Return the ordered modset tag, which fixes the override order of the gameplay-relevant loaded modset.
+ *
+ * Covers the same mods as openpete_mods_modset_tag. The form is
+ * OPENPETE_MODSET_ORDER_PREFIX, the set tag, '#' and 16 lowercase hex
+ * digits of openpete_modset_order_hash over the session's order events
+ * of those mods: each entry (boot entries in load order, then each
+ * deferred entry and hot-reload re-entry), each strip of a mod's
+ * registrations, and each override link registered outside its mod's
+ * entry, with its chain. Every chain's link order and the enabled-list
+ * walk are functions of that sequence. Vanilla is the empty string.
+ * Cached with the set tag; each recorded event drops the cache.
+ * core/record/savestate.c writes it into every state.
+ * @return The tag, owned by the loader. */
+const char* openpete_mods_modset_order_tag(void);
+
+/** The prefix that marks the ordered modset tag form. A mod id cannot
+ *  hold ':', so no set-form tag starts with it. */
+#define OPENPETE_MODSET_ORDER_PREFIX "v2:"
+
+/** One gameplay-relevant mod, as the modset tag formatters read it. */
+typedef struct {
+    const char* id;
+    const char* version;
+} openpete_modset_member_t;
+
+/** Kinds of override-order event. */
+typedef enum {
+    OPENPETE_MODSET_EV_ENTRY = 1, /* the mod's entry ran (boot, deferred, reload) */
+    OPENPETE_MODSET_EV_STRIP = 2, /* every registration of the mod was removed */
+    OPENPETE_MODSET_EV_LINK  = 3  /* a link registered outside the mod's entry */
+} openpete_modset_event_kind_t;
+
+/** One override-order event, in session order. */
+typedef struct {
+    openpete_modset_event_kind_t kind;
+    const char*                  id;      /* the mod */
+    uint32_t                     addr;    /* LINK: the chain's guest vaddr */
+    uint32_t                     overlay; /* LINK: the link's overlay binding */
+} openpete_modset_event_t;
+
+/** @brief Record an override link registration and drop the cached modset tags.
+ *
+ * core/mods/mod_chain.c calls it after each link it puts at the front of a
+ * chain. A link registered while its owner's entry runs is implied by the
+ * entry event; any other link is recorded as a LINK event.
+ * @param owner_id The registering mod; NULL or an id that names no loaded
+ *        mod records nothing.
+ * @param addr The chain's guest vaddr.
+ * @param overlay The link's overlay binding. */
+void openpete_mods_link_registered(const char* owner_id, uint32_t addr,
+                                   uint32_t overlay);
+
+/** @brief Format the set modset tag of @p n members, ids sorted, snprintf-style.
+ *
+ * @param out Receives the NUL-terminated tag, truncated to @p cap; may be
+ *        NULL with @p cap 0 to measure.
+ * @param cap Size of @p out.
+ * @param m The members.
+ * @param n Their count.
+ * @return The full tag length, excluding the NUL. */
+size_t openpete_modset_format_set(char* out, size_t cap,
+                                  const openpete_modset_member_t* m, int n);
+
+/** @brief Format the ordered modset tag of @p n members and an order hash, snprintf-style.
+ *
+ * No members gives the empty string.
+ * @param out Receives the NUL-terminated tag, truncated to @p cap; may be
+ *        NULL with @p cap 0 to measure.
+ * @param cap Size of @p out.
+ * @param m The members.
+ * @param n Their count.
+ * @param order_hash openpete_modset_order_hash of their order events.
+ * @return The full tag length, excluding the NUL. */
+size_t openpete_modset_format_order(char* out, size_t cap,
+                                    const openpete_modset_member_t* m, int n,
+                                    uint64_t order_hash);
+
+/** @brief Hash an order-event sequence with FNV-1a 64 over each event's kind, id length, chain, overlay and id.
+ *
+ * @param ev The events, in session order.
+ * @param n Their count.
+ * @return The hash; the FNV-1a offset basis for no events. */
+uint64_t openpete_modset_order_hash(const openpete_modset_event_t* ev,
+                                    int n);
+
+/** The verdict of a stored modset tag against the running modset. */
+typedef enum {
+    OPENPETE_MODSET_MATCH = 0,     /* ordered tag, equal */
+    OPENPETE_MODSET_SET_MATCH,     /* set-form tag, equal to the running set */
+    OPENPETE_MODSET_SET_DIFFERS,   /* the mods or versions differ */
+    OPENPETE_MODSET_ORDER_DIFFERS  /* ordered tag: same mods, another order */
+} openpete_modset_verdict_t;
+
+/** @brief Judge a stored modset tag against the running modset's two tags.
+ *
+ * An ordered-form tag (OPENPETE_MODSET_ORDER_PREFIX) matches only an equal
+ * running ordered tag; on a mismatch its set part, between the prefix and
+ * the hash, decides whether the set or only the order differs. Any other tag, including
+ * the empty vanilla tag, is a set-form tag and is compared with the
+ * running set tag.
+ * @param saved The stored tag; NULL reads as "".
+ * @param now_order The running ordered tag; NULL reads as "".
+ * @param now_set The running set tag; NULL reads as "".
+ * @return The verdict. */
+openpete_modset_verdict_t openpete_modset_compare(const char* saved,
+                                                  const char* now_order,
+                                                  const char* now_set);
 
 /* ── Draw service (core/mods/mod_draw.c) ───────────────────────────── */
 

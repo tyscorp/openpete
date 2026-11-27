@@ -26,7 +26,10 @@ mods, then the original game code.
 The [dev overlay](glossary.md#dev-overlay) (hold ++m++; ++esc++ opens
 the separate settings menu) has a Mods tab that toggles a loaded mod at
 the next [tick](glossary.md#tick) boundary and edits its settings. It
-does not reorder mods.
+does not reorder mods or write `enabled.txt`. A mod enabled there that did
+not run at launch, and a hot-reloaded mod, runs first on every function it
+hooks until the program exits; a savestate records that order
+([`sim_mutative`](manifest.md)).
 
 A distribution packaged with the SDK carries working examples under
 `<exe>/sdk/examples/<id>/`; copy one into your `mods` directory to run

@@ -109,8 +109,11 @@ A load is refused, and the running game left untouched, when:
 - the state was made by another game; the log names both games;
 - the state was made by a build whose compiled game differs from this one,
   which includes most upgrades;
-- the state was made under a different set of game-changing mods (the log
-  says **MODSET MISMATCH**; enable the same mods and versions);
+- the state was made under a different set of game-changing mods, or the
+  same mods in another order (the log says **MODSET MISMATCH (mods)** or
+  **MODSET MISMATCH (order)** and prints the mods the state was made with;
+  enable the same mods and versions, in the same `enabled.txt` order, and
+  enable or reload the same mods during the session);
 - the game does not return to the wait point where the state was saved
   within 1800 of its waits (at least 30 seconds), for example because a
   pause menu or a level transition is running; the load waits that long,

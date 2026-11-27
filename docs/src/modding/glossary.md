@@ -104,7 +104,8 @@ the tick before, in whichever slot the game's allocator hands it.
 ### mutative
 
 A mod that writes guest RAM, declared as `sim_mutative` in the manifest.
-Each save is tagged with the mutative set that wrote it.
+Each save is tagged with the mutative set that wrote it; a savestate is
+tagged with the set and its order.
 
 ### overlay
 

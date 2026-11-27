@@ -96,7 +96,15 @@ a line when a save is loaded under a different set; progress is never
 blocked, and `--adopt-saves` re-tags. Per-save data a mod keeps belongs
 in [save records](save-records.md), not in the save's spare bytes. A mod with no `src/` and no
 `[[level]]` is derived non-mutative. A mod with `src/` is assumed mutative
-unless it sets `sim_mutative = false`. Asset replacements, shaders, `draw_text`,
+unless it sets `sim_mutative = false`. A savestate records the mutative
+mods and the order they entered and hooked functions in: the `enabled.txt`
+order at launch, each mod enabled from the Mods tab or hot-reloaded during
+the session, and each override registered after the mod's entry point
+returned. It loads only under the same mods, versions and order: the log
+says `MODSET MISMATCH (mods)` or `MODSET MISMATCH (order)` and prints both
+tags, such as `v2:a@1.0+b@2.0#5f1c09a2e43b7d80` (the mods, then a hash of
+the order). A savestate written before the order was recorded carries a
+tag without the `v2:` prefix and loads under the same mods in any order. Asset replacements, shaders, `draw_text`,
 `ui_status`, and `notify` never write guest RAM. The obsolete key
 `sim_neutral` has the opposite sense; it is still read when `sim_mutative`
 is absent, and the load logs a warning naming the `sim_mutative` line to

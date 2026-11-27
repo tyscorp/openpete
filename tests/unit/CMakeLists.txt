@@ -1512,3 +1512,19 @@ set_target_properties(audio_feed_sim PROPERTIES CXX_STANDARD 20)
 # The interleaving scheduler and its harnesses (tests/sched), which carry
 # their own `unit` label.
 add_subdirectory(${CMAKE_SOURCE_DIR}/tests/sched ${CMAKE_BINARY_DIR}/tests/sched)
+
+# mod_modset_test - the modset tags (core/mods/mod_modset.c): the set form
+# byte-identical to the order-free tag cards carry, the ordered form and
+# its order hash (entry order, deferred entry, hot reload, late links), and
+# the savestate verdict matrix (ordered equal, reordered, other set,
+# set-form file). The module is
+# pure string code, so it links alone.
+add_executable(mod_modset_test
+    mod_modset_test.c
+    ${CMAKE_SOURCE_DIR}/core/mods/mod_modset.c)
+target_include_directories(mod_modset_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/core/mods)
+set_target_properties(mod_modset_test PROPERTIES C_STANDARD 11)
+add_test(NAME mod_modset_test COMMAND mod_modset_test)
+set_tests_properties(mod_modset_test PROPERTIES LABELS "mods")

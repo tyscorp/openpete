@@ -18,7 +18,8 @@
 //   uint32_t  spu_mem_bytes    - SPU sample RAM
 //   uint32_t  cd_state_bytes   - PsyCross CD head-position globals
 //   uint32_t  game_extra_bytes - opaque per-game host blob (game_extras)
-//   uint32_t  modset_tag_bytes - enabled-modset tag string (no NUL)
+//   uint32_t  modset_tag_bytes - modset tag string (no NUL): the ordered
+//                                form, or the set form in an older file
 //   uint32_t  arena_bytes      - mod arena section (ledger rows + used bytes)
 //   char      game[12]      - the saving game's id ("spyro-1"), NUL-padded;
 //                             all zero in a file written before the field
@@ -751,7 +752,7 @@ static int image_reserve(uint8_t** buf, size_t* cap, size_t need) {
 
 int openpete_state_image_capture(uint8_t** buf, size_t* len, size_t* cap,
                                  const CPUState* cpu, unsigned frame) {
-    const char* modset_tag = openpete_mods_modset_tag();
+    const char* modset_tag = openpete_mods_modset_order_tag();
     if (!modset_tag) modset_tag = "";
 
     openpete_state_header_t hdr;
@@ -1178,13 +1179,60 @@ static int state_card_admit(FILE* fp, const char* path, long body,
     return state_card_check(path, c);
 }
 
-/** @brief Refuse a state the running mods cannot restore: an arena ledger that is not a prefix match of the live one, or another modset.
+/** @brief Refuse a state saved under another modset, naming whether the mods or only their order differ.
+ *
+ * Guest RAM and the arena carry mod-parked payloads and pointers into
+ * them, and the order the mods entered and registered their overrides in
+ * decides which mod's code runs first on every tick, so a file saved under another mutative
+ * modset, or the same one in another order, restores a world the running
+ * mods did not build. A file whose tag is in the set form (written before
+ * the ordered form) is compared as a set and its order is not checked.
+ * @param path The state file, for the log lines.
+ * @param tag The modset tag the state was saved under.
+ * @return 0 when the modset admits the file, -1 otherwise. */
+static int state_modset_verdict(const char* path, const char* tag) {
+    const char* now_order = openpete_mods_modset_order_tag();
+    const char* now_set = openpete_mods_modset_tag();
+    switch (openpete_modset_compare(tag, now_order, now_set)) {
+    case OPENPETE_MODSET_MATCH:
+        return 0;
+    case OPENPETE_MODSET_SET_MATCH:
+        if (tag[0])
+            OPL_INFO_F("savestate", "%s: modset tag [%s] records no order; "
+                       "compared as a set", path, tag);
+        return 0;
+    case OPENPETE_MODSET_ORDER_DIFFERS:
+        OPL_ERROR_F("savestate",
+                    "%s: MODSET MISMATCH (order) - state saved under [%s], "
+                    "running [%s]: the same mods, entered or hooked in "
+                    "another order (the hash after '#' differs); load "
+                    "refused - running state untouched. Recreate the "
+                    "enabled.txt order and the mods enabled or "
+                    "hot-reloaded during the session the state was saved "
+                    "in.",
+                    path, tag, now_order);
+        return -1;
+    case OPENPETE_MODSET_SET_DIFFERS:
+    default:
+        OPL_ERROR_F("savestate",
+                    "%s: MODSET MISMATCH (mods) - state saved under [%s], "
+                    "running [%s]; load refused - running state "
+                    "untouched. Enable the same mods (and versions) "
+                    "the state was saved with.",
+                    path, tag, now_order);
+        return -1;
+    }
+}
+
+/** @brief Refuse a state the running mods cannot restore: another modset, or an arena ledger that is not a prefix match of the live one.
  *
  * Both verdicts read only the file and the session's mod state, so they
  * run before the park-site wait: a file they refuse is refused at once
- * instead of after the wait. The live ledger only grows and its rows only
- * gain superseded marks, so a refusal here is final; a pass is re-judged
- * at the attempt that commits. Each refusal is logged.
+ * instead of after the wait. The modset verdict runs first, since a ledger
+ * written by other mods or another order fails as a consequence of it.
+ * The live ledger only grows and its rows only gain superseded marks, so
+ * a refusal here is final; a pass is re-judged at the attempt that
+ * commits. Each refusal is logged.
  * @param path The state file, for the log lines.
  * @param arena The arena section, NULL when the file has none.
  * @param arena_bytes Its size.
@@ -1192,24 +1240,12 @@ static int state_card_admit(FILE* fp, const char* path, long body,
  * @return 0 when the mod state admits the file, -1 otherwise. */
 static int state_mod_verdict(const char* path, const uint8_t* arena, uint32_t arena_bytes,
                              const char* tag) {
+    if (state_modset_verdict(path, tag) != 0) return -1;
     if (openpete_mods_arena_state_verdict(arena, arena_bytes) != 0) {
         OPL_ERROR_F("savestate", "%s: load refused - running state untouched", path);
         return -1;
     }
-    /* Guest RAM and the arena carry mod-parked payloads and pointers into
-     * them, so a file saved under a different mutative modset restores a
-     * world the running mods did not build. The ledger verdict covers the
-     * layout, this covers the set. */
-    const char* now_tag = openpete_mods_modset_tag();
-    if (!now_tag) now_tag = "";
-    if (strcmp(now_tag, tag) == 0) return 0;
-    OPL_ERROR_F("savestate",
-                "%s: MODSET MISMATCH - state saved under [%s], "
-                "running [%s]; load refused - running state "
-                "untouched. Enable the same mods (and versions) "
-                "the state was saved with.",
-                path, tag, now_tag);
-    return -1;
+    return 0;
 }
 
 /** @brief Refuse a state load, with a logged error, while the run follows the reference's schedule.

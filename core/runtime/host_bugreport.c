@@ -293,7 +293,7 @@ static char* press_summary(const CPUState* cpu) OP_REQUIRES(sim)
     tb_printf(&t, "freecam=%d\npaused=%d\nrunahead=%d\nrewind=%d\n",
               openpete_freecam_active() ? 1 : 0, host_session_paused() ? 1 : 0,
               openpete_runahead_get(), openpete_rewind_enabled());
-    const char* tag = openpete_mods_modset_tag();
+    const char* tag = openpete_mods_modset_order_tag();
     tb_printf(&t, "modset=%s\n", tag && *tag ? tag : "(stock)");
     tb_printf(&t, "game_state=(no per-game report)\n");
     return t.b;
