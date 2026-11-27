@@ -21,6 +21,7 @@
 
 #include <stdint.h>
 #include "psx_runtime_internal.h"
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 /* GTE UNR divide cap (0x1FFFF in 16.16) and SXY output saturation. */
 #define NGTE_DIV_CAP   (131071.0 / 65536.0)
@@ -722,7 +723,7 @@ int ngte_prim_tpage_blend(const ngte_prim* p, ngte_tpage* tp);
  * @return The number of triangles fed. */
 int ngte_feed_flat_quad(const float x[4], const float y[4], const float u[4],
                         const float v[4], const uint32_t rgb[4], float depth,
-                        const ngte_tpage* tp, int blend, int nv);
+                        const ngte_tpage* tp, int blend, int nv) OP_REQUIRES_SHARED(sim);
 
 /** @brief Feeds a screen-space primitive as ngte_feed_flat_quad does, each corner's colour carrying its residual and the primitive its bucket.
  *
@@ -746,7 +747,7 @@ int ngte_feed_flat_quad(const float x[4], const float y[4], const float u[4],
  * @return The number of triangles fed. */
 int ngte_feed_flat_quad_q(const float x[4], const float y[4], const float u[4],
                           const float v[4], const uint32_t rgb[4], const uint32_t rgbq[4],
-                          float depth, const ngte_tpage* tp, int blend, int nv, int bucket);
+                          float depth, const ngte_tpage* tp, int blend, int nv, int bucket) OP_REQUIRES_SHARED(sim);
 
 /** @brief Builds the quad that covers the pixels the PSX GPU draws for a line.
  *
@@ -789,7 +790,7 @@ void ngte_line_quad(float ax, float ay, float bx, float by, float centre,
  * @param blend The native blend code, 0 for opaque.
  * @return The number of triangles fed. */
 int ngte_feed_flat_line(float ax, float ay, float bx, float by, uint32_t rgb_a,
-                        uint32_t rgb_b, float centre, float depth, int blend);
+                        uint32_t rgb_b, float centre, float depth, int blend) OP_REQUIRES_SHARED(sim);
 
 /* ---- near-plane clip corner --------------------------------------------- */
 /*

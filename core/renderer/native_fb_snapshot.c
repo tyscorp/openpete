@@ -10,6 +10,7 @@
 
 #include <SDL3/SDL_atomic.h>
 #include <SDL3/SDL_mutex.h>
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 /* The scene a copy's pixels come from is the one the game's render last fed,
  * which the scene ring stamps with its own frame. That stamp lags the VBL
@@ -20,13 +21,13 @@
  * the buffer's content, so the stamp is the game render's
  * (openpete_native_scene_game_frame), not the open scene's. */
 extern unsigned openpete_frame;
-extern unsigned openpete_native_scene_game_frame(void);
+extern unsigned openpete_native_scene_game_frame(void) OP_REQUIRES_SHARED(sim);
 
 /** @brief Return the frame stamp a copy taken now belongs to.
  *
  * The stamp of the scene the game's render last fed, else openpete_frame
  * before the first feed (the ring reports 0xFFFFFFFF then). */
-static unsigned fb_copy_frame(void)
+static unsigned fb_copy_frame(void) OP_REQUIRES_SHARED(sim)
 {
     const unsigned live = openpete_native_scene_game_frame();
     return (live != 0xFFFFFFFFu) ? live : openpete_frame;
@@ -39,7 +40,7 @@ static unsigned fb_copy_frame(void)
  * have opened its scene, and its 2D lands in that scene after the copy. */
 static unsigned s_done_frame = 0xFFFFFFFFu;
 
-void openpete_fb_snapshot_note_scene_complete(void)
+void openpete_fb_snapshot_note_scene_complete(void) OP_REQUIRES_SHARED(sim)
 {
     if (openpete_fb_snapshot_enabled()) s_done_frame = fb_copy_frame();
 }
@@ -47,7 +48,7 @@ void openpete_fb_snapshot_note_scene_complete(void)
 /** @brief Return the stamp a framebuffer window copy names: the newest completed scene.
  *
  * Falls back to fb_copy_frame before the first canonical capture. */
-static unsigned fb_window_frame(void)
+static unsigned fb_window_frame(void) OP_REQUIRES_SHARED(sim)
 {
     return (s_done_frame != 0xFFFFFFFFu) ? s_done_frame : fb_copy_frame();
 }
@@ -358,7 +359,7 @@ static fb_snap_t *fb_window_slot(int dst_x, int dst_y, int w, int h)
  * @param w Width in texels.
  * @param h Height in texels. */
 static void fb_move_area_to_area(fb_area_t *from, fb_area_t *to,
-                                 int dst_x, int dst_y, int w, int h)
+                                 int dst_x, int dst_y, int w, int h) OP_REQUIRES_SHARED(sim)
 {
     if (dst_x != to->x || dst_y != to->y || w != to->w || h != to->h) return;
     fb_area_drop(to);
@@ -414,7 +415,7 @@ const uint16_t *openpete_fb_snapshot_under(int idx, int *x, int *y, int *w, int 
 }
 
 int openpete_fb_snapshot_on_move(int src_x, int src_y, int w, int h,
-                                 int dst_x, int dst_y)
+                                 int dst_x, int dst_y) OP_REQUIRES_SHARED(sim)
 {
     openpete_native_hold_note_vram(dst_x, dst_y, w, h, src_x, src_y);
     if (!openpete_fb_snapshot_enabled()) return 0;

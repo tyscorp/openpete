@@ -960,9 +960,9 @@ static void carry_accum_push(const scene_tri_t *t)
     s_overlay_accum_epoch[s_overlay_accum_n] = s_scene_epoch;
     s_overlay_accum[s_overlay_accum_n++] = *t;
 }
-static void (*s_overlay_precapture)(void);
+static void (*s_overlay_precapture)(void) OP_SLOT(sim);
 
-void openpete_native_scene_register_overlay_precapture(void (*fn)(void)) {
+void openpete_native_scene_register_overlay_precapture(void (*fn)(void) OP_SLOT(sim)) {
     s_overlay_precapture = fn;
 }
 
@@ -971,16 +971,16 @@ void openpete_native_scene_register_overlay_precapture(void (*fn)(void)) {
 static uint32_t s_cur_tag;        /* sticky, stamped by add_tri */
 /* The ordering-table traversal rank of the tris added next (see scene_tri_t::seq).
  * Sticky, cleared at each frame boundary; a feeder that never sets it leaves 0. */
-static uint32_t s_cur_seq;
-static uint32_t s_cur_prim;       /* sticky, stamped by add_tri (see scene_tri_t::prim) */
+static uint32_t s_cur_seq OP_GUARDED_BY(sim);
+static uint32_t s_cur_prim OP_GUARDED_BY(sim);       /* sticky, stamped by add_tri (see scene_tri_t::prim) */
 static int s_cur_stp_sel;         /* sticky, stamped by add_tri (see scene_tri_t::stp_sel) */
-static uint32_t s_cur_fb_cell;    /* sticky, stamped by add_tri (see scene_tri_t::fb_cell) */
+static uint32_t s_cur_fb_cell OP_GUARDED_BY(sim);    /* sticky, stamped by add_tri (see scene_tri_t::fb_cell) */
 /* Accepted tris per provenance-tag family (tag bits 31:28) and kind within
  * the family (openpete_tag_kind) in the scene being accumulated. Reset with
  * the scene. Read at the canonical commit by the render-path feed audit: a
  * family kind that fed geometry belongs to a path that must be canon-drawn,
  * or the sub-tick spine drops it. */
-static uint32_t s_scene_kind_n[16][OPENPETE_TAG_KINDS];
+static uint32_t s_scene_kind_n[16][OPENPETE_TAG_KINDS] OP_GUARDED_BY(sim);
 
 /** @brief Add one triangle of a tag to the per-family, per-kind count, or remove one.
  *
@@ -1044,9 +1044,9 @@ static void scene_stamp_key_cells(scene_tri_t* t)
     if (s_cur_kfold) memcpy(t->kn, s_cur_kn, sizeof s_cur_kn);
 }
 /* Sticky terrain-feed mark (see openpete_native_scene_mark_terrain_feed). */
-static int s_cur_ter_after;
-void openpete_native_scene_mark_terrain_feed(void) { s_cur_ter_after = 1; }
-void openpete_native_scene_tag_family_counts(uint32_t out[16]) {
+static int s_cur_ter_after OP_GUARDED_BY(sim);
+void openpete_native_scene_mark_terrain_feed(void) OP_REQUIRES(sim) { s_cur_ter_after = 1; }
+void openpete_native_scene_tag_family_counts(uint32_t out[16]) OP_REQUIRES_SHARED(sim) {
     for (int f = 0; f < 16; f++) {
         out[f] = 0;
         for (unsigned k = 0; k < OPENPETE_TAG_KINDS; k++) out[f] += s_scene_kind_n[f][k];
@@ -1317,7 +1317,7 @@ static uint32_t s_scene_fade = 0;
 /* The guest address of the fade's POLY_F4 the game linked into this frame's
  * ordering table (openpete_native_scene_set_fade_prim); 0 = none. Reset with
  * the fade at every game-feed frame. */
-static uint32_t s_scene_fade_prim = 0;
+static uint32_t s_scene_fade_prim OP_GUARDED_BY(sim) = 0;
 
 /* Freeze-frame green overlay for the current frame (pause / inventory / flight
  * results). 0 = inactive; else bit31 = active, bits[23:0] = green tint rgb (the
@@ -1603,7 +1603,7 @@ void openpete_native_scene_note_torder(uint32_t mid) {
  * links its primitives, the re-extract in its fixed producer order. */
 static int s_scene_replay;
 static void scene_game_retain(void);
-void openpete_native_scene_begin(void) {
+void openpete_native_scene_begin(void) OP_REQUIRES(sim) {
     /* The scene about to be wiped is the game render's own accumulation the
      * first time a tick re-extracts; record its blended-world key order
      * before it goes, and keep the scene itself for a framebuffer copy that
@@ -1632,21 +1632,21 @@ static unsigned s_scene_frame = 0xFFFFFFFFu;
 static unsigned s_scene_key = 0xFFFFFFFFu;
 /* Stamp of the last begin_frame made outside the sub-tick view: the game's own
  * render, never a re-extract. 0xFFFFFFFF before the first. */
-static unsigned s_scene_game_frame = 0xFFFFFFFFu;
+static unsigned s_scene_game_frame OP_GUARDED_BY(sim) = 0xFFFFFFFFu;
 /* The game tick of the scene the game's render last opened: open is
  * openpete_loop_anchor_ticks() at the open, and otag_fed is 1 once a DrawOTag
  * submitted that scene's primitives (openpete_native_note_draw_otag). */
 static struct { uint32_t open; int otag_fed; } s_scene_game_tick;
-static void (*s_scene_frame_close_cb)(unsigned frame);  /* see the frame-close section */
+static void (*s_scene_frame_close_cb)(unsigned frame) OP_GUARDED_BY(sim) OP_SLOT(sim);  /* see the frame-close section */
 static void (*s_scene_superseded_cb)(unsigned frame);  /* see openpete_native_scene_register_superseded */
 /* 1 from the game render's opening of a scene until the canonical capture
  * that presents it (openpete_native_scene_capture_overlay). Re-extract
  * rebuilds in between leave it set: they replace the accumulator, not the
  * game's render. */
-static int s_game_scene_pending;
+static int s_game_scene_pending OP_GUARDED_BY(sim);
 /* 1 from any begin_frame the game's render makes (a scene opened or fed)
  * until the canonical capture. */
-static int s_game_fed;
+static int s_game_fed OP_GUARDED_BY(sim);
 /* The DRAWENV of the game's last PutDrawEnv (isbg, r0, g0, b0), and the one in
  * effect at the last DrawOTag that submitted primitives fed since the previous
  * canonical capture. Where a game draws its OT before the VSync the host
@@ -1676,7 +1676,7 @@ static struct { int x, y, w, h, disp_x, disp_y; unsigned frame; int unpresented;
 static unsigned s_capture_seq;
 static unsigned s_otag_scene;
 /* Scenes the game's render opened (openpete_native_game_scene_opens). */
-static unsigned s_game_scene_opens;
+static unsigned s_game_scene_opens OP_GUARDED_BY(sim);
 /* Feed engagement over the run: canonical captures taken, the captures whose
  * scene the game's render fed since the previous capture, and the triangles
  * those fed scenes held. Reported at shutdown as the `native-feed:` line,
@@ -1885,11 +1885,11 @@ static void scene_close_completed(int push) {
 
 /* 1 while the frame-close callback runs: its feeds re-enter begin_frame with
  * the closing scene's stamp and must append to that scene. */
-static int s_scene_close_cb_in;
+static int s_scene_close_cb_in OP_GUARDED_BY(sim);
 /* VBL of the render that superseded the pending game scene ahead of its own
  * scene opening (openpete_native_scene_note_game_capture); 0xFFFFFFFF once
  * that render's scene opens. */
-static unsigned s_scene_superseded_frame = 0xFFFFFFFFu;
+static unsigned s_scene_superseded_frame OP_GUARDED_BY(sim) = 0xFFFFFFFFu;
 static unsigned s_scene_early_supersedes;   /* census: supersedes taken at a capture */
 static unsigned s_scene_early_unopened;     /* census: of those, renders presented with no scene opened */
 
@@ -1905,7 +1905,7 @@ static void game_signals_supersede(unsigned frame);   /* the per-tick 2D signals
  * render's scene, which the next capture presents, and the per-tick 2D
  * signals the superseded render set leave the commit (game_signals_supersede).
  * @param frame VBL of the superseding render. */
-static void scene_supersede_pending(unsigned frame) {
+static void scene_supersede_pending(unsigned frame) OP_REQUIRES(sim) {
     s_drawenv_drawn_valid = 0;
     game_signals_supersede(frame);
     if (s_scene_superseded_frame == frame) return;
@@ -1917,7 +1917,7 @@ static void scene_supersede_pending(unsigned frame) {
  *
  * A render that superseded at a capture and never opened its scene is
  * counted: the present showed the superseded scene under the render's epoch. */
-static void scene_supersede_presented(void) {
+static void scene_supersede_presented(void) OP_REQUIRES(sim) {
     if (s_scene_superseded_frame != 0xFFFFFFFFu) s_scene_early_unopened++;
     s_scene_superseded_frame = 0xFFFFFFFFu;
 }
@@ -1936,11 +1936,11 @@ static void scene_early_supersede_census(void) {
  * 2D in successive anchor passes of one VBL) keeps one render.
  * @param tick openpete_loop_anchor_ticks() now.
  * @return Nonzero when a game feed at the scene's VBL begins a new render. */
-static int scene_game_render_ended(uint32_t tick) {
+static int scene_game_render_ended(uint32_t tick) OP_REQUIRES_SHARED(sim) {
     return tick != s_scene_game_tick.open && (s_scene_game_tick.otag_fed || !s_game_scene_pending);
 }
 
-void openpete_native_scene_note_game_capture(unsigned frame) {
+void openpete_native_scene_note_game_capture(unsigned frame) OP_REQUIRES(sim) {
     if (!s_game_scene_pending ||
         (frame == s_scene_game_frame && !scene_game_render_ended(openpete_loop_anchor_ticks())))
         return;
@@ -1969,7 +1969,7 @@ void openpete_native_scene_note_game_capture(unsigned frame) {
  * @param frame The feed's VBL stamp.
  * @param tick openpete_loop_anchor_ticks() at the feed.
  * @return Nonzero when the feed opens a new scene at the same VBL. */
-static int scene_game_retick(int game_feed, unsigned frame, uint32_t tick) {
+static int scene_game_retick(int game_feed, unsigned frame, uint32_t tick) OP_REQUIRES_SHARED(sim) {
     return game_feed && frame == s_scene_frame && !s_scene_replay && !s_scene_close_cb_in &&
            scene_game_render_ended(tick);
 }
@@ -1988,7 +1988,7 @@ static void scene_same_vbl_note(unsigned frame, uint32_t tick, int superseded) {
                    s_scene_n, superseded);
 }
 
-void openpete_native_scene_begin_frame(unsigned frame) {
+void openpete_native_scene_begin_frame(unsigned frame) OP_REQUIRES(sim) {
     const int game_feed = !openpete_subtick_view_active();
     if (game_feed) { s_scene_game_frame = frame; s_game_fed = 1; }
     /* The game's render owns the scene of its tick: its triangles never land
@@ -2076,7 +2076,7 @@ static int          s_scene_saved_cvp_n;
 static openpete_native_cover_plane s_scene_saved_cvp[8];
 static int          s_scene_saved_moved;
 
-int openpete_native_scene_save(void) {
+int openpete_native_scene_save(void) OP_REQUIRES_SHARED(sim) {
     if (scene_run_fit(&s_scene_saved, "scene.saved", s_scene_n) < s_scene_n) return 1;
     if (s_scene_n > 0) memcpy(s_scene_saved.data, s_scene, (size_t)s_scene_n * sizeof(scene_tri_t));
     s_scene_saved_n = s_scene_n;
@@ -2094,7 +2094,7 @@ int openpete_native_scene_save(void) {
     return 0;
 }
 
-void openpete_native_scene_restore(void) {
+void openpete_native_scene_restore(void) OP_REQUIRES(sim) {
     if (s_scene_saved_n < 0) return;
     if (s_scene_saved_n > 0 && scene_room(s_scene_saved_n))
         memcpy(s_scene, s_scene_saved.data, (size_t)s_scene_saved_n * sizeof(scene_tri_t));
@@ -2115,7 +2115,7 @@ void openpete_native_scene_restore(void) {
 
 unsigned openpete_native_scene_frame(void) { return s_scene_frame; }
 unsigned openpete_native_scene_epoch(void) { return s_scene_epoch; }
-unsigned openpete_native_scene_game_frame(void) { return s_scene_game_frame; }
+unsigned openpete_native_scene_game_frame(void) OP_REQUIRES_SHARED(sim) { return s_scene_game_frame; }
 
 /* The game render's own scene of the last tick a re-extract replaced, kept for
  * a framebuffer copy: the copy names the frame the game drew into the buffer
@@ -2157,7 +2157,7 @@ static void scene_game_retain(void) {
 }
 
 /* ---- frame-close notification ------------------------------------------- */
-void openpete_native_scene_register_frame_close(void (*fn)(unsigned frame)) {
+void openpete_native_scene_register_frame_close(void (*fn)(unsigned frame) OP_SLOT(sim)) OP_REQUIRES(sim) {
     s_scene_frame_close_cb = fn;
 }
 
@@ -2370,7 +2370,7 @@ static int scene_true_w_mask(void) {
  * @param host_added Nonzero for host-added geometry.
  * @param pvz_missing Incremented per vertex whose pvz was not above 0. */
 static void scene_tri_fill(scene_tri_t* d, const openpete_scene_tri* tri, int category, int carry, int group,
-                           uint32_t tag, const uint32_t hq[3], int host_added, unsigned* pvz_missing) {
+                           uint32_t tag, const uint32_t hq[3], int host_added, unsigned* pvz_missing) OP_REQUIRES_SHARED(sim) {
     memcpy(d, tri, sizeof *tri);
     /* One validation of the blend class for every pass that indexes a
      * table by it; a class outside the table draws opaque, as each
@@ -2466,7 +2466,7 @@ static void scene_pvz_missing_note(unsigned n, int category, uint32_t tag) {
 }
 
 void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int category,
-                                           int carry, int group) {
+                                           int carry, int group) OP_REQUIRES_SHARED(sim) {
     if (!tri) return;
     if (s_scene_n < (int)s_scene_v.cap || scene_room(s_scene_n + 1)) {
         unsigned missing = 0;
@@ -2496,7 +2496,7 @@ int openpete_native_scene_reserve(int n) {
 }
 
 void openpete_native_scene_store_tri(int slot, const openpete_scene_tri* tri, int category, uint32_t tag,
-                                     const uint32_t hqfog[3], int host_added, unsigned* pvz_missing) {
+                                     const uint32_t hqfog[3], int host_added, unsigned* pvz_missing) OP_REQUIRES_SHARED(sim) {
     scene_tri_fill(&s_scene[slot], tri, category, 0, 0, tag, hqfog, host_added, pvz_missing);
 }
 
@@ -2518,7 +2518,7 @@ void openpete_native_scene_rewind(const openpete_native_scene_mark_t* m) {
     memcpy(s_scene_kind_n, m->kind, sizeof s_scene_kind_n);
 }
 
-void openpete_native_scene_count_kind(uint32_t tag, int n) {
+void openpete_native_scene_count_kind(uint32_t tag, int n) OP_REQUIRES(sim) {
     if (n > 0) s_scene_kind_n[tag >> 28][openpete_tag_kind(tag)] += (uint32_t)n;
 }
 
@@ -2527,7 +2527,7 @@ void openpete_native_scene_commit_stored(int n, unsigned pvz_missing, int catego
     s_scene_n += n;
 }
 
-void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, int carry) {
+void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, int carry) OP_REQUIRES_SHARED(sim) {
     openpete_native_scene_add_tri_grouped(tri, category, carry, 0);
 }
 void openpete_native_scene_set_bg(uint32_t rgba) { s_scene_bg = openpete_tercache_faceid() ? 0u : rgba; }
@@ -2777,7 +2777,7 @@ static int display_swap_owed(void) {
  * (negative control). The caller checks that the game fed a scene since the
  * last capture.
  * @return 1 when the draw owes the fed scene a capture, else 0. */
-static int front_draw_owed(void) {
+static int front_draw_owed(void) OP_REQUIRES(sim) {
     static int on = -1;
     if (on < 0) { const char* e = getenv("OPENPETE_FRONT_DRAW_PRESENT"); on = !(e && *e == '0'); }
     if (!on || !s_draw_clip_put) return 0;
@@ -2786,7 +2786,7 @@ static int front_draw_owed(void) {
     return s_overlay_accum_n > 0 || scene_has_game_tris(s_scene, s_scene_n);
 }
 
-int openpete_native_scene_yield_owes_present(int pending) {
+int openpete_native_scene_yield_owes_present(int pending) OP_REQUIRES(sim) {
     if (!openpete_native_scene_enabled() || !s_game_scene_pending || !s_game_fed) return pending;
     /* The swap is evaluated even with a present pending: it marks its area presented. */
     const int swap = display_swap_owed();
@@ -2886,7 +2886,7 @@ int openpete_native_shown_area_content(int disp_x, int disp_y, int disp_w, int d
     return -1;
 }
 
-void openpete_native_note_draw_otag(void) {
+void openpete_native_note_draw_otag(void) OP_REQUIRES_SHARED(sim) {
     area_fade_fold();
     /* Until the game's first feed since the capture opens a new scene,
      * s_scene still holds the presented one. A scene the game opened
@@ -2910,7 +2910,7 @@ void openpete_native_note_draw_otag(void) {
     if (fed_tris) note_drawn_area(s_scene_frame);
 }
 unsigned openpete_native_otag_scene(void) { return s_otag_scene; }
-unsigned openpete_native_game_scene_opens(void) { return s_game_scene_opens; }
+unsigned openpete_native_game_scene_opens(void) OP_REQUIRES_SHARED(sim) { return s_game_scene_opens; }
 unsigned openpete_native_scene_presenting(void) { return s_capture_seq + 1u; }
 int openpete_native_drawn_env(uint8_t env[4]) {
     if (!s_drawenv_drawn_valid) return 0;
@@ -3001,9 +3001,9 @@ void openpete_native_scene_set_freeze_backdrop(int r, int g, int b, int fade) {
     s_game_freeze = s_scene_freeze; game_signal_note(&s_game_freeze_seen);  /* the game set it this tick */
 }
 
-void openpete_native_scene_set_seq(uint32_t seq) { s_cur_seq = seq; }
-void openpete_native_scene_set_prim(uint32_t prim) { s_cur_prim = prim; }
-void openpete_native_scene_set_fb_cell(uint32_t cell) { s_cur_fb_cell = cell; }
+void openpete_native_scene_set_seq(uint32_t seq) OP_REQUIRES(sim) { s_cur_seq = seq; }
+void openpete_native_scene_set_prim(uint32_t prim) OP_REQUIRES(sim) { s_cur_prim = prim; }
+void openpete_native_scene_set_fb_cell(uint32_t cell) OP_REQUIRES(sim) { s_cur_fb_cell = cell; }
 void openpete_native_scene_set_stp_select(int sel) {
     s_cur_stp_sel = (sel > 0 && sel < OPENPETE_STP_SELS) ? sel : OPENPETE_STP_ALL;
 }
@@ -3018,7 +3018,7 @@ int openpete_native_scene_collect_2d_prims(uint32_t* out, int max) {
     return n;
 }
 
-void openpete_native_scene_set_fade_prim(uint32_t prim) { s_scene_fade_prim = prim; }
+void openpete_native_scene_set_fade_prim(uint32_t prim) OP_REQUIRES(sim) { s_scene_fade_prim = prim; }
 
 void openpete_native_scene_set_fade_slot(int slot) {
     if (!(s_game_fade & (1u << 31)) || slot < 0 || slot > 30) return;
@@ -3027,7 +3027,7 @@ void openpete_native_scene_set_fade_slot(int slot) {
     if (s_scene_fade & (1u << 31)) s_scene_fade = (s_scene_fade & ~(0x1Fu << 26)) | enc;
 }
 
-uint32_t openpete_native_scene_fade_prim(void) { return s_scene_fade_prim; }
+uint32_t openpete_native_scene_fade_prim(void) OP_REQUIRES_SHARED(sim) { return s_scene_fade_prim; }
 
 /* The player slot the last 2D rank compared against, for the census. */
 static int s_under_player_slot = -1;
@@ -3329,7 +3329,7 @@ static void game_signals_supersede(unsigned frame) {
  * the alpha, the drawn height and the order flag (over = after the fade).
  * @param alpha Sub-tick alpha, 0 = previous tick, 1 = current tick.
  * @param leg Census label of the caller. */
-static void letterbox_append(double alpha, const char* leg) {
+static void letterbox_append(double alpha, const char* leg) OP_REQUIRES(sim) {
     const letterbox_rec_t* g = s_lb_curr.h > 0.0f || !(s_lb_prev.h > 0.0f) ? &s_lb_curr : &s_lb_prev;
     const float h = (float)(s_lb_prev.h + (s_lb_curr.h - s_lb_prev.h) * alpha);
     { static int lc = -1;
@@ -3378,7 +3378,7 @@ static int load_census_on(void) {
     return on;
 }
 
-void openpete_native_scene_commit_fade(void) {
+void openpete_native_scene_commit_fade(void) OP_REQUIRES(sim) {
     /* A repeat present shows the previous scene, its fade and freeze with it.
      * The render that ends a run of repeats starts its fade and freeze from
      * no previous word, as a fresh fade does: the run may hide a scene change
@@ -3919,7 +3919,7 @@ static void overlay_carry_hold(void) {
     carry_prev_take();
 }
 
-int openpete_native_scene_canon_repeat(void) {
+int openpete_native_scene_canon_repeat(void) OP_REQUIRES(sim) {
     if (s_canon_repeat < 0) {
         /* The 2D feeder's deferred primitive belongs to this present's tick:
          * flush it first, as the capture does. */
@@ -3936,7 +3936,7 @@ int openpete_native_scene_canon_repeat(void) {
 static int      s_held_2d_mark;
 static unsigned s_held_2d_presents, s_held_2d_tris;
 
-void openpete_native_scene_hold_2d(void) {
+void openpete_native_scene_hold_2d(void) OP_REQUIRES(sim) {
     if (s_overlay_precapture) s_overlay_precapture();
     const int old = s_held_2d_mark < s_overlay_accum_n ? s_held_2d_mark : s_overlay_accum_n;
     const int keep = s_overlay_accum_n - old;
@@ -3961,7 +3961,7 @@ static void held_2d_report(int on) {
     s_held_2d_tris = 0;
 }
 
-void openpete_native_scene_open_empty(void) {
+void openpete_native_scene_open_empty(void) OP_REQUIRES(sim) {
     if (s_canon_repeat != 1) return;
     extern unsigned openpete_frame;
     /* The previous scene's stamp is an earlier VBL, or this one with the
@@ -3973,7 +3973,7 @@ void openpete_native_scene_open_empty(void) {
 }
 
 /** @brief Count one canonical capture into the feed census, and the scene the game's render fed since the previous capture when there is one. */
-static void feed_census_note(void) {
+static void feed_census_note(void) OP_REQUIRES_SHARED(sim) {
     s_feed_census.captures++;
     if (!s_game_fed) return;
     s_feed_census.fed++;
@@ -4178,7 +4178,7 @@ static void carry_drop_report(void)
     s_overlay_accum_dropped = 0;
 }
 
-void openpete_native_scene_capture_overlay(void) {
+void openpete_native_scene_capture_overlay(void) OP_REQUIRES(sim) {
     /* Let the 2D-UI feeder flush its deferred ("feed-previous") prim into this
      * tick's accumulation first - by the canonical present every post-link prim
      * mutation is done, so the flush is exact. Without it, a gameplay frame
@@ -5522,7 +5522,7 @@ static void carry_apply_probe(int paired) {
     }
 }
 
-void openpete_native_scene_apply_overlay(double alpha) {
+void openpete_native_scene_apply_overlay(double alpha) OP_REQUIRES(sim) {
     const double oalpha = overlay_alpha(alpha);
     overlay_alpha_trace(alpha, oalpha);
     carry_run_stats_t rst = {0};

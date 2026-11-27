@@ -261,7 +261,7 @@ static void shadow_player_build(CPUState* cpu) {
  * OPENPETE_TAG_SHADOW(OPENPETE_TAG_SHADOW_PLAYER, slot).
  * @param cpu The guest CPU state.
  * @param slot The model record the shadow renders under; negative tags as 0. */
-static void shadow_player_feed_native(CPUState* cpu, int slot) {
+static void shadow_player_feed_native(CPUState* cpu, int slot) OP_REQUIRES(sim) {
     if (!shadow_player_feed_enabled()) return;
     shadow_player_build(cpu);
     if (s_tri_n <= 0) return;
@@ -431,7 +431,7 @@ static int on_player_shadow(CPUState* cpu, uint32_t addr) {
 }
 
 /* Re-extracts one player shadow record at a sub-tick; see shadow.h. */
-void shadow_player_reextract(CPUState* cpu, int slot) {
+void shadow_player_reextract(CPUState* cpu, int slot) OP_REQUIRES(sim) {
     if (!hook_reextract_ready(RP_SHADOW)) return;
     shadow_player_feed_native(cpu, slot);
 }

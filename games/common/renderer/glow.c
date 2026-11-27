@@ -1137,7 +1137,7 @@ static void glow_synth_moby(CPUState* cpu, const ngte_view* v, uint32_t m, const
  * @param cpu The guest CPU state, read only.
  * @param v The tick's projection view.
  * @param c The capture's walk state. */
-static void glow_synth_set(CPUState* cpu, const ngte_view* v, const glow_capture_ctx* c) {
+static void glow_synth_set(CPUState* cpu, const ngte_view* v, const glow_capture_ctx* c) OP_REQUIRES(sim) {
     if (!GW.synth_n || !openpete_no_lod || !glow_synth_enabled()) return;
     const uint32_t head = game_layout.moby.array_head;
     const uint32_t arr = game_layout.moby.array_direct ? head : cpu->read_word(head);
@@ -1335,7 +1335,7 @@ static void glow_vtx_cal_tick(const glow_capture_ctx* c) {
  * (glow_vtx_cal_tick).
  * @param cpu The guest CPU state, read only.
  * @param v The tick's projection view. */
-static void glow_capture_set(CPUState* cpu, const ngte_view* v) {
+static void glow_capture_set(CPUState* cpu, const ngte_view* v) OP_REQUIRES(sim) {
     static glow_capture_ctx c;
     c.wide = v->extended;
     c.log = glow_cull_log_on();
@@ -1377,7 +1377,7 @@ static int glow_feed_enabled(void) {
  * carries no contest. Counts the triangle in s_fed_tris.
  * @param it The triangle.
  * @param key Nonzero when the fan contests by its bucket (glow_key_on). */
-static void glow_feed_tri(const glow_item* it, int key) {
+static void glow_feed_tri(const glow_item* it, int key) OP_REQUIRES_SHARED(sim) {
     const ngte_prim* p = &it->p;
     openpete_scene_tri st = {0};
     for (int k = 0; k < 3; k++) {
@@ -1398,7 +1398,7 @@ static void glow_feed_tri(const glow_item* it, int key) {
  * a glow particle with sel 0, since a glow ring carries no game particle
  * class. A triangle of the companion's ring is skipped while the player is
  * hidden (player_hide_active). */
-static void glow_feed_native(void) {
+static void glow_feed_native(void) OP_REQUIRES(sim) {
     if (!glow_feed_enabled()) return;
     if (s_item_n <= 0) return;
     const int hide_player = player_hide_active();
@@ -1892,7 +1892,7 @@ static int on_glow_draw(CPUState* cpu, uint32_t addr) {
 }
 
 /* Sub-tick re-extract; see glow.h. */
-void glow_reextract(CPUState* cpu, int bracketed, double alpha, int hold) {
+void glow_reextract(CPUState* cpu, int bracketed, double alpha, int hold) OP_REQUIRES(sim) {
     const int pick = cut_held_sets_enter(&s_sets, hold);
     if (hook_reextract_ready_held(RP_GLOW, pick)) {
         if (pick >= 0) {

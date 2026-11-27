@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 extern void openpete_psyx_take_screenshot(const char* path);  /* PNG or BMP by extension */
 extern void openpete_psyx_take_screenshot_ext(const char* path,
@@ -196,7 +197,7 @@ static void og_finish(const openpete_options_t *opts, int si, int rule, bool wri
                s_cap.og_superseded);
 }
 
-void openpete_capture_note_psyx_walk(void)
+void openpete_capture_note_psyx_walk(void) OP_REQUIRES_SHARED(sim)
 {
     s_cap.psyx_scene = openpete_native_otag_scene();
     s_cap.psyx_opens = openpete_native_game_scene_opens();
@@ -217,7 +218,7 @@ void openpete_capture_note_psyx_walk(void)
  * finalizes it unpaired.
  * @param opts Session options.
  * @param si Target index. */
-static void og_pair_step(const openpete_options_t *opts, int si)
+static void og_pair_step(const openpete_options_t *opts, int si) OP_REQUIRES(sim)
 {
     if (!s_cap.og_scene[si]) {
         s_cap.og_key_present[si] = s_cap.canon_presents;
@@ -251,7 +252,7 @@ static void og_pair_step(const openpete_options_t *opts, int si)
  * its OT after the VSync it presents at.
  * @param opts Session options.
  * @param shot_key The present's capture key. */
-static void og_leg(const openpete_options_t *opts, int shot_key)
+static void og_leg(const openpete_options_t *opts, int shot_key) OP_REQUIRES(sim)
 {
     const bool paired = openpete_native_scene_enabled();
     for (int si = 0; !opts->screenshot_native_only &&
@@ -321,7 +322,7 @@ static void presents_write(const openpete_options_t *opts, const char *kind)
     s_cap.presents_captured++;
 }
 
-bool openpete_capture_canon_reference(const openpete_options_t *opts, int shot_key)
+bool openpete_capture_canon_reference(const openpete_options_t *opts, int shot_key) OP_REQUIRES(sim)
 {
     og_leg(opts, shot_key);
     vram_dump_leg(opts, shot_key);

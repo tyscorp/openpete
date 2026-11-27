@@ -285,7 +285,7 @@ typedef struct moby_game {
      * between ticks. NULL where the game has no such kind, and the walk feeds
      * the animated records alone. */
     int  (*simple_pass)(CPUState* cpu) OP_SLOT(sim);
-    int  (*simple_replay)(CPUState* cpu);
+    int  (*simple_replay)(CPUState* cpu) OP_SLOT(sim);
     /* The mobys of the simple models' queue copy taken in canonical epoch
      * `epoch`, written to out (at most max); 0 when that epoch captured no
      * queue, -1 when `epoch` is not the one before the last committed. A held camera cut replays that copy (moby_native_prev_queue_replay)
@@ -296,7 +296,7 @@ typedef struct moby_game {
      * canonical epoch, reveal records included, written to out (at most
      * max); 0 when this epoch captured no queue. NULL where the game draws no
      * simple pass. */
-    int  (*simple_mobys)(uint32_t* out, int max);
+    int  (*simple_mobys)(uint32_t* out, int max) OP_SLOT(sim);
 
     /* ---- per-face special material -----------------------------------
      * A face the stream marks with a special-material flag (moby_wface_t.hl)

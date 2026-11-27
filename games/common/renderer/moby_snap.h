@@ -12,6 +12,7 @@
 #ifndef OPENPETE_COMMON_RENDERER_MOBY_SNAP_H
 #define OPENPETE_COMMON_RENDERER_MOBY_SNAP_H
 #include <stdint.h>
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -70,12 +71,12 @@ void moby_snap_note_ranked(const uint32_t* mids, int n, int base);
  * (OPENPETE_SNAP_REX_MERGE, default on) and emits the present's snap counts.
  * @param rex Nonzero for a sub-tick re-extract.
  * @param alpha The present's phase, 0 at tick T-1 and 1 at tick T; read when rex is nonzero. */
-void moby_snap_present(int rex, double alpha);
+void moby_snap_present(int rex, double alpha) OP_REQUIRES(sim);
 /** @brief End a moby walk pass: resolve the queued mobys when the terrain of this scene has been built, except in a sub-tick re-extract with the merge on, where the queue waits for the re-extract's end (moby_snap_present). */
-void moby_snap_moby_fed(void);
+void moby_snap_moby_fed(void) OP_REQUIRES(sim);
 /** @brief Resolve the queued mobys after the terrain build that fed this scene.
  * @param cpu The guest CPU state, unused; the terrain feeder's call site signature. */
-void moby_snap_terrain_fed(struct CPUState* cpu);
+void moby_snap_terrain_fed(struct CPUState* cpu) OP_REQUIRES(sim);
 
 #ifdef __cplusplus
 }

@@ -1264,7 +1264,7 @@ static int part_sel_layer(int sel) {
  * @param blend The native blend code, 0 for opaque.
  * @param layer The OPENPETE_SCENE_* layer. */
 static void part_feed_line_quad(float ax, float ay, float bx, float by, uint32_t rgb0,
-                                uint32_t rgb1, float depth, int blend, int layer) {
+                                uint32_t rgb1, float depth, int blend, int layer) OP_REQUIRES_SHARED(sim) {
     static const int split[2][3] = { {0,1,2}, {1,3,2} };
     float cx[4], cy[4];
     ngte_line_quad(ax, ay, bx, by, 0.0f, cx, cy);
@@ -1295,7 +1295,7 @@ static void part_feed_line_quad(float ax, float ay, float bx, float by, uint32_t
  * verdict byte. OPENPETE_PARTICLE_MATDBG=<n> prints each quad's material for
  * three openpete_frame values starting at n.
  * @param cpu The guest CPU state. */
-static void particle_feed_native(CPUState* cpu) {
+static void particle_feed_native(CPUState* cpu) OP_REQUIRES(sim) {
     particle_build(cpu);
     if (s_fq_n <= 0 && s_pline_n <= 0) return;
     render_material_level_push(cpu);
@@ -1546,7 +1546,7 @@ static void glow_build(CPUState* cpu) {
  * geometry. One stored depth cannot do both: a fan pushed behind its owner
  * in world units sinks into the ground the table draws under it.
  * @param cpu The guest CPU state. */
-static void glow_feed_native(CPUState* cpu) {
+static void glow_feed_native(CPUState* cpu) OP_REQUIRES(sim) {
     glow_build(cpu);
     if (s_gtri_n <= 0) return;
     render_material_level_push(cpu);
@@ -1860,7 +1860,7 @@ static void sparkle_build(CPUState* cpu) {
  * m_Color. Depth is the view-Z pulled forward by SPARKLE_OT_PULL.
  * Display-only: the .s already ran and wrote every verdict byte.
  * @param cpu The guest CPU state. */
-static void sparkle_feed_native(CPUState* cpu) {
+static void sparkle_feed_native(CPUState* cpu) OP_REQUIRES(sim) {
     sparkle_build(cpu);
     if (s_sline_n <= 0 && s_sstar_n <= 0) return;
     render_material_level_push(cpu);
@@ -2085,7 +2085,7 @@ static void dragonstar_build(CPUState* cpu) {
  * star draws over the whole 3D scene as the PSX's g_HudOT link does. Emits
  * nothing when the record's gate is clear. Display-only.
  * @param cpu The guest CPU state. */
-static void dragonstar_feed_native(CPUState* cpu) {
+static void dragonstar_feed_native(CPUState* cpu) OP_REQUIRES(sim) {
     dragonstar_build(cpu);
     if (s_dstri_n <= 0) return;
     render_material_level_push(cpu);
@@ -2411,7 +2411,7 @@ static int part_rec_live(const uint8_t* rec) {
  * @param stride The record size in bytes.
  * @param live The pool's record liveness predicate. */
 static void pool_capture(cut_held_sets_t* h, pool_copies_t* pc, uint32_t base,
-                         uint32_t len, uint32_t stride, pool_live_fn live) {
+                         uint32_t len, uint32_t stride, pool_live_fn live) OP_REQUIRES(sim) {
     const uint8_t* src = (const uint8_t*)openpete_psx_to_host_span(base, len);
     if (!src) return;
     cut_held_sets_capture(h);
@@ -2494,7 +2494,7 @@ static void particle_pre(CPUState* cpu, int feed, int verify) {
  * @return 0 when the bracket declines and the ordinary dispatch must run the
  *         renderer, 1 after the renderer ran here. */
 static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const char* tag,
-                                render_path_t path, int dump_pools_too) {
+                                render_path_t path, int dump_pools_too) OP_REQUIRES(sim) {
     const hook_bracket_desc desc = {
         .path = path, .prof_tag = "particle.srend",
         .run = particle_run_draw, .verify_enabled = verify_enabled,
@@ -2654,7 +2654,7 @@ static int on_80058864_dragonstar(CPUState* cpu, uint32_t addr) {
  * sparkles from the current g_Particles pool - extract-only (no render_fn, no
  * verdicts). Pool walks self-limit to live particles; Sparx + ambient sparkles
  * stay present on intermediates. */
-void particle_reextract(CPUState* cpu, int hold) {
+void particle_reextract(CPUState* cpu, int hold) OP_REQUIRES(sim) {
     if (!openpete_native_scene_enabled()) return;
     /* Each feeder replays only when ITS .s renderer drew on the canonical
      * tick. The pools outlive the renderers: a level transition stops all

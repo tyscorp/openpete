@@ -905,7 +905,7 @@ static void zap_width_note(float cx, float cy, const zap_pivot* pv, int k) {
  * {0,1,2} and {1,3,2}; a triangle feeds once. A primitive that is neither
  * is skipped.
  * @param h The held primitive with its depth and pivots. */
-static void zap_add_prim(const zap_held* h) {
+static void zap_add_prim(const zap_held* h) OP_REQUIRES_SHARED(sim) {
     const ngte_prim* p = &h->p;
     float depth = h->depth;
     if (p->nv != 3 && p->nv != 4) return;
@@ -950,7 +950,7 @@ static void zap_add_prim(const zap_held* h) {
  * scene and resets the fed half-width accumulators first.
  * @param set The held primitives.
  * @param n The count of primitives. */
-static void zap_feed_set(const zap_held* set, int n) {
+static void zap_feed_set(const zap_held* set, int n) OP_REQUIRES(sim) {
     if (!zap_feed_enabled()) return;
     if (n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
@@ -1219,7 +1219,7 @@ static void zap_rebase_all(CPUState* cpu, double alpha) {
  * emits the captured corners and the paired depths verbatim and so reproduces
  * the canonical present exactly, which is what the spine's identity leg
  * measures. */
-void zap_reextract(CPUState* cpu, int bracketed, double alpha, int hold) {
+void zap_reextract(CPUState* cpu, int bracketed, double alpha, int hold) OP_REQUIRES(sim) {
     const int pick = cut_held_sets_enter(&s_sets, hold);
     if (hook_reextract_ready_held(RP_TRACER, pick)) {
         /* On a held cut the staged camera is tick N-1's, the camera the shown

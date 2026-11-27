@@ -1147,7 +1147,7 @@ static int s23_simple_prev_mobys(uint32_t epoch, uint32_t* out, int max) {
  * @param max Capacity of @p out.
  * @return The count written; 0 when the current copy dates from another
  *         epoch. */
-static int s23_simple_mobys(uint32_t* out, int max) {
+static int s23_simple_mobys(uint32_t* out, int max) OP_REQUIRES(sim) {
     if (!out || s_sq->epoch != spyro_native_canon_epoch_stamp()) return 0;
     int k = 0;
     for (int i = 0; i < s_sq->qn && k < max; i++) out[k++] = s_sq->q[i][0];
@@ -1201,7 +1201,7 @@ static int s23_simple_late_skip(uint32_t moby) {
  * 2), stride 0x10, until a zero first word or S23_SIMPLE_RECS records, and
  * sign-extends each record's packed halves into its d and far.
  * Sets its qn to the count. Writes no guest memory. */
-static void s23_simple_capture(CPUState* cpu) {
+static void s23_simple_capture(CPUState* cpu) OP_REQUIRES(sim) {
     /* The first copy of a new canonical epoch retires the current one, reveal
      * records included, to the previous slot; a second copy in the same epoch
      * replaces the current. */
@@ -1959,7 +1959,7 @@ static void s23_simple_postrace(CPUState* cpu, uint32_t moby, const float (*vscr
  * @param pl The record's placement.
  * @param R The record's composed matrix at unit scale.
  * @return 1 when hidden, else 0. */
-static int s23_simple_hidden(CPUState* cpu, uint32_t moby, const s23_place* pl, const float R[3][3]) {
+static int s23_simple_hidden(CPUState* cpu, uint32_t moby, const s23_place* pl, const float R[3][3]) OP_REQUIRES(sim) {
     if (pl->screen) return 0;
     const double org[3] = { pl->TR[0] * 2.0, pl->TR[1] * 2.0, pl->TR[2] * 2.0 };
     const double rad = 2.0 * s23_simple_model_radius(cpu, pl->header) * s23_matrix_stretch(R) + 1.0;
@@ -2374,7 +2374,7 @@ typedef struct {
  * @param sc Receives the record's emit scope.
  * @return 1 when the record has a job, else 0. */
 static int s23_simple_prefix_record(CPUState* cpu, s23_prefix* P, int r, s23_simple_job* J,
-                                    moby_simple_scope_t* sc) {
+                                    moby_simple_scope_t* sc) OP_REQUIRES(sim) {
     static float vscr[S23_SIMPLE_VERTS][2];
     s23_place pl;
     int key = 0, tier = 0;
@@ -2477,7 +2477,7 @@ static int s23_simple_prefix_record(CPUState* cpu, s23_prefix* P, int r, s23_sim
  * summed after the fan-out; it uses static scratch and is not reentrant.
  * @param cpu The guest CPU state, read only.
  * @return The number of triangles emitted. */
-static int s23_simple_decode(CPUState* cpu) {
+static int s23_simple_decode(CPUState* cpu) OP_REQUIRES(sim) {
     s23_prefix P;
     ngte_read_matrix(cpu, game_layout.cam.base, P.Rcam);   /* mobydraw.s:3898-3908 */
     /* The far-geometry suppression word the cull parks in GTE data 3
@@ -2521,7 +2521,7 @@ static int s23_simple_decode(CPUState* cpu) {
  * Needs the previous copy to be of the epoch before the current one.
  * @param cpu The guest CPU state, read only.
  * @return The number of triangles emitted. */
-static int s23_simple_late_ghosts(CPUState* cpu) {
+static int s23_simple_late_ghosts(CPUState* cpu) OP_REQUIRES(sim) {
     if (!moby_native_late_active() || cut_held_set_pick(s_sq->epoch, s_sq_prev->epoch) != CUT_HELD_PREV ||
         !moby_native_prev_cull_cam_pos(s_sq_prev_cam))
         return 0;
@@ -2548,7 +2548,7 @@ static int s23_simple_late_ghosts(CPUState* cpu) {
  * canonical tick alone, and a held-queue line under the cut census.
  * @param cpu The guest CPU state, read only.
  * @return The number of triangles emitted. */
-static int s23_simple_replay(CPUState* cpu) {
+static int s23_simple_replay(CPUState* cpu) OP_REQUIRES(sim) {
     s_simple_recs = s_simple_verts = s_simple_faces = s_simple_tris = 0;
     s_simple_flat = s_simple_screen = s_simple_culled = s_simple_screen_drawn = 0;
     s_simple_lp = s_simple_fade = s_simple_occl = 0;

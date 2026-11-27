@@ -223,7 +223,7 @@ static int part_prim_sink(void* ctx, const ngte_prim* s) {
  * @param cpu Reads guest RAM.
  * @param start Guest address of the first primitive.
  * @param end Guest address one past the last primitive. */
-static void part_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
+static void part_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) OP_REQUIRES(sim) {
     /* The first capture of a new canonical epoch retires the current set. */
     const uint32_t epoch = spyro_native_canon_epoch_stamp();
     if (s_item_epoch != epoch) part_item_swap();
@@ -2021,7 +2021,7 @@ static void part_quad_colours(const part_item* it, const part_rebase* r, uint32_
  * @param depth The scene depth to feed at.
  * @param gouraud Nonzero for LINE_G2. */
 static void part_feed_line(const part_item* it, const part_rebase* r,
-                           float depth, int gouraud) {
+                           float depth, int gouraud) OP_REQUIRES_SHARED(sim) {
     const ngte_prim* p = &it->p;
     const uint32_t w1 = p->raw[1];
     const int stp = (int)((w1 >> 24) & 0x02u);
@@ -2078,7 +2078,7 @@ static void part_track_dbg(const part_item* it, const part_rebase* r,
  * ignored. While player_hide_active holds, a primitive whose record the
  * player's or the companion's update spawned is not fed. Clears the scene
  * tag on exit. */
-static void part_feed_native(void) {
+static void part_feed_native(void) OP_REQUIRES(sim) {
     if (!part_feed_enabled()) return;
     if (s_item_n <= 0) return;
     const int hide_player = player_hide_active();
@@ -2316,7 +2316,7 @@ static void part_late_census(void) {
 }
 
 /* Sub-tick re-extract of the captured particle set; see particles.h. */
-void particles_reextract(CPUState* cpu, int bracketed, double alpha) {
+void particles_reextract(CPUState* cpu, int bracketed, double alpha) OP_REQUIRES(sim) {
     if (!hook_reextract_ready_held(RP_PARTICLES, s_item_held)) return;
     if (bracketed) part_rebase_all(cpu, alpha);
     part_late_census();
@@ -2467,7 +2467,7 @@ static int part_polybuf_exhausted(CPUState* cpu, uint32_t endp) {
  * @param startp The interval's start.
  * @param endp The interval's end.
  * @param feed Nonzero when the bracket feeds the native scene. */
-static void part_draw_capture(CPUState* cpu, uint32_t startp, uint32_t endp, int feed) {
+static void part_draw_capture(CPUState* cpu, uint32_t startp, uint32_t endp, int feed) OP_REQUIRES(sim) {
     part_capture_prims(cpu, startp, endp);
     const uint32_t fed_before = s_fed_tris;
     ngte_view view;

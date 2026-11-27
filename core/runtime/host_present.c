@@ -38,6 +38,7 @@
 
 #ifdef OPENPETE_HAS_PSYCROSS
 #include "PsyX/PsyX_public.h"  /* PsyX_EndScene */
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 /* Player screenshot pending (the `screenshot` binding). Raised where the
  * bindings are sampled, consumed at the next canonical present's capture
@@ -262,7 +263,7 @@ static void pace_record_present(uint8_t kind)
  * its image. The device belongs to the present thread while eager production
  * is engaged, so the compose takes it back and returns it. Both steps are a
  * no-op without a native scene. */
-static void run_canonical_capture(void)
+static void run_canonical_capture(void) OP_REQUIRES(sim)
 {
     if (!openpete_native_scene_enabled()) return;
     openpete_native_scene_capture_overlay();
@@ -284,7 +285,7 @@ static void run_canonical_capture(void)
  * held back during it is owed again, so the latest held scene is presented
  * at once, as it was while the flag stayed raised through the hold. Runs
  * before the canonical present block on every iteration. */
-static void held_present_gate(void)
+static void held_present_gate(void) OP_REQUIRES(sim)
 {
     static int s_owed;
     if (openpete_skip_present_until_level) {

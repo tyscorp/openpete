@@ -21,6 +21,7 @@
 #define OPENPETE_NATIVE_VRAM_H
 
 #include <stdint.h>
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 #ifdef __cplusplus
 extern "C" {
@@ -118,7 +119,7 @@ void openpete_vram_load (int x, int y, int w, int h, const uint16_t* src);
  * @param h Height in rows.
  * @param dst_x Destination X in texels.
  * @param dst_y Destination Y in rows. */
-void openpete_vram_move (int src_x, int src_y, int w, int h, int dst_x, int dst_y);
+void openpete_vram_move (int src_x, int src_y, int w, int h, int dst_x, int dst_y) OP_REQUIRES_SHARED(sim);
 /** @brief Fill a rect of the VRAM model with one colour (the PSYQ ClearImage op).
  *
  * Replicates PsyCross's GR_ClearVRAM: the origin is not masked (a negative

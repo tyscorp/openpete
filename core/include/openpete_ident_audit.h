@@ -1,3 +1,4 @@
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 /* openpete_ident_audit.h - every-tick sub-tick-spine identity audit.
  *
  * The canonical dump at VBL F composes the current scene: the newest tick's
@@ -54,7 +55,7 @@ int openpete_ident_audit_armed(void);
  * @param shot_output The --screenshot-output template the PNG dump names its
  *        files after; NULL writes no dump. */
 void openpete_ident_audit_present(void *cpu, unsigned vbl, unsigned tick,
-                                  const char *shot_output);
+                                  const char *shot_output) OP_REQUIRES(sim);
 
 #ifdef __cplusplus
 }

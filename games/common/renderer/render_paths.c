@@ -363,7 +363,7 @@ static void render_paths_feed_audit(void) {
  * fed the canonical scene from one that did not; the tris are attributed to
  * paths as the feed audit attributes them (scene_path_tris), and untagged
  * tris are counted apart. */
-static void render_paths_census(void) {
+static void render_paths_census(void) OP_REQUIRES_SHARED(sim) {
     static env_frame_range_t s_range = ENV_FRAME_RANGE_INIT;
     if (!env_frame_range_active(&s_range, "OPENPETE_RP_CENSUS", openpete_frame)) return;
     uint32_t fam[16], n[RP_COUNT];

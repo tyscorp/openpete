@@ -208,6 +208,7 @@ static const cut_cam_desc_t* cut_desc(void) {
 
 /** @brief Latch the in-flight canonical-render epoch as fresh, start the next and close the player hooks' record epoch (spyro_native_canon_epoch_commit). */
 static void orch_epoch_commit(void) {
+    OP_ROLE_ASSERT(sim);
     if (cam_dbg_on())
         cam_dbg_line("CANON", (const uint8_t*)openpete_psx_to_host_span(game_layout.cam.base, CAM_OFF_POS + 12u));
     if (cut_census_on()) cut_locate_camera(cut_desc());
@@ -238,6 +239,7 @@ static uint32_t s_recs_len;
 
 /** @brief Capture a render-scratch sub-range into the player range slots (spyro_native_canon_capture_range). */
 static void orch_capture_range(void* cpu_v, unsigned off, unsigned len) {
+    OP_ROLE_ASSERT(sim);
     player_ranges_capture((CPUState*)cpu_v, off, len);
 }
 /** @brief Copy the moby cull-record queue at the moby hook for staging on the sub-tick presents (spyro_native_canon_capture_recs). */
@@ -289,7 +291,7 @@ static int stage_moby_records(void) {
  * record's shown state (`src`, the led tick's under --runahead).
  *
  * Host-only: the staged span is a view copy and no guest word is written. */
-static void player_record_shadow(CPUState* cpu, int k, uint8_t* shb, double rec_alpha) {
+static void player_record_shadow(CPUState* cpu, int k, uint8_t* shb, double rec_alpha) OP_REQUIRES(sim) {
     if (!shb) return;
     const uint32_t len = game_layout.player.shadow_len;
     int nsh = player_records_shadow_count();
@@ -328,7 +330,7 @@ static void player_record_shadow(CPUState* cpu, int k, uint8_t* shb, double rec_
  *
  * Host-only: the staged span is a view copy, restored to the ambient bytes at
  * the end, and no guest word is written. */
-static void player_records_replay(CPUState* cpu, int paired, double alpha) {
+static void player_records_replay(CPUState* cpu, int paired, double alpha) OP_REQUIRES(sim) {
     const uint32_t len = game_layout.player.rec_len;
     double rec_alpha = 0.0;
     int n = player_records_present_begin(paired, 0, alpha, &rec_alpha);
@@ -448,7 +450,7 @@ static int rx_census_on(void) {
 /** @brief Counts the triangles currently in the native scene across all tag families.
  *
  * @return The sum of the 16 family counts. */
-static uint32_t rx_scene_tris(void) {
+static uint32_t rx_scene_tris(void) OP_REQUIRES_SHARED(sim) {
     uint32_t n[16], t = 0;
     openpete_native_scene_tag_family_counts(n);
     for (int f = 0; f < 16; f++) t += n[f];

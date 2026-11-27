@@ -134,7 +134,7 @@ static void crossfade_capture(void) OP_REQUIRES(sim) {
  * applies.
  * @param tris The dome's triangles.
  * @param n Their count. */
-static void crossfade_feed_native(cyclorama_native_tri* tris, int n) {
+static void crossfade_feed_native(cyclorama_native_tri* tris, int n) OP_REQUIRES(sim) {
     if (n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
 

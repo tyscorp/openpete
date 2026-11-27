@@ -66,7 +66,7 @@ static int row_cmp_px_asc(const void *a, const void *b)
 }
 
 void openpete_ident_audit_present(void *cpu, unsigned vbl, unsigned tick,
-                                  const char *shot_output)
+                                  const char *shot_output) OP_REQUIRES(sim)
 {
     if (!openpete_ident_audit_armed()) return;
     if ((int)vbl < s_start) return;

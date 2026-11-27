@@ -619,7 +619,7 @@ static void rib_pair_depths(CPUState* cpu, const ngte_view* v) {
  * pairs as a spawn.
  * @param cpu The guest CPU state.
  * @param vlist The vertex list's guest address. */
-static void msh_note_list(CPUState* cpu, uint32_t vlist) {
+static void msh_note_list(CPUState* cpu, uint32_t vlist) OP_REQUIRES(sim) {
     if (s_list_frame != openpete_frame) { s_list_frame = openpete_frame; s_lists = 0; }
     s_list_epoch = spyro_native_canon_epoch_stamp();
     if (vlist < 0x80000000u || vlist >= 0x80800000u) return;
@@ -637,7 +637,7 @@ static void msh_note_list(CPUState* cpu, uint32_t vlist) {
  * @param cpu The guest CPU state.
  * @param desc The mesh descriptor's guest address.
  * @return 1 when the list was a KSEG0 RAM address, else 0. */
-static int msh_note_desc(CPUState* cpu, uint32_t desc) {
+static int msh_note_desc(CPUState* cpu, uint32_t desc) OP_REQUIRES(sim) {
     const uint32_t vlist = cpu->read_word(desc + MSH_VERTS);
     if (vlist < 0x80000000u || vlist >= 0x80800000u) return 0;
     msh_note_list(cpu, vlist);
@@ -648,7 +648,7 @@ uint32_t tracers_mesh_vertex_key(uint32_t va) {
     return TRACERS_MESH_KEY_TAG | (va & TRACERS_MESH_KEY_MASK);
 }
 
-int tracers_mesh_lists(uint32_t* addr, uint32_t* nverts, int max) {
+int tracers_mesh_lists(uint32_t* addr, uint32_t* nverts, int max) OP_REQUIRES(sim) {
     if (s_list_epoch != spyro_native_canon_epoch_stamp() &&
         !spyro_native_canon_epoch_fresh(s_list_epoch)) return 0;
     int n = 0;
@@ -983,7 +983,7 @@ static float tr_item_depth(const tr_item* it, const tr_poly* q) {
  * @param key The bucket the routine links the item at, or -1.
  * @return The number of triangles fed. */
 static int tr_feed_fan(const tr_poly* q, int b, int e, float depth, const ngte_tpage* tpp, int blend,
-                       int key) {
+                       int key) OP_REQUIRES_SHARED(sim) {
     int fed = 0;
     for (int i = b + 1; i + 1 < e; i++) {
         const int idx[4] = { b, i, i + 1, i + 1 };
@@ -1014,7 +1014,7 @@ static int tr_feed_fan(const tr_poly* q, int b, int e, float depth, const ngte_t
  * bucket and keeps true depth against terrain. Only 3 and 4 vertex
  * primitives are fed. Counts the triangles fed.
  * @param it The item. */
-static void tr_add_prim(const tr_item* it) {
+static void tr_add_prim(const tr_item* it) OP_REQUIRES_SHARED(sim) {
     const ngte_prim* p = &it->p;
     if (p->nv != 3 && p->nv != 4) return;
     ngte_tpage tp;
@@ -1047,7 +1047,7 @@ static void tr_add_prim(const tr_item* it) {
  * nothing when OPENPETE_TRACERS disables the feed or the set is empty.
  * @param set The items.
  * @param n The item count. */
-static void tr_feed_native(const tr_item* set, int n) {
+static void tr_feed_native(const tr_item* set, int n) OP_REQUIRES(sim) {
     if (!tr_feed_enabled()) return;
     if (n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
@@ -1081,7 +1081,7 @@ static unsigned s_epoch;        /* canonical epochs captured */
  * @param cpu The guest CPU state.
  * @param v The tick's view.
  * @return The index of the call's first item in the held set. */
-static int tr_hold(CPUState* cpu, const ngte_view* v) {
+static int tr_hold(CPUState* cpu, const ngte_view* v) OP_REQUIRES(sim) {
     if (cut_held_sets_capture(&s_sets)) {
         s_tick_n = 0;
         s_epoch++;
@@ -2093,7 +2093,7 @@ static void tr_rebase_all(const ngte_view* v, double alpha) {
 }
 
 /* Called from each game's reextract.c on a sub-tick present. */
-void tracers_reextract(CPUState* cpu, int bracketed, double alpha, int hold) {
+void tracers_reextract(CPUState* cpu, int bracketed, double alpha, int hold) OP_REQUIRES(sim) {
     const int pick = cut_held_sets_enter(&s_sets, hold);
     if (hook_reextract_ready_held(RP_TRACER, pick)) {
         /* On a held cut the staged camera is tick N-1's, the camera the shown

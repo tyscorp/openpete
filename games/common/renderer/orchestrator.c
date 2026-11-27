@@ -14,6 +14,7 @@
 
 #include "openpete_fiber.h"          /* openpete_frame */
 #include "openpete_native_render.h"  /* openpete_native_scene_note_game_capture */
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 /** @brief Report no interpolated position: no bracket is active. */
 static int none_interp_pos(unsigned int key, double out[3]) {
@@ -100,25 +101,25 @@ void game_orchestrator_bind(const game_orchestrator_t* o, void (*interp_register
  * at a newer VBL than the pending game scene moves the epoch here, before
  * its first stamp, so all of the render's captures share one epoch whichever
  * path feeds first. */
-static void capture_note(void) { openpete_native_scene_note_game_capture(openpete_frame); }
+static void capture_note(void) OP_REQUIRES(sim) { openpete_native_scene_note_game_capture(openpete_frame); }
 
 int openpete_native_interp_pos(unsigned int key, double out[3]) { return s_orch.interp_pos(key, out); }
 void spyro_native_canon_epoch_commit(void) { s_orch.epoch_commit(); }
 void spyro_native_canon_epoch_supersede(void) { s_orch.epoch_supersede(); }
-uint32_t spyro_native_canon_epoch_stamp(void) { capture_note(); return s_orch.epoch_stamp(); }
+uint32_t spyro_native_canon_epoch_stamp(void) OP_REQUIRES(sim) { capture_note(); return s_orch.epoch_stamp(); }
 int spyro_native_canon_epoch_fresh(uint32_t stamp) { return s_orch.epoch_fresh(stamp); }
 int spyro_native_canon_mobyreg_fresh(void) { return s_orch.mobyreg_fresh(); }
 int spyro_native_canon_shaded_fresh(void) { return s_orch.shaded_fresh(); }
-void spyro_native_canon_capture_range(void* cpu, unsigned off, unsigned len) {
+void spyro_native_canon_capture_range(void* cpu, unsigned off, unsigned len) OP_REQUIRES(sim) {
     capture_note();
     s_orch.capture_range(cpu, off, len);
 }
-void spyro_native_canon_capture_recs(void* cpu) { capture_note(); s_orch.capture_recs(cpu); }
+void spyro_native_canon_capture_recs(void* cpu) OP_REQUIRES(sim) { capture_note(); s_orch.capture_recs(cpu); }
 const uint8_t* spyro_native_canon_prev_recs(uint32_t* len, op_time_t* ref_ns) {
     return s_orch.prev_recs(len, ref_ns);
 }
-void spyro_native_canon_capture_sxy(void* cpu) { capture_note(); s_orch.capture_sxy(cpu); }
-void spyro_native_canon_capture_camera(void* cpu, int producer) {
+void spyro_native_canon_capture_sxy(void* cpu) OP_REQUIRES(sim) { capture_note(); s_orch.capture_sxy(cpu); }
+void spyro_native_canon_capture_camera(void* cpu, int producer) OP_REQUIRES(sim) {
     capture_note();
     s_orch.capture_camera(cpu, producer);
 }

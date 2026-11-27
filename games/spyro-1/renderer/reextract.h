@@ -79,7 +79,7 @@ void dragonstar_native_set_rot_interp(const double* ang_zxy);
  * @param alpha     sub-tick fraction between the previous and current tick
  * @param interp_on 1 = camera bracketed, else snap to curr
  * @param hold      nonzero on a held camera cut */
-void portal_reextract(struct CPUState* cpu, double alpha, int interp_on, int hold);
+void portal_reextract(struct CPUState* cpu, double alpha, int interp_on, int hold) OP_REQUIRES(sim);
 
 /** @brief Restore the current capture set after a re-extract's terrain feeder has read it.
  *
@@ -87,7 +87,7 @@ void portal_reextract(struct CPUState* cpu, double alpha, int interp_on, int hol
 void portal_reextract_leave(void);
 /* terrain_reextract, terrain_native_topdown_pose, terrain_native_sweep_pose:
  * renderer/terrain.h (the shared feeder). */
-void shadow_reextract(struct CPUState* cpu);
+void shadow_reextract(struct CPUState* cpu) OP_REQUIRES(sim);
 /** @brief Feeds the Spyro silhouette shadow of one shadow record for a sub-tick present.
  *
  * The record loop of the sub-tick re-extract calls it once per record with
@@ -98,8 +98,8 @@ void shadow_reextract(struct CPUState* cpu);
  * @param cpu The guest CPU state, the record's fields staged.
  * @param slot The model record index the shadow renders under; negative
  *        reads as 0. */
-void shadow_spyro_reextract(struct CPUState* cpu, int slot);
-void player_reextract(struct CPUState* cpu);
+void shadow_spyro_reextract(struct CPUState* cpu, int slot) OP_REQUIRES(sim);
+void player_reextract(struct CPUState* cpu) OP_REQUIRES(sim);
 /** @brief Replays the particle, glow, sparkle and star feeds for a sub-tick present.
  *
  * Returns when the native scene is off or no feeder's path is enabled and
@@ -112,7 +112,7 @@ void player_reextract(struct CPUState* cpu);
  * (cut_held_sets_enter), staged over the pool, with the interpolation off.
  * @param cpu The guest CPU state.
  * @param hold Nonzero on a held camera cut. */
-void particle_reextract(struct CPUState* cpu, int hold);
+void particle_reextract(struct CPUState* cpu, int hold) OP_REQUIRES(sim);
 /** @brief Collect the owner mobys of the live glow records into out.
  *
  * A live record (D_80078800[16], stride 0x24) has a positive ring count at
@@ -127,7 +127,7 @@ int particle_glow_owner_mobys(uint32_t out[16]);
  * Does nothing unless the tracer path was drawn on the canonical tick, so a
  * tick with no tracer does not replay a stale ribbon.
  * @param cpu The guest CPU state. */
-void tracer_reextract(struct CPUState* cpu);
+void tracer_reextract(struct CPUState* cpu) OP_REQUIRES(sim);
 /** @brief Re-derives and feeds the level-transition and balloonist cross-fade dome and backdrop on a sub-tick present.
  *
  * Re-runs the extraction rather than replaying the canonical triangles, so

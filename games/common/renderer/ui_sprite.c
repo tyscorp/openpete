@@ -489,7 +489,7 @@ static uint32_t fb_cell_key(const openpete_scene_tri* t) {
  * snapshot image is cropped from.
  * @param in The quad's two triangles.
  * @return 1 for a quad fed as an STP pair, else 0. */
-static int feed_hud_tex_quad(const openpete_scene_tri in[2]) {
+static int feed_hud_tex_quad(const openpete_scene_tri in[2]) OP_REQUIRES(sim) {
     openpete_scene_tri quad[2] = { in[0], in[1] };
     const int vram = !quad_to_fb_snapshot(quad);
     /* Keyed from the primitive's own texels on both paths: a redirected
@@ -544,7 +544,7 @@ static int feed_hud_tex_quad(const openpete_scene_tri in[2]) {
  * picture (func_80059358, SPRTs fed at emission). Appending there would put
  * the primitive into the presented scene, under that scene's fade and over
  * its world, so the scene of openpete_frame is opened instead. */
-static void scene_begin_for_feed(void) {
+static void scene_begin_for_feed(void) OP_REQUIRES(sim) {
     unsigned live = openpete_native_scene_frame();
     if (live != 0xFFFFFFFFu && (live != s_presented_scene || live == openpete_frame)) {
         openpete_native_scene_begin_frame(live);
@@ -571,7 +571,7 @@ static void scene_begin_for_feed(void) {
  * @param cpu The guest CPU state.
  * @param p The primitive's guest address.
  * @param w1 The primitive's word 1 (colour and command). */
-static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
+static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) OP_REQUIRES(sim) {
     int sx[4], sy[4], u[4], v[4];
     uint32_t xyw[4], uvw[4];
     xyw[0]=cpu->read_word(p+0x08); uvw[0]=cpu->read_word(p+0x0C);
@@ -632,7 +632,7 @@ static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
  *        stop at the centred 4:3 inset; UI_WIDEN_FRAME for a framebuffer
  *        grid border; UI_WIDEN_NONE otherwise. */
 static void feed_f4(CPUState* cpu, uint32_t p, uint32_t w1, int category, uint32_t alpha, int blend,
-                    int widen) {
+                    int widen) OP_REQUIRES(sim) {
     float sx[4], sy[4];
     const float F = openpete_native_widescreen_factor();
     for (int k = 0; k < 4; k++) {
@@ -702,7 +702,7 @@ static float psx_y(uint32_t xy) { return (float)(int16_t)(xy >> 16); }
  * @param rgba0 The first endpoint's colour and alpha.
  * @param rgba1 The second endpoint's colour and alpha.
  * @param lay The layer and blend class. */
-static void feed_line_quad(uint32_t xy0, uint32_t xy1, uint32_t rgba0, uint32_t rgba1, ui_untex_t lay) {
+static void feed_line_quad(uint32_t xy0, uint32_t xy1, uint32_t rgba0, uint32_t rgba1, ui_untex_t lay) OP_REQUIRES(sim) {
     float cx[4], cy[4];
     ngte_line_quad(psx_x(xy0), psx_y(xy0), psx_x(xy1), psx_y(xy1), 0.5f, cx, cy);
 
@@ -729,7 +729,7 @@ static void feed_line_quad(uint32_t xy0, uint32_t xy1, uint32_t rgba0, uint32_t 
  * @param cpu The guest CPU state.
  * @param p The primitive's guest address.
  * @param w1 The primitive's word 1 (code and first colour). */
-static void feed_line_g2(CPUState* cpu, uint32_t p, uint32_t w1) {
+static void feed_line_g2(CPUState* cpu, uint32_t p, uint32_t w1) OP_REQUIRES(sim) {
     const uint32_t c1 = cpu->read_word(p + 0x0C);
     feed_line_quad(cpu->read_word(p + 0x08), cpu->read_word(p + 0x10),
                    (w1 & 0xFFFFFFu) | 0xFF000000u, (c1 & 0xFFFFFFu) | 0xFF000000u,
@@ -746,7 +746,7 @@ static void feed_line_g2(CPUState* cpu, uint32_t p, uint32_t w1) {
  * @param cpu The guest CPU state.
  * @param p The primitive's guest address.
  * @param w1 The primitive's word 1 (code and colour). */
-static void feed_line_f2(CPUState* cpu, uint32_t p, uint32_t w1) {
+static void feed_line_f2(CPUState* cpu, uint32_t p, uint32_t w1) OP_REQUIRES(sim) {
     const ui_untex_t lay = ui_untex_layer(w1, SEMI_LINE);
     const uint32_t rgba = (w1 & 0xFFFFFFu) | (lay.alpha << 24);
     feed_line_quad(cpu->read_word(p + 0x08), cpu->read_word(p + 0x0C), rgba, rgba, lay);
@@ -763,7 +763,7 @@ static void feed_line_f2(CPUState* cpu, uint32_t p, uint32_t w1) {
  * @param cpu The guest CPU state.
  * @param p The primitive's guest address.
  * @param w1 The primitive's word 1 (code and first colour). */
-static void feed_poly_g(CPUState* cpu, uint32_t p, uint32_t w1) {
+static void feed_poly_g(CPUState* cpu, uint32_t p, uint32_t w1) OP_REQUIRES(sim) {
     const ui_untex_t lay = ui_untex_layer(w1, SEMI_G);
     const int nv = (w1 >> 24) & 0x08u ? 4 : 3;
     openpete_scene_vert vx[4]; memset(vx, 0, sizeof(vx));
@@ -800,7 +800,7 @@ static void feed_poly_g(CPUState* cpu, uint32_t p, uint32_t w1) {
  * @param cpu The guest CPU state.
  * @param prim The primitive's guest address.
  * @param tpage The GPU draw-mode word in effect. */
-static void feed_sprt_now(CPUState* cpu, uint32_t prim, unsigned tpage) {
+static void feed_sprt_now(CPUState* cpu, uint32_t prim, unsigned tpage) OP_REQUIRES(sim) {
     uint32_t w1 = cpu->read_word(prim + 0x04);
     uint32_t xy = cpu->read_word(prim + 0x08);
     uint32_t uv = cpu->read_word(prim + 0x0C);
@@ -1517,7 +1517,7 @@ static int f4_spans_frame_width(CPUState* cpu, uint32_t prim) {
  * @param kind The claim kind (QK_*).
  * @param aux The claim's auxiliary word: for QK_F4_BAR the framebuffer cell
  *        key of a grid border (grid_elem_key), else 0. */
-static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux) {
+static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux) OP_REQUIRES(sim) {
     const uint32_t w1 = cpu->read_word(prim + 4);
     switch (kind) {
     case QK_FT4:    feed_ft4(cpu, prim, w1); break;
@@ -1767,7 +1767,7 @@ static void mark_unranked_under_player(void) {
  * fade's rank and the count of primitives after it. OPENPETE_OT_RING_PROBE prints
  * each unranked primitive, OPENPETE_UISPRITE_TRACE the map size and hits.
  * @param cpu The guest CPU state. */
-static void rank_scene_2d(CPUState* cpu) {
+static void rank_scene_2d(CPUState* cpu) OP_REQUIRES_SHARED(sim) {
     s_walk_hits = 0;
     const uint32_t fade_prim = openpete_native_scene_fade_prim();
     { static mod_fvec known_v;
@@ -1817,7 +1817,7 @@ static void rank_scene_2d(CPUState* cpu) {
  * batch's and the glyphs fed at emission, is then ranked by rank_scene_2d.
  * With no CPU or the native scene off, the claims are dropped unfed, as they
  * are while a render-path selection leaves RP_UI out. */
-static void release_batch(void) {
+static void release_batch(void) OP_REQUIRES(sim) {
     CPUState* cpu = s_cpu;
     const unsigned n = s_claim_n;
     s_claim_n = 0;
@@ -1854,7 +1854,7 @@ static void release_batch(void) {
 }
 
 /* Releases every claimed primitive still pending. */
-void ui_sprite_ot_draw_begin(void) { release_batch(); }
+void ui_sprite_ot_draw_begin(void) OP_REQUIRES(sim) { release_batch(); }
 
 /** @brief Releases the pending batch when the scene of the VBL that built it closes.
  *
@@ -1865,7 +1865,7 @@ void ui_sprite_ot_draw_begin(void) { release_batch(); }
  * feeder of the next VBL (a menu's HUD mobys) runs before the walk. Each
  * such release counts in s_claim_late.
  * @param frame The VBL whose scene is closing. */
-static void on_scene_frame_close(unsigned frame) {
+static void on_scene_frame_close(unsigned frame) OP_REQUIRES(sim) {
     if (s_claim_n && frame == s_claim_frame) { s_claim_late++; ui_sprite_ot_draw_begin(); }
 }
 
@@ -1882,7 +1882,7 @@ static void on_scene_frame_close(unsigned frame) {
  * or 0xFFFFFFFF when no batch was pending, from the claim count read before
  * the release zeroes it. s_presented_scene becomes the stamp of the live
  * scene, the one this capture takes. */
-static void on_overlay_precapture(void) {
+static void on_overlay_precapture(void) OP_REQUIRES(sim) {
     post_capture_report();
     const unsigned built = s_claim_frame;
     const unsigned pending = s_claim_n;
@@ -1921,7 +1921,7 @@ void ui_sprite_ot_verify(void) {
     }
 }
 
-static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux);
+static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux) OP_REQUIRES(sim);
 
 /** @brief Records a 2D primitive's address, kind and link-time words in the batch fed at the ordering-table walk.
  *
@@ -1934,7 +1934,7 @@ static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux)
  * @param prim The primitive's guest address.
  * @param kind A QK_* kind.
  * @param aux An extra word stored with the claim. */
-static void claim_aux(CPUState* cpu, uint32_t prim, int kind, uint32_t aux) {
+static void claim_aux(CPUState* cpu, uint32_t prim, int kind, uint32_t aux) OP_REQUIRES(sim) {
     /* A claim is a canonical latch: it records an address whose words are read
      * back at the batch release. A speculative tick's link is rolled back
      * with the rest of guest RAM, so a claim made there names a slot that holds
@@ -1974,7 +1974,7 @@ static void claim_aux(CPUState* cpu, uint32_t prim, int kind, uint32_t aux) {
     s_claim_n++;
 }
 /// @brief Claims a primitive with a zero auxiliary word.
-static void claim(CPUState* cpu, uint32_t prim, int kind) { claim_aux(cpu, prim, kind, 0u); }
+static void claim(CPUState* cpu, uint32_t prim, int kind) OP_REQUIRES(sim) { claim_aux(cpu, prim, kind, 0u); }
 
 /** @brief Returns the framebuffer cell key of the primitive the grid emitter links at an emission ordinal.
  *
@@ -1998,12 +1998,12 @@ static uint32_t grid_elem_key(unsigned ord) {
  * the VBL's scene inside its decoder would add its triangles with address 0
  * and the release could not rank them. Under OPENPETE_UI_RANK_WALK the
  * scene is left to the decoder, as the DrawOTag-walk rank always did. */
-static void prim_scene_open(void) {
+static void prim_scene_open(void) OP_REQUIRES(sim) {
     if (rank_by_link_on()) scene_begin_for_feed();
 }
 
 /* Feeds one glyph SPRT at emission, tagged with its address for the release's ranking. */
-void ui_sprite_feed_sprt(CPUState* cpu, uint32_t prim, unsigned tpage) {
+void ui_sprite_feed_sprt(CPUState* cpu, uint32_t prim, unsigned tpage) OP_REQUIRES(sim) {
     if (!spyro_native_canon_capture_open()) { s_claim_spec_refused++; return; }
     if (openpete_frame == s_cap_frame) s_post_sprt++;
     if (!openpete_native_scene_enabled() || !render_path_enabled(RP_UI)) return;
@@ -2015,7 +2015,7 @@ void ui_sprite_feed_sprt(CPUState* cpu, uint32_t prim, unsigned tpage) {
 }
 
 /* Feeds one glyph POLY_FT4 at emission through the chokepoint's FT4 decoder. */
-void ui_sprite_feed_ft4(CPUState* cpu, uint32_t prim) {
+void ui_sprite_feed_ft4(CPUState* cpu, uint32_t prim) OP_REQUIRES(sim) {
     if (openpete_frame == s_cap_frame) s_post_sprt++;
     if (!openpete_native_scene_enabled() || !render_path_enabled(RP_UI)) return;
     if (!s_cpu) s_cpu = cpu;
@@ -2048,7 +2048,7 @@ static void ui_path_record(CPUState* cpu, uint32_t prim) {
  * (openpete_native_scene_set_fade_prim). Reads guest RAM only.
  * @param cpu The guest CPU state.
  * @param prim The primitive's guest address. */
-static void claim_linked(CPUState* cpu, uint32_t prim) {
+static void claim_linked(CPUState* cpu, uint32_t prim) OP_REQUIRES(sim) {
     const unsigned grid_ord = s_grid_ord++;   /* meaningful inside the grid emitter only */
     /* Claimed here, fed at the batch release: the primitive's words are
      * not final yet (see the dispatch header). */

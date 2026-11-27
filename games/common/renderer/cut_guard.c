@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 /* The camera cut rule's limits, in world units per tick and in rotation units
  * (4096 to a full turn) of the largest per-row angle. Continuous camera motion
@@ -94,7 +95,7 @@ static void cut_held_sets_exchange(cut_held_sets_t* s) {
     s->epoch[1] = e;
 }
 
-int cut_held_sets_capture(cut_held_sets_t* s) {
+int cut_held_sets_capture(cut_held_sets_t* s) OP_REQUIRES(sim) {
     const uint32_t epoch = spyro_native_canon_epoch_stamp();
     if (s->epoch[0] == epoch) {
         /* A render never spans a VBL boundary: a new VBL in the epoch is a

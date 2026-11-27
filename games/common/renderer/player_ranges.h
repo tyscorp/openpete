@@ -20,6 +20,7 @@
 #define OPENPETE_GAME_PLAYER_RANGES_H
 
 #include "psx_runtime_internal.h"
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,7 +37,7 @@ extern "C" {
  * @param cpu Reads the polybuf end word.
  * @param off The range's offset into the draw scratch, the slot key.
  * @param len The range's length in bytes. */
-void player_ranges_capture(CPUState* cpu, unsigned off, unsigned len);
+void player_ranges_capture(CPUState* cpu, unsigned off, unsigned len) OP_REQUIRES(sim);
 
 /** @brief Stages a generation's captured ranges over their own addresses for the present in flight.
  *

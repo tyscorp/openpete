@@ -19,6 +19,7 @@
 #define OPENPETE_FB_SNAPSHOT_H
 
 #include <stdint.h>
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 #ifdef __cplusplus
 extern "C" {
@@ -68,7 +69,7 @@ void openpete_fb_snapshot_note_draw_env(int clip_x, int clip_y, int clip_w, int 
  * DrawSync, which waits for the ordering table of the last completed tick,
  * while the native scene open at the copy may already belong to the next
  * tick and receive its 2D after the copy. */
-void openpete_fb_snapshot_note_scene_complete(void);
+void openpete_fb_snapshot_note_scene_complete(void) OP_REQUIRES_SHARED(sim);
 
 /** @brief Record that the draw area of the last PutDrawEnv holds the scene with a given stamp.
  *
@@ -109,7 +110,7 @@ void openpete_fb_snapshot_note_area_drawn(unsigned frame);
  * @param dst_y Destination top, VRAM texels.
  * @return 1 when a window slot was recorded, 0 otherwise. */
 int openpete_fb_snapshot_on_move(int src_x, int src_y, int w, int h,
-                                 int dst_x, int dst_y);
+                                 int dst_x, int dst_y) OP_REQUIRES_SHARED(sim);
 
 /** @brief Return the VRAM texels a window slot's copy overwrote, with their rect.
  *

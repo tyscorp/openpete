@@ -17,6 +17,8 @@
 #ifndef OPENPETE_WORKPOOL_H
 #define OPENPETE_WORKPOOL_H
 
+#include "openpete_thread_roles.h"   /* OP_SYNC_FN */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -70,7 +72,7 @@ int openpete_workpool_threads(void);
  * @param nitems The item count; 0 or less returns at once.
  * @param fn The per-item function.
  * @param arg Passed to every fn call. */
-void openpete_workpool_run(int nitems, openpete_work_fn fn, void* arg);
+void openpete_workpool_run(int nitems, openpete_work_fn fn OP_SYNC_FN, void* arg);
 
 #ifdef __cplusplus
 }

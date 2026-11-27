@@ -227,6 +227,11 @@ class AnalyseTest(unittest.TestCase):
                 self.assertEqual(len(hits), 1, "%s: %s" % (name, r["refusals"]))
                 self.assertIn("core/fixture.cpp:", hits[0])
 
+    def test_definition_in_an_extern_c_block_is_not_a_prototype(self):
+        r = self.analyse_cxx('extern "C" { void api_fn(void) OP_REQUIRES(sim) { } }')
+        self.assertEqual(r["parse"], [])
+        self.assertEqual([x for x in r["refusals"] if "local prototype" in x], [])
+
     def analyse_cxx_seal(self, body):
         """A C++ TU holding sealed globals whose seal lists C++-linkage
         writers: their USRs carry a signature suffix (`#`, `#*I#`, `#1`)."""
@@ -370,6 +375,18 @@ class PopulationTest(unittest.TestCase):
             self.assertIn(member, n)
         self.assertEqual(m["globals"][n["s_guarded"]]["form"], "named")
         self.assertEqual(m["globals"][n["s_atomic"]]["form"], "atomic")
+
+    def test_function_pointer_form_ends_at_its_declaration(self):
+        # The `)` closing `(*s_cb_b` must not hide the `;` that ends the
+        # declaration, or the next declaration's form is read as its own.
+        m, _ = self.census("core/a.c", "static void (*s_cb_a)(unsigned) OP_GUARDED_BY(sim);\n"
+                                       "static void (*s_cb_b)(unsigned);\n"
+                                       "static int s_after OP_GUARDED_BY(sim);\n"
+                                       "static float (*s_t)[3] OP_GUARDED_BY(sim);\n"
+                                       "void use(void) { s_cb_a = 0; s_cb_b = 0; s_after = 0; s_t = 0; }\n")
+        n = self.names(m)
+        forms = {k: m["globals"][n[k]]["form"] for k in ("s_cb_a", "s_cb_b", "s_after", "s_t")}
+        self.assertEqual(forms, {"s_cb_a": "named", "s_cb_b": "", "s_after": "named", "s_t": "named"})
 
     def test_macro_static_counts_once_at_the_macro(self):
         m, _ = self.census("core/a.c", POPULATION)
@@ -646,6 +663,25 @@ class MarkerTest(unittest.TestCase):
         self.assertEqual(len(tr.marker_refusals(self.tmp, "HEAD", ["core/a.c"])), 1)
         self.stage("static int s_x OP_GUARDED_BY(main); /* thread-roles: moved */\n")
         self.assertEqual(tr.marker_refusals(self.tmp, "HEAD", ["core/a.c"]), [])
+
+    def test_first_form_of_a_function_pointer_or_array_pointer(self):
+        # The name sits inside a declarator group: `(*s_cb)(unsigned)`.
+        self.stage("static void (*s_cb)(unsigned f);\nstatic float (*s_t)[3];\n", "base")
+        self.stage("static void (*s_cb)(unsigned f) OP_GUARDED_BY(sim) OP_SLOT(sim);\n"
+                   "static float (*s_t)[3] OP_GUARDED_BY(sim);\n")
+        self.assertEqual(tr.marker_refusals(self.tmp, "HEAD", ["core/a.c"]), [])
+        self.git("commit", "-qm", "form")
+        self.stage("static void (*s_cb)(unsigned f) OP_GUARDED_BY(main) OP_SLOT(sim);\n"
+                   "static float (*s_t)[3] OP_GUARDED_BY(sim);\n")
+        self.assertEqual(len(tr.marker_refusals(self.tmp, "HEAD", ["core/a.c"])), 1)
+
+    def test_declarator_name(self):
+        for text, want in (("static int x", "x"), ("static int s_a[2][8]", "s_a"),
+                           ("static float (*s_t)[3][3]", "s_t"),
+                           ("static void (*s_cb)(unsigned frame)", "s_cb"),
+                           ("static void (*s_cbs[4])(int)", "s_cbs"),
+                           ("static int * const p", "p")):
+            self.assertEqual(tr.declarator_name(text), want, text)
 
     def test_range_reads_the_commits(self):
         # base..rev: a form change committed without its marker, which a

@@ -324,7 +324,7 @@ static void rec_snap_swap(void) {
  * loop reached it. An unusable stride (0 or not a multiple of 4) or a base
  * below KSEG0 leaves no copy, and moby_rec_word then reads guest memory.
  * @param cpu The guest CPU state, read only. */
-static void moby_rec_snapshot(CPUState* cpu) {
+static void moby_rec_snapshot(CPUState* cpu) OP_REQUIRES(sim) {
     /* The first copy of a new canonical epoch retires the current one, appends
      * included, to the previous slot; a second copy in the same epoch (a pause
      * screen feeding twice, runahead's speculated ticks) replaces the current. */
@@ -470,7 +470,7 @@ static uint32_t s_canon_spec_prev_epoch = 0;
 static int     s_canon_spec_valid = 0;
 static int     s_held_scratch = 0;        /* the game staged tick N-1's scratch (moby_native_held_scratch) */
 /** @brief Copies the specular scratch window at the canonical moby hook for the sub-tick SPEC bracket. */
-static void moby_native_capture_spec_scratch(void) {
+static void moby_native_capture_spec_scratch(void) OP_REQUIRES(sim) {
     /* Runahead: a speculative fire must not stamp or overwrite the canonical
      * SPEC capture - the stamp would be the uncommitted epoch and the SPEC
      * pass would skip on every intermediate present, strobing specular
@@ -4074,7 +4074,7 @@ static int reveal_prev_has(uint32_t m) {
 
 /* The last host-reveal set; documented at the declaration in moby.h. */
 /* Documented at the declaration in moby.h. */
-int moby_native_simple_mobys(uint32_t* out, int max) {
+int moby_native_simple_mobys(uint32_t* out, int max) OP_REQUIRES(sim) {
     return moby_game.simple_mobys ? moby_game.simple_mobys(out, max) : 0;
 }
 
@@ -4156,7 +4156,7 @@ static uint32_t s_specq_moby[MAX_RECORDS]; static int s_specq_n;   /* last SPEC-
  * extended LOD this loop, not the queue pass, is where moby extraction lives. */
 static long s_us_rvdec, s_us_rvfields, s_us_reveal;
 static int tier_dbg_on(void);
-static int occl_record_culled(CPUState* cpu, uint32_t moby);
+static int occl_record_culled(CPUState* cpu, uint32_t moby) OP_REQUIRES(sim);
 static void occl_cache_update(CPUState* cpu, uint32_t moby, const proj_xy* p, int n,
                               const double tr[3], uint32_t header);
 static int occl_confirm(CPUState* cpu, uint32_t moby, const proj_xy* p, int n,
@@ -4191,7 +4191,7 @@ static int moby_is_shiny(CPUState* cpu, uint32_t moby) {
     NGTE_CENSUS_HIT(reveal_spec_solo);
     return 1;
 }
-static int append_revealed_regular_inner(CPUState* cpu);
+static int append_revealed_regular_inner(CPUState* cpu) OP_REQUIRES(sim);
 static void moby_fields_pose_from_snapshot(CPUState* cpu, uint32_t moby, moby_fields* f);
 /* The previous pose a sub-tick decode of one host-built record reads, filled
  * by moby_record_prev_pose. dprev may point at prev or held, so the struct is
@@ -4218,7 +4218,7 @@ static long s_reveal_verdict[3];
  * a direct pass-through.
  * @param cpu The guest CPU state.
  * @return The number of records the reveal walk admitted. */
-static int append_revealed_regular(CPUState* cpu) {
+static int append_revealed_regular(CPUState* cpu) OP_REQUIRES(sim) {
     const uint64_t t_rv = mst_now();
     if (!tier_dbg_on()) { int nr = append_revealed_regular_inner(cpu); mst_add(MST_REVEAL, t_rv); return nr; }
     uint64_t t0 = openpete_phase_now_us();
@@ -4306,7 +4306,7 @@ static int reveal_emit_record(CPUState* cpu, uint32_t m, moby_fields* f, int ver
  * record takes the pose of the tick the canonical present showed and reads
  * the previous tick's pose as the queue pass does (moby_record_prev_pose).
  * Returns the records admitted, occlusion-culled ones included. */
-static int append_revealed_regular_inner(CPUState* cpu) {
+static int append_revealed_regular_inner(CPUState* cpu) OP_REQUIRES(sim) {
     /* The reveal rebuilds cull records in the game's own encoding, so it runs
      * only where the game's provider supplies that builder. Without it the walk
      * feeds exactly the records the cull queued - which is also what a game
@@ -4724,7 +4724,7 @@ static int moby_reveal_confirm(CPUState* cpu, uint32_t m) {
  * @param requeued Counts an appended record whose drawn byte the cull left at 1.
  * @return 1 when a record was appended, else 0. */
 static int moby_reveal_widened(CPUState* cpu, uint32_t m, uint32_t head, double widen,
-                               long verdicts[MOBY_WIDE_VERDICTS], long* occl, long* requeued) {
+                               long verdicts[MOBY_WIDE_VERDICTS], long* occl, long* requeued) OP_REQUIRES(sim) {
     const unsigned drawn = cpu->read_byte(m + game_layout.moby.drawn_off);
     if (drawn > 1u || (drawn == 1u && moby_rec_holds_moby(cpu, m))) return 0;
     const moby_wide_verdict_t v = moby_game.cull_view_admits(
@@ -5253,7 +5253,7 @@ static int moby_array_has(uint32_t m, uint32_t head, uint32_t slots) {
  * moves the array and refills the old slots with other data. Prints one
  * [moby-trail] line under OPENPETE_MOBY_QMISS_CENSUS.
  * @param cpu The guest CPU state, read only. */
-static void moby_trail_latch(CPUState* cpu) {
+static void moby_trail_latch(CPUState* cpu) OP_REQUIRES(sim) {
     const int s1_mirror = moby_game.host_reveal && !moby_game.cull_view_admits;
     if (!s1_mirror && !(moby_game.cull_view_admits && moby_game.reveal_record)) return;
     const uint32_t epoch = spyro_native_canon_epoch_stamp();
@@ -5301,7 +5301,7 @@ static int trail_enabled(void) {
  * candidate, so the identity present and the canonical present add nothing.
  * @param cpu The guest CPU state, read only.
  * @return The records appended. */
-static int append_trailing_regular(CPUState* cpu) {
+static int append_trailing_regular(CPUState* cpu) OP_REQUIRES(sim) {
     if (!moby_game.host_reveal || !s_trail_cand_n || s_view.extended || openpete_no_lod || !trail_enabled()) return 0;
     if (moby_cutscene_owns_draw(cpu)) return 0;
     int added = 0, admit = 0;
@@ -11775,7 +11775,7 @@ static int moby_centre_bucket(CPUState* cpu, uint32_t moby, moby_zb_memo* memo) 
  * holds three quarters of RC_SIZE keys every remaining triangle is skipped,
  * replacements included; a skipped face reads back as absent.
  * @param cpu The guest CPU state, read only. */
-static void rank_carry_store(CPUState* cpu) {
+static void rank_carry_store(CPUState* cpu) OP_REQUIRES(sim) {
     rc_tab* t = rank_carry_table_for(spyro_native_canon_epoch_stamp(), openpete_native_scene_frame());
     moby_zb_memo zm = { 0u, 0 };
     if (rank_ep_mode()) rcm_fill(t->m, t->gen);
@@ -12368,7 +12368,7 @@ static void rank_ep_report(void) {
  * rank-time, rank-carry and select census lines and runs the calibration
  * instrument when each is enabled.
  * @param cpu The guest CPU state, read only. */
-static void moby_rank_prepare(CPUState* cpu) {
+static void moby_rank_prepare(CPUState* cpu) OP_REQUIRES(sim) {
     if (!openpete_mobyrank_on() && !isect_log_on()) return;
     int carry = s_in_reextract && rank_carry_on();
     uint64_t t0 = rt_now(), c0 = rt_cpu_ns();
@@ -13489,7 +13489,7 @@ static int moby_emit_run_end(int i0) {
  * @param cpu Guest CPU state, read for the terrain-order state bytes.
  * @param E The walk's constants.
  * @param rord The walk's ranked-moby ordinals. */
-static void moby_emit_serial(CPUState* cpu, const moby_emit_env_t* E, moby_rank_ordinals_t* rord) {
+static void moby_emit_serial(CPUState* cpu, const moby_emit_env_t* E, moby_rank_ordinals_t* rord) OP_REQUIRES_SHARED(sim) {
     moby_matslot_memo_t mat = { 0u, 0u, 0 };  /* the material-slot resolve below */
     moby_shell_run_t shell = { 0, 0 };
     moby_emit_run_t R = { 0, 0, 0u, 0u, 0xFFu };
@@ -13551,7 +13551,7 @@ typedef struct { const moby_emit_env_t* E; int base; } moby_emit_job_t;
  * @param item The item index.
  * @param worker The pool worker, 0 for the calling thread.
  * @param arg The moby_emit_job_t. */
-static void moby_emit_job(int item, int worker, void* arg) {
+static void moby_emit_job(int item, int worker, void* arg) OP_REQUIRES_SHARED(sim) {
     const moby_emit_job_t* J = (const moby_emit_job_t*)arg;
     const moby_emit_item_t* I = &s_mitems[item];
     const moby_emit_run_t* R = &s_mruns[I->run];
@@ -13622,7 +13622,7 @@ static int moby_emit_fanout_workers(void) {
 
 /** @brief Add the stored faces' provenance tags to the scene's kind counts, one call per stretch of equal tags.
  * @param n The face count. */
-static void moby_emit_count_kinds(int n) {
+static void moby_emit_count_kinds(int n) OP_REQUIRES(sim) {
     const moby_emit_run_t* R = s_mruns;
     uint32_t tag = 0u;
     int cnt = 0;
@@ -13652,7 +13652,7 @@ static void moby_emit_count_kinds(int n) {
  * @param E The walk's constants.
  * @param rord The walk's ranked-moby ordinals.
  * @return 1 when the emit ran, 0 when the scene could not grow (nothing changed; emit serially). */
-static int moby_emit_fanout(CPUState* cpu, const moby_emit_env_t* E, moby_rank_ordinals_t* rord) {
+static int moby_emit_fanout(CPUState* cpu, const moby_emit_env_t* E, moby_rank_ordinals_t* rord) OP_REQUIRES(sim) {
     const int n = s_gout.n;
     const uint64_t t_pre = mst_fine_now();
     const int base = openpete_native_scene_reserve(n);
@@ -13764,7 +13764,7 @@ static uint64_t pfc_ns(void) {
  * @param cpu Guest CPU state.
  * @param E The walk's constants.
  * @param rord The walk's ranked-moby ordinals. */
-static void moby_emit_check(CPUState* cpu, const moby_emit_env_t* E, moby_rank_ordinals_t* rord) {
+static void moby_emit_check(CPUState* cpu, const moby_emit_env_t* E, moby_rank_ordinals_t* rord) OP_REQUIRES(sim) {
     static int s_atexit;
     if (!s_atexit) { s_atexit = 1; atexit(pfc_atexit); }
     static moby_emit_state_t pre, ser;
@@ -13827,7 +13827,7 @@ static void moby_emit_check(CPUState* cpu, const moby_emit_env_t* E, moby_rank_o
  * @param cpu Guest CPU state.
  * @param E The walk's constants.
  * @param rord The walk's ranked-moby ordinals. */
-static void moby_emit(CPUState* cpu, const moby_emit_env_t* E, moby_rank_ordinals_t* rord) {
+static void moby_emit(CPUState* cpu, const moby_emit_env_t* E, moby_rank_ordinals_t* rord) OP_REQUIRES(sim) {
     if (!moby_emit_fanout_workers()) { moby_emit_serial(cpu, E, rord); return; }
     if (push_fanout_check_on()) { moby_emit_check(cpu, E, rord); return; }
     if (!moby_emit_fanout(cpu, E, rord)) moby_emit_serial(cpu, E, rord);
@@ -13871,7 +13871,7 @@ static void moby_gsab_commit(void) {
  * player_hide_active holds, an actor-layer triangle of the companion's class
  * is not appended. Writes host scene state only.
  * @param cpu Guest CPU state, read for game.state (moby_walk_state_bit). */
-static void push_scene_moby_tris(CPUState* cpu) {
+static void push_scene_moby_tris(CPUState* cpu) OP_REQUIRES(sim) {
     if (!render_path_enabled(RP_MOBY)) return;  /* --render-paths: mobys not selected */
     const uint64_t t_pre = mst_fine_now();
     moby_gsab_commit();
@@ -13922,7 +13922,7 @@ static void push_scene_moby_tris(CPUState* cpu) {
  * Pushes the guest's level first, since push_scene_moby_tris resolves each
  * moby's material against level-keyed selectors.
  * @param cpu Guest CPU state. */
-static void push_scene_moby(CPUState* cpu) {
+static void push_scene_moby(CPUState* cpu) OP_REQUIRES(sim) {
     if (!render_path_enabled(RP_MOBY)) return;  /* --render-paths: mobys not selected */
     OP_PROF_ACCUM_SCOPE("moby.push");
     const uint64_t t_ps = mst_fine_now();
@@ -14285,7 +14285,7 @@ static int moby_ovl_single_record(uint32_t mob) {
  * and the overlay moby for moby_native_overlay_commit.
  * @param cpu The guest CPU state, read only.
  * @return 1 when the feed is held, 0 when the caller pushes it. */
-static int moby_ovl_defer(CPUState* cpu) {
+static int moby_ovl_defer(CPUState* cpu) OP_REQUIRES(sim) {
     if (!moby_game.reveal_record) return 0;
     const uint32_t mob = cpu->read_word(game_layout.moby.overlay_moby);
     if (ovl_ab_on()) ovl_ab_compare(cpu, mob);
@@ -14371,7 +14371,7 @@ static void ovl_copy_return(void) {
     s_rec_append_gen++;
 }
 
-void moby_native_overlay_commit(void) {
+void moby_native_overlay_commit(void) OP_REQUIRES(sim) {
     if (!s_ovl_feed.pending) return;
     s_ovl_feed.pending = 0;
     s_ovl_rex.valid = 0;
@@ -14432,7 +14432,7 @@ void moby_native_overlay_commit(void) {
  * @param cpu The guest CPU state.
  * @param draw_addr The game's draw entry for this material.
  * @param mat The material tag, "REG" or "SPEC". */
-static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat) {
+static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat) OP_REQUIRES(sim) {
     int verify = moby_verify_enabled();
     int feed   = openpete_native_scene_enabled();
     s_cur_mat = mat;
@@ -14954,7 +14954,7 @@ int moby_native_replay_prev_queue(int on) {
  *
  * @param recs The records the regular pass replayed.
  * @param tris The triangles they produced. */
-static void rec_held_queue_census(int recs, int tris) {
+static void rec_held_queue_census(int recs, int tris) OP_REQUIRES(sim) {
     if (!s_hold_asked || !cut_census_on()) return;
     fprintf(stderr, "[cut-census vbl=%u] held-queue kind=reg set=%s epoch=%u canon=%u recs=%d tris=%d\n",
             openpete_frame, s_rec_ref_prev ? "prev" : "curr", s_rec_snap_epoch,
@@ -17881,7 +17881,7 @@ static void oic_note(uint32_t moby, unsigned epoch, int leg, int culled) {
 }
 
 /** @brief Print and reset the re-extract leg's verdict comparison counts (OPENPETE_OCCL_IDENT_CENSUS). */
-static void oic_report(void) {
+static void oic_report(void) OP_REQUIRES(sim) {
     if (!oic_on() || g_openpete_canon_lag_leg || !s_in_reextract) return;
     fprintf(stderr, "[occl-ident moby vbl=%u epoch=%u] compared=%ld disagree=%ld unqueried=%ld "
             "(canon epoch=%u notes=%ld) mobys=[%s]\n",
@@ -17991,7 +17991,7 @@ static int occl_decide(CPUState* cpu, uint32_t moby, const occl_box_t* b) {
  * OPENPETE_OCCL_HELD_CONFIRM=0 takes the held admission as final.
  * @return 1 when culled, else 0. */
 static int occl_verdict(CPUState* cpu, uint32_t moby, const occl_box_t* b,
-                        occl_hold_t* hook, occl_hold_t* rex) {
+                        occl_hold_t* hook, occl_hold_t* rex) OP_REQUIRES(sim) {
     const uint32_t epoch = spyro_native_canon_epoch_stamp();
     const int leg = g_openpete_canon_lag_leg ? 1 : 0;
     const int canon = leg || !s_in_reextract;
@@ -18029,7 +18029,7 @@ static int occl_verdict(CPUState* cpu, uint32_t moby, const occl_box_t* b,
  * @param cpu The guest CPU state, read only.
  * @param moby The Moby address.
  * @return 1 when culled, else 0. */
-static int occl_record_culled(CPUState* cpu, uint32_t moby) {
+static int occl_record_culled(CPUState* cpu, uint32_t moby) OP_REQUIRES(sim) {
     return occl_verdict(cpu, moby, NULL, &s_hold_hook, &s_hold_rex);
 }
 
@@ -18141,7 +18141,7 @@ static void occl_sphere_box(const double o[3], double r, occl_box_t* b) {
 
 
 /** @brief Print one line per re-extract leg with that leg's occlusion verdict counts since its previous line (OPENPETE_REEXTRACT_FEEDDBG). */
-static void occl_leg_census_report(void) {
+static void occl_leg_census_report(void) OP_REQUIRES(sim) {
     static int on = -1;
     if (on < 0) { const char* e = getenv("OPENPETE_REEXTRACT_FEEDDBG"); on = (e && *e && *e != '0'); }
     if (!on) return;
@@ -18365,7 +18365,7 @@ static void occl_verify_end(uint32_t moby, const proj_xy* p, int n) {
 
 static long s_ver_simple_n, s_ver_simple_out;   /* simple-moby records audited / not contained */
 
-int moby_simple_occluded(CPUState* cpu, uint32_t moby, const double org[3], double radius) {
+int moby_simple_occluded(CPUState* cpu, uint32_t moby, const double org[3], double radius) OP_REQUIRES(sim) {
     if (!moby_simple_occl_on()) return 0;
     occl_box_t b;
     occl_sphere_box(org, radius, &b);
@@ -19571,7 +19571,7 @@ static void moby_wbase_trace(CPUState* cpu, uint32_t rec, uint32_t moby, int wba
  * tick N-1 drew (openpete_interp_objs_find_evicted), so every channel of the
  * replay reads that state and holds it. Alpha 1 shows tick N's set. A moby the
  * cull merely stopped drawing is a visibility change and stays out of both. */
-static int reextract_record_pass(CPUState* cpu, const char* mat);
+static int reextract_record_pass(CPUState* cpu, const char* mat) OP_REQUIRES(sim);
 static int s_late;              /* the present in flight shows tick N-1's set */
 static int s_late_ghost_pass;   /* the regular pass replays the despawned records */
 
@@ -19698,7 +19698,7 @@ static int moby_reg_handled(uint32_t m) {
  * staged spans are restored and the queue swaps back after.
  * @param cpu The guest CPU state, read only.
  * @return The records replayed. */
-static int moby_late_ghost_reextract(CPUState* cpu) {
+static int moby_late_ghost_reextract(CPUState* cpu) OP_REQUIRES(sim) {
     if (!moby_native_late_active() || !rec_prev_usable()) return 0;
     if (!moby_native_replay_prev_queue(1)) return 0;
     s_late_ghost_pass = 1;
@@ -19838,7 +19838,7 @@ static int reextract_record_list(CPUState* cpu, int is_spec, uint32_t* recs, uin
  * @param cpu The guest CPU state, read only.
  * @param culled The mobys the pass's occlusion test culled.
  * @param culled_n Their count. */
-static void rex_regular_tail(CPUState* cpu, const uint32_t* culled, int culled_n) {
+static void rex_regular_tail(CPUState* cpu, const uint32_t* culled, int culled_n) OP_REQUIRES(sim) {
     if (s_late_ghost_pass) return;
     s_reg_moby_n = 0;
     for (int r = 0; r < s_nrecs && s_reg_moby_n < MAX_RECORDS; r++)
@@ -20202,7 +20202,7 @@ static int rex_rec_fields(CPUState* cpu, uint32_t rec, uint32_t moby, moby_field
  * @param check_cap Nonzero to stop the pass when s_recs or s_proj is full (the serial pass's test).
  * @return -1 when the pass stops here, else 0 (J->state says what follows). */
 static int rex_rec_prepare(CPUState* cpu, uint32_t rec, uint32_t moby, long* rot_bins, rex_job* J,
-                           rex_split* sp, int check_cap) {
+                           rex_split* sp, int check_cap) OP_REQUIRES(sim) {
     rex_interp_miss_note(cpu, moby);
     s_occl_seen++;
     J->state = RJ_SKIP; J->got = 0; J->ver_check = 0;
@@ -20324,7 +20324,7 @@ static void rex_rec_commit(CPUState* cpu, int is_spec, uint32_t rec, uint32_t mo
  * @param culled_n Their count, updated.
  * @return -1 when the pass stops at this record, else 0. */
 static int rex_rec_serial(CPUState* cpu, int is_spec, uint32_t rec, uint32_t moby, long* rot_bins,
-                          rex_job* J, rex_split* sp, uint32_t* culled, int* culled_n) {
+                          rex_job* J, rex_split* sp, uint32_t* culled, int* culled_n) OP_REQUIRES(sim) {
     msp_mark(sp->part, sp->tr, MSP_RSTRIDE);
     sp->tr = msp_rnow(msp_rsample()); sp->part = MSP_R_PRE;
     if (rex_rec_prepare(cpu, rec, moby, rot_bins, J, sp, 1) < 0) return -1;
@@ -20461,7 +20461,7 @@ static void rfc_arm(void);
  * @param verts Receives their vertices.
  * @return The first record not reserved: nm when every record was. */
 static int rex_fanout_prefix(CPUState* cpu, const uint32_t* recs, const uint32_t* mobys, int nm, long* rot_bins,
-                             const uint8_t* dup, int* idx, int* nd, long* verts) {
+                             const uint8_t* dup, int* idx, int* nd, long* verts) OP_REQUIRES(sim) {
     rex_split sp = { 0, MSP_R_PRE };
     int resv = s_proj_n, stop = nm;
     s_pc_pass++; s_pc_prefix = 1;
@@ -20510,7 +20510,7 @@ static int rex_fanout_prefix(CPUState* cpu, const uint32_t* recs, const uint32_t
  * @param culled_n Their count, updated.
  * @return The first record left for the serial pass: 0 when the pass did not run phased. */
 static int rex_fanout_pass(CPUState* cpu, int is_spec, const uint32_t* recs, const uint32_t* mobys, int nm,
-                           long* rot_bins, uint32_t* culled, int* culled_n) {
+                           long* rot_bins, uint32_t* culled, int* culled_n) OP_REQUIRES(sim) {
     static uint8_t dup[MAX_RECORDS];
     static int idx[MAX_RECORDS];
     if (rex_fanout_check_on()) rfc_arm();
@@ -20604,7 +20604,7 @@ static void rex_fanout_check(const rex_dec_job* X, int nd) {
  * camera (or replays the captured record on a game without host reveal),
  * applies the game's draw-time row scale, lerps the shape between the tick
  * pair, and walks the result into the scene. Returns the records queued. */
-static int reextract_record_pass(CPUState* cpu, const char* mat) {
+static int reextract_record_pass(CPUState* cpu, const char* mat) OP_REQUIRES(sim) {
     int is_spec = (mat && mat[0] == 'S' && mat[1] == 'P');
     long rot_bins[REC_ROT_N] = {0};
     s_walk_in_rex = 1;
@@ -20651,7 +20651,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
  * again, replayed by reextract_record_pass as the overlay pass, and the copy
  * restored.
  * @param cpu The sub-tick view's CPU state, read only. */
-static void moby_ovl_reextract(CPUState* cpu) {
+static void moby_ovl_reextract(CPUState* cpu) OP_REQUIRES(sim) {
     if (!s_ovl_rex.valid || s_canon_overlay || !spyro_native_canon_epoch_fresh(s_ovl_rex.epoch)) return;
     const uint32_t base_canon = s_rec_base_canon;
     ovl_copy_borrow(s_ovl_rex.rec, s_ovl_rex.base);
@@ -20673,8 +20673,8 @@ static int moby_census_on(void) {
     return s;
 }
 
-static void moby_reextract_body(CPUState* cpu);
-void moby_reextract(CPUState* cpu) {
+static void moby_reextract_body(CPUState* cpu) OP_REQUIRES(sim);
+void moby_reextract(CPUState* cpu) OP_REQUIRES(sim) {
     s_in_reextract = 1;
     { OP_PROF_ACCUM_SCOPE("mrex.snap_present");
       moby_snap_present(1, s_rc_alpha); }
@@ -20694,7 +20694,7 @@ void moby_reextract(CPUState* cpu) {
  * flags and prints the occlusion, feed and clip-switch census lines their
  * OPENPETE_* variables enable.
  * @param cpu The guest CPU state. */
-static void moby_reextract_body(CPUState* cpu) {
+static void moby_reextract_body(CPUState* cpu) OP_REQUIRES(sim) {
     /* Only replay mobys the canonical frame actually drew. During a level
      * transition the moby render path may not fire (or only for the collected-gem
      * mobys); gating on the canon-drawn mask reproduces exactly that set instead

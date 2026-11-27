@@ -753,7 +753,7 @@ static void flame_census_line(const char* src, int slot, int tris) {
  * @param cpu The guest CPU state, read only.
  * @param slot The model record the ribbon renders under; negative is 0.
  * @param src The caller's label in the census line. */
-static void flame_feed_native(CPUState* cpu, int slot, const char* src) {
+static void flame_feed_native(CPUState* cpu, int slot, const char* src) OP_REQUIRES(sim) {
     flame_build_strip(cpu);                  /* fills s_fquad (strip) + s_fcap (caps) */
     const int cen = flame_census_on();
     if (s_fquad_n <= 0 && s_fcap_n <= 0) {
@@ -873,7 +873,7 @@ static int on_flame_draw(CPUState* cpu, uint32_t addr) {
 }
 
 /* Sub-tick ribbon re-extract; documented at the declaration in flame.h. */
-void flame_reextract(CPUState* cpu, int slot) {
+void flame_reextract(CPUState* cpu, int slot) OP_REQUIRES(sim) {
     if (!FL_STATE) return;
     /* Belt-and-braces with the m_IsFlameActive self-gate below: only replay the
      * flame if the canonical frame drew it (skips stale ribbons during a level
@@ -922,7 +922,7 @@ int flame_bracket(uint8_t* fl, const uint8_t* pfl, const uint8_t* cfl,
 }
 
 /* Per-record flame pass of a present; documented in flame.h. */
-void flame_records_present(CPUState* cpu, int paired, int cam_cut, double alpha, uint8_t* fl) {
+void flame_records_present(CPUState* cpu, int paired, int cam_cut, double alpha, uint8_t* fl) OP_REQUIRES(sim) {
     const uint32_t len = game_layout.player.flame_len;
     if (!FL_STATE || !len || len > PLAYER_REC_AUX_MAX) return;
     double rec_alpha = 0.0;

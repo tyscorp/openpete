@@ -39,6 +39,9 @@ extern "C" {
 #include "openpete_crash.h"
 #include "psyq/psyq_game_hooks.h"
 #include "renderer/ui_game.h"   /* the 2D chokepoint's deferred feed */
+#include "openpete_native_render.h"   /* DISPENV/DRAWENV and DrawOTag notes */
+#include "openpete_fb_snapshot.h"     /* openpete_fb_snapshot_note_draw_env */
+#include "openpete_run_capture.h"     /* openpete_capture_note_psyx_walk */
 
 /* The PSYQ_OT_BASE_RING most recent distinct ordering-table bases handed to
  * DrawOTag (see the note at the walk). Newest first; a repeat of the newest
@@ -2572,17 +2575,7 @@ void psyq_MoveImage(CPUState* cpu) {
 
 /* The native renderer (--renderer vk) draws the scanned-out framebuffer; feed it
  * the display framebuffer (DISPENV disp) + the drawn region (DRAWENV clip, used
- * to crop the overscan). Forward-declared (extern "C", core C TUs) to avoid
- * pulling the core header into this thunk file. No-ops when disabled. */
-extern "C" void openpete_native_set_display_rect(int x, int y, int w, int h);
-extern "C" void openpete_native_set_draw_clip(int x, int y, int w, int h);
-extern "C" void openpete_fb_snapshot_note_draw_env(int clip_x, int clip_y,
-                                                   int clip_w, int clip_h,
-                                                   int ofs_x, int ofs_y, int isbg);
-extern "C" void openpete_native_set_clear_color(int isbg, int r, int g, int b);
-extern "C" void openpete_native_note_put_draw_env(int isbg, int r, int g, int b);
-extern "C" void openpete_native_note_draw_otag(void);
-extern "C" void openpete_capture_note_psyx_walk(void);
+ * to crop the overscan). The calls are no-ops when it is disabled. */
 
 /** @brief Thunk for libgpu PutDispEnv: copies the guest DISPENV into libgpu's environment block and hands it to PsyCross and the native renderer.
  *
@@ -3180,7 +3173,7 @@ static void ot_walk(saved_ot_t* B, uint32_t addr, unsigned* draw_prims, unsigned
  * the first table with more than one drawing primitive. Guest RAM is only
  * read.
  * @param cpu Guest CPU; a0 holds the first OT entry. */
-void psyq_DrawOTag(CPUState* cpu) {
+void psyq_DrawOTag(CPUState* cpu) OP_REQUIRES(sim) {
     /* The OT rebuild is openpete's own work on the game fiber, so it lands
      * inside the sim-tick bracket rather than any render-side phase. */
     op_accum_scope prof_("psyq.drawotag");

@@ -1,6 +1,7 @@
 /* glow.h : the glow-ring feeder's export. */
 #pragma once
 #include "psx_runtime_internal.h"
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 /** @brief Replay the tick's captured glow fans on a sub-tick present.
  *
@@ -18,4 +19,4 @@
  *        last computed.
  * @param alpha The present's position in the tick interval, 1 at its end.
  * @param hold Nonzero on a held camera cut. */
-void glow_reextract(CPUState* cpu, int bracketed, double alpha, int hold);
+void glow_reextract(CPUState* cpu, int bracketed, double alpha, int hold) OP_REQUIRES(sim);

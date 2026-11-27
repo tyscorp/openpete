@@ -595,7 +595,9 @@ class Walk:
                 self._ref(c, chain, stmt_macro_at)
             elif kind == K.CALL_EXPR:
                 self._call(c, chain, stmt_macro_at)
-            elif kind == K.FUNCTION_DECL and depth > 0:
+            elif kind == K.FUNCTION_DECL and depth > 0 and not c.is_definition():
+                # A definition inside `extern "C" {` is the canonical site,
+                # not a prototype.
                 usr = c.get_usr()
                 if usr in self.annotated:
                     self.refuse(c, "local prototype of the annotated function %s" % c.spelling)
@@ -1425,16 +1427,59 @@ def select_all(linux, mingw, files=None):
     return sel
 
 
+def declarator_name(text):
+    """-> the identifier a declarator ending text declares, or None: array
+    bounds and parameter lists after it are dropped, and a group `(*name...)`
+    is entered, so `int a[2]`, `T (*p)[3]` and `void (*cb)(int)` give a, p
+    and cb."""
+    s = text.rstrip()
+    while s and s[-1] in ")]":
+        if s[-1] == "]":
+            i = s.rfind("[")
+            if i < 0:
+                return None
+            s = s[:i].rstrip()
+            continue
+        depth, i = 0, len(s) - 1
+        while i >= 0:
+            depth += {")": 1, "(": -1}.get(s[i], 0)
+            if depth == 0:
+                break
+            i -= 1
+        if i < 0:
+            return None
+        inner = s[i + 1:-1].strip()
+        s = inner.lstrip("*& \t") if inner.startswith(("*", "&")) else s[:i].rstrip()
+        s = re.sub(r"^(?:(?:const|volatile|restrict)\b\s*)+", "", s)
+    m = re.search(r"([A-Za-z_]\w*)$", s)
+    return m.group(1) if m else None
+
+
 def first_form(root, base, path, code):
     """True when the form macro on the added line is the global's first: the
     declarator before it carries no form macro in the base text of path."""
-    m = re.search(r"([A-Za-z_]\w*)\s*(?:\[[^\]]*\]\s*)*\b(?:%s)\(" % "|".join(FORM_MACROS), code)
-    if not m:
+    m = re.search(r"\b(?:%s)\(" % "|".join(FORM_MACROS), code)
+    name = declarator_name(code[:m.start()]) if m else None
+    if not name:
         return False
-    before = pop.tsv_at(root, base, path) or ""
-    return re.search(r"\b%s\s*(?:\[[^\]]*\]\s*)*\b(?:%s)\("
-                     % (re.escape(m.group(1)), "|".join(FORM_MACROS)),
-                     strip_comments(before)) is None
+    before = strip_comments(pop.tsv_at(root, base, path) or "")
+    form = re.compile(r"\b(?:%s)\(" % "|".join(FORM_MACROS))
+    for d in re.finditer(r"\b%s\b" % re.escape(name), before):
+        # The declarator's tail: up to the first top-level `;`, `,`, `=` or
+        # `{`; a `)` closing the group the name sits in keeps the top level.
+        depth, i = 0, d.end()
+        while i < len(before):
+            ch = before[i]
+            if ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                depth = max(depth - 1, 0)
+            elif depth == 0 and ch in ";,={":
+                break
+            i += 1
+        if form.search(before, d.end(), i):
+            return False
+    return True
 
 
 def marker_refusals(root, base, staged, rev=None):

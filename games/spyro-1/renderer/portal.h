@@ -11,6 +11,7 @@
 #include "renderer/native_gte.h"     /* ngte_view: the caller's projection view */
 #include "renderer/terrain_game.h"   /* openpete_portal_skyplane */
 #include "renderer/portal_plane.h"    /* openpete_portal_plane_margin */
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 /** @brief Whether a portal fed sky during the canonical render in flight or the last one presented.
  *
@@ -20,7 +21,7 @@
  * (OPENPETE_PORTAL_GUARD), its deferred-queue oracle, and the GPU terrain
  * cache's portal-plane fetch.
  * @return 1 when a portal sky feed is recent, 0 otherwise */
-int openpete_portal_sky_recent(void);
+int openpete_portal_sky_recent(void) OP_REQUIRES(sim);
 
 /** @brief 1 when the running world draw is func_8002B9CC's and this tick's RenderPortals has not run.
  *
@@ -48,6 +49,6 @@ int openpete_portal_capture_follows(CPUState* cpu);
  * @param max capacity of out
  * @return the entry count (0 when no portal sky is active or the portal
  *         render path is deselected) */
-int openpete_portal_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_skyplane* out, int max);
+int openpete_portal_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_skyplane* out, int max) OP_REQUIRES(sim);
 
 

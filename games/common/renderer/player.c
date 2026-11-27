@@ -882,7 +882,7 @@ static void player_postrace(void) {
  * OPENPETE_PLAYER_POSTRACE prints the submitted centroid and bounding box.
  * @param cpu Reads the pose and the sortDepth byte.
  * @param reproject Nonzero to run player_project_all first. */
-static void player_feed_walk_ex(CPUState* cpu, int reproject) {
+static void player_feed_walk_ex(CPUState* cpu, int reproject) OP_REQUIRES(sim) {
     if (reproject) player_project_all(cpu);
     player_build_walk(cpu);
     if (s_swtri_n <= 0) return;
@@ -971,7 +971,7 @@ static void player_feed_walk_ex(CPUState* cpu, int reproject) {
 /** @brief Projects the current pose and feeds its triangles to the scene.
  *
  * @param cpu Reads the pose. */
-static void player_feed_walk(CPUState* cpu) { player_feed_walk_ex(cpu, 1); }
+static void player_feed_walk(CPUState* cpu) OP_REQUIRES(sim) { player_feed_walk_ex(cpu, 1); }
 
 /* ---- OPENPETE_PLAYER_VERIFY -------------------------------------------
  * The probe: bracket the draw's own polybuf window, decode the primitives it
@@ -1333,7 +1333,7 @@ static int on_player_draw(CPUState* cpu, uint32_t addr) {
 static int s_pres_hold = 0;
 static int s_pres_pick = -1;
 
-void player_reextract_record(CPUState* cpu, int mirror) {
+void player_reextract_record(CPUState* cpu, int mirror) OP_REQUIRES(sim) {
     /* Which call of the tick this replay reproduces. The driver restores the
      * state word that told the two apart before the tick ends, so live RAM
      * cannot answer it here: the caller reads it off the record whose bytes
@@ -1406,7 +1406,7 @@ void player_reextract_record(CPUState* cpu, int mirror) {
     if (!two_pass) player_feed_walk(cpu);
 }
 
-void player_reextract(CPUState* cpu) { player_reextract_record(cpu, 0); }
+void player_reextract(CPUState* cpu) OP_REQUIRES(sim) { player_reextract_record(cpu, 0); }
 
 /* ======================================================================== *
  *  The per-call record store                                                *
@@ -1455,7 +1455,7 @@ static uint32_t   s_cap_refused_epoch, s_spec_refused_epoch, s_led_fires_epoch;
  * current key. The stamp advances only at a commit, which a fast-forward and a
  * CD stall skip, so a stamp-only key would accumulate a fast-forward's calls
  * to the cap. */
-static void list_open(void) {
+static void list_open(void) OP_REQUIRES(sim) {
     uint32_t stamp = spyro_native_canon_epoch_stamp();
     int empty = list_empty(&s_list);
     if (!empty && (s_list.stamp != stamp || s_list.frame != openpete_frame)) { list_clear(&s_list); empty = 1; }
@@ -1577,7 +1577,7 @@ static void observe(int feeder) {
     o->last_ok = 1;
 }
 
-int player_records_model_append(CPUState* cpu, uint32_t rp_start, uint32_t rp_end) {
+int player_records_model_append(CPUState* cpu, uint32_t rp_start, uint32_t rp_end) OP_REQUIRES(sim) {
     /* Runahead lookahead: the hook fires on speculative ticks too. Those fires
      * are not the canonical epoch - they build the led list, the lerp source
      * of the committed records at commit. */
@@ -1663,7 +1663,7 @@ static void aux_push(rec_list_t* L, int a, const uint8_t* state, int model, int 
  * @param f The feeder, PLAYER_REC_SHADOW or PLAYER_REC_FLAME.
  * @return The model record's index, or -1 when the layout has no block for
  *         the feeder, a list is at the cap, or a block does not map. */
-static int aux_append(int f) {
+static int aux_append(int f) OP_REQUIRES(sim) {
     reg_init();
     const int a = AUX_OF(f);
     if (!s_reg[f].addr) return -1;
@@ -1680,9 +1680,9 @@ static int aux_append(int f) {
     return m;
 }
 
-int player_records_shadow_append(CPUState* cpu) { (void)cpu; return aux_append(PLAYER_REC_SHADOW); }
+int player_records_shadow_append(CPUState* cpu) OP_REQUIRES(sim) { (void)cpu; return aux_append(PLAYER_REC_SHADOW); }
 
-int player_records_flame_append(CPUState* cpu) { (void)cpu; return aux_append(PLAYER_REC_FLAME); }
+int player_records_flame_append(CPUState* cpu) OP_REQUIRES(sim) { (void)cpu; return aux_append(PLAYER_REC_FLAME); }
 
 /** @brief Whether two record lists differ in any byte the store compares.
  *
@@ -2004,7 +2004,7 @@ static void recdbg_epoch_line(const openpete_interp_snapshot_t* curr, int ring_r
     s_prev_model = *m;
 }
 
-void player_records_epoch_commit(void) {
+void player_records_epoch_commit(void) OP_REQUIRES(sim) {
     if (!PL.base) return;
     reg_init();
     const int dbg = player_records_dbg();

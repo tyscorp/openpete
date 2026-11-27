@@ -1127,6 +1127,7 @@ static void orch_prod_camera_leave(void) {
 
 /** @brief Latch which producers drew under another camera, latch the in-flight epoch as fresh, start the next and close the player hooks' record epoch (spyro_native_canon_epoch_commit). */
 static void orch_epoch_commit(void) {
+    OP_ROLE_ASSERT(sim);
     if (cut_census_on()) { cut_locate_camera(cut_desc()); cut_locate_mobys(); }
     const uint8_t* h = (const uint8_t*)openpete_psx_to_host_span(G_CAMERA, CAM_XFORM_BYTES);
     for (int p = 0; p < SPROD_COUNT; ++p)
@@ -1419,7 +1420,7 @@ static void spyro_record_overlay(uint32_t addr, const uint8_t* bytes, uint32_t l
  * Each record is staged from its shown state (`src`, the led tick under
  * --runahead) with the ground anchor lerped against the paired record,
  * teleport-guarded; `shb` is the staged shadow span. */
-static void player_records_shadows(CPUState* cpu, int k, uint8_t* shb) {
+static void player_records_shadows(CPUState* cpu, int k, uint8_t* shb) OP_REQUIRES(sim) {
     int nsh = player_records_shadow_count();
     for (int j = 0; j < nsh; j++) {
         const player_shadow_rec_t* d = player_records_shadow_curr(j);
@@ -1449,7 +1450,7 @@ static void player_records_shadows(CPUState* cpu, int k, uint8_t* shb) {
 static void player_records_loop(CPUState* cpu, int paired, int cam_cut, int cam_bracketed,
                                double alpha, int use_herm,
                                uint8_t* sp, int sp_staged, const uint8_t* psp_ring,
-                               uint8_t* sh) {
+                               uint8_t* sh) OP_REQUIRES(sim) {
     double rec_alpha = 0.0;
     int n = player_records_present_begin(paired, cam_cut, alpha, &rec_alpha);
     if (n <= 0) { player_records_present_end(); return; }

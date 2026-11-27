@@ -28,6 +28,7 @@
 
 #include <stdint.h>
 #include "openpete_time.h"   /* op_time_t */
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 #ifdef __cplusplus
 extern "C" {
@@ -159,7 +160,7 @@ uint32_t player_rec_seam_word(int k);
  * Equals player_reextract_record(cpu, 0): the form an orchestrator with no
  * per-record loop replays. Extract-only.
  * @param cpu Reads the staged gamestate. */
-void player_reextract(struct CPUState* cpu);
+void player_reextract(struct CPUState* cpu) OP_REQUIRES(sim);
 /** @brief Sub-tick re-extract of one record of the store, feeding the scene.
  *
  * Returns without feeding when the native scene is off or the canonical tick
@@ -173,7 +174,7 @@ void player_reextract(struct CPUState* cpu);
  * @param mirror The record's own answer to player_game.call_is_mirror, read by
  *        the caller from the staged bytes, since the driver has already
  *        restored the live word. */
-void player_reextract_record(struct CPUState* cpu, int mirror);
+void player_reextract_record(struct CPUState* cpu, int mirror) OP_REQUIRES(sim);
 
 /* ---- record store, canonical side (appends on the game fiber, commit on the
  * host loop) ------------------------------------------------------- */
@@ -192,7 +193,7 @@ void player_reextract_record(struct CPUState* cpu, int mirror);
  * @return The record's index (the tag slot), or -1 when the list holds
  *         PLAYER_REC_MAX records or the state block or part block has no host
  *         pointer. */
-int  player_records_model_append(struct CPUState* cpu, uint32_t rp_start, uint32_t rp_end);
+int  player_records_model_append(struct CPUState* cpu, uint32_t rp_start, uint32_t rp_end) OP_REQUIRES(sim);
 /** @brief Append the live player shadow record to the epoch's list, bound to its model record.
  *
  * Called from the canonical shadow hook. The shadow binds to the newest model
@@ -202,7 +203,7 @@ int  player_records_model_append(struct CPUState* cpu, uint32_t rp_start, uint32
  * @return The bound model record's index, or -1 when the game names no
  *         shadow block, the list is full, or the player or shadow block does
  *         not map for its length. */
-int  player_records_shadow_append(struct CPUState* cpu);
+int  player_records_shadow_append(struct CPUState* cpu) OP_REQUIRES(sim);
 /** @brief Append the live player flame record to the epoch's list, bound to its model record.
  *
  * As player_records_shadow_append, for the flame block.
@@ -210,7 +211,7 @@ int  player_records_shadow_append(struct CPUState* cpu);
  * @return The bound model record's index, or -1 when the game names no
  *         flame block, the list is full, or the player or flame block does
  *         not map for its length. */
-int  player_records_flame_append(struct CPUState* cpu);
+int  player_records_flame_append(struct CPUState* cpu) OP_REQUIRES(sim);
 /** @brief Close the hooks' record epoch, once per canonical present, after the interp ring captured the tick.
  *
  * Takes the epoch's appended list when its stamp is the fresh canonical epoch,
@@ -225,7 +226,7 @@ int  player_records_flame_append(struct CPUState* cpu);
  * is paired against the previous one only when the ring rolled or the list
  * differs from the newest; otherwise it is dropped as a duplicate. Returns at
  * once when no player layout is registered. */
-void player_records_epoch_commit(void);
+void player_records_epoch_commit(void) OP_REQUIRES(sim);
 
 /* ---- record store, present side (host loop) --------------------------- */
 

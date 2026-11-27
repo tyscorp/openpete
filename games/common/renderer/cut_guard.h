@@ -93,7 +93,7 @@ typedef struct cut_held_sets {
  * @param s The producer's sets.
  * @return 1 on the epoch's first capture and on a speculative render's first
  *         capture, else 0. */
-int cut_held_sets_capture(cut_held_sets_t* s);
+int cut_held_sets_capture(cut_held_sets_t* s) OP_REQUIRES(sim);
 
 /** @brief Select the set a re-extract shows and, on a held cut, swap tick N-1's set in.
  *

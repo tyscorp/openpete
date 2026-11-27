@@ -8,6 +8,7 @@
 #include "game_layout.h"
 
 #include <string.h>
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 #define PLAYER_RANGE_SLOTS 2
 
@@ -25,7 +26,7 @@ static player_range_gen s_gen[2];
 static player_range_gen* s_cur  = &s_gen[0];
 static player_range_gen* s_prev = &s_gen[1];
 
-void player_ranges_capture(CPUState* cpu, unsigned off, unsigned len) {
+void player_ranges_capture(CPUState* cpu, unsigned off, unsigned len) OP_REQUIRES(sim) {
     const uint32_t epoch = spyro_native_canon_epoch_stamp();
     if (s_cur->epoch != epoch) {
         *s_prev = *s_cur;

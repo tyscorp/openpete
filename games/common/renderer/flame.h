@@ -8,6 +8,7 @@
 #define OPENPETE_RENDERER_FLAME_H
 
 #include <stdint.h>
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 #ifdef __cplusplus
 extern "C" {
@@ -35,7 +36,7 @@ void flame_native_set_subframe(double frac);
  * attaches to the staged pose and projects through the interpolated camera.
  * @param cpu The guest CPU state, read only.
  * @param slot The model record the ribbon renders under. */
-void flame_reextract(struct CPUState* cpu, int slot);
+void flame_reextract(struct CPUState* cpu, int slot) OP_REQUIRES(sim);
 
 /** @brief Interpolate one prev/curr pair of flame-state bytes into a staged copy.
  *
@@ -75,7 +76,7 @@ int flame_bracket(uint8_t* fl, const uint8_t* pfl, const uint8_t* cfl,
  * @param fl      the caller's ambient staged copy of the flame span, or NULL
  *                to let the loop stage the span itself */
 void flame_records_present(struct CPUState* cpu, int paired, int cam_cut,
-                           double alpha, uint8_t* fl);
+                           double alpha, uint8_t* fl) OP_REQUIRES(sim);
 
 #ifdef __cplusplus
 }

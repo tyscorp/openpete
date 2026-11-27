@@ -203,8 +203,12 @@ enum { OP_ROLE_LIST(OP_ROLE_ENUM_) };
     ROW("c:portal_spyro23.c@F@on_portal_pass", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
     ROW("c:portal_spyro23.c@F@on_portal_leaf", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
     ROW("c:transition.c@F@on_8004F000_crossfade", "init:feature_dispatch_entry_t", "sim") /* thread-roles: guest dispatch hook, run on the game fiber */ \
+    ROW("c:native_vram.c@F@nv_move", "init:PsyX_VRAMOps", "sim") /* thread-roles: PsyCross MoveImage callback, run by psyq_MoveImage and by the DR_MOVE primitive of a DrawOTag walk, both on the game fiber */ \
     ROW("c:reextract.c@F@game_reextract_body", "arg:game_reextract_view_install", "sim") /* thread-roles: each game's sub-tick re-extract, run by the host loop */ \
     ROW("c:reextract_spyro23.c@F@game_reextract_body", "arg:game_reextract_view_install", "sim") /* thread-roles: the Spyro 2/3 sub-tick re-extract, run by the host loop */ \
+    ROW("c:reextract.c@F@orch_epoch_commit", "init:game_orchestrator_t", "sim") /* thread-roles: Spyro 1 orchestrator entry, called through s_orch by spyro_native_canon_epoch_commit on sim */ \
+    ROW("c:reextract_spyro23.c@F@orch_epoch_commit", "init:game_orchestrator_t", "sim") /* thread-roles: Spyro 2/3 orchestrator entry, called through s_orch by spyro_native_canon_epoch_commit on sim */ \
+    ROW("c:reextract_spyro23.c@F@orch_capture_range", "init:game_orchestrator_t", "sim") /* thread-roles: Spyro 2/3 orchestrator entry, called through s_orch by spyro_native_canon_capture_range, which requires sim */ \
     ROW("c:@F@game_assets_run_inline", "direct:", "ingest") /* thread-roles: the asset extraction job's headless runner enters ingest for the job's span */ \
     ROW("c:launcher.cpp@aN@F@ingest_main#*v#", "arg:SDL_CreateThreadRuntime|direct:", "ingest") /* thread-roles: the launcher's ingest thread entry binds ingest for the asset job */ \
     ROW("c:launcher.cpp@aN@F@ingest_run_inline#", "direct:", "ingest") /* thread-roles: the launcher's asset job without screens enters ingest for the job's span */ \

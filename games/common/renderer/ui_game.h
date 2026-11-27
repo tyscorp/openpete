@@ -161,7 +161,7 @@ extern ui_game_t ui_game;
  * @param prim The SPRT's guest address.
  * @param tpage The GPU texture-page word in effect, which the SPRT packet
  *        does not carry; it comes from the DR_MODE that heads the chain. */
-void ui_sprite_feed_sprt(CPUState* cpu, uint32_t prim, unsigned tpage);
+void ui_sprite_feed_sprt(CPUState* cpu, uint32_t prim, unsigned tpage) OP_REQUIRES(sim);
 
 /** @brief Feeds one glyph POLY_FT4 into the native HUD layer at emission.
  *
@@ -173,7 +173,7 @@ void ui_sprite_feed_sprt(CPUState* cpu, uint32_t prim, unsigned tpage);
  * with the native scene off.
  * @param cpu The guest CPU state.
  * @param prim The POLY_FT4's guest address. */
-void ui_sprite_feed_ft4(CPUState* cpu, uint32_t prim);
+void ui_sprite_feed_ft4(CPUState* cpu, uint32_t prim) OP_REQUIRES(sim);
 
 /** @brief Records one 2D primitive's link into the game's ordering table for the link rank.
  *
@@ -241,7 +241,7 @@ unsigned ui_sprite_prim_count(void);
  * the table is handed to the GPU. The canonical capture normally releases
  * the batch first; this call releases what it left. Inert with no claim
  * pending, which includes every game that registers no chokepoint. */
-void ui_sprite_ot_draw_begin(void);
+void ui_sprite_ot_draw_begin(void) OP_REQUIRES(sim);
 
 /** @brief Re-reads the primitives released since the last walk and counts those whose words changed after their feed.
  *

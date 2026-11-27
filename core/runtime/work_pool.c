@@ -149,7 +149,7 @@ static void wp_selftest(void) {
     }
 }
 
-void openpete_workpool_run(int nitems, openpete_work_fn fn, void* arg) {
+void openpete_workpool_run(int nitems, openpete_work_fn fn OP_SYNC_FN, void* arg) {
     if (nitems <= 0) return;
     wp_spawn();
     {

@@ -463,7 +463,7 @@ static int glint_own_enabled(void) {
  *
  * Collects none when glint_own_enabled says no.
  * @param cpu The guest CPU state, read only. */
-static void glint_owner_scan(CPUState* cpu) {
+static void glint_owner_scan(CPUState* cpu) OP_REQUIRES(sim) {
     static uint32_t simple[GLINT_OWN_MAX];
     s_own_n = 0;
     s_own_reach = glint_sparkle_reach(cpu);
@@ -1434,7 +1434,7 @@ static int glint_fed_corners(const glint_item* it, const glint_rebase* rb, float
  * active, else the depth the pairing gave. Counts the triangles fed in
  * s_fed_star_tris and s_fed_cross_tris and tags them as flare and spark
  * particles with sel 0, since neither kind carries a game particle class. */
-static void glint_feed_native(void) {
+static void glint_feed_native(void) OP_REQUIRES(sim) {
     const int mode = glint_feed_mode();
     if (mode <= 0) return;
     if (s_item_n <= 0) return;
@@ -2097,7 +2097,7 @@ static int on_glint_draw(CPUState* cpu, uint32_t addr) {
 }
 
 /* Sub-tick re-extract; documented at the declaration in glint.h. */
-void glint_reextract(CPUState* cpu, int bracketed, double alpha, int hold) {
+void glint_reextract(CPUState* cpu, int bracketed, double alpha, int hold) OP_REQUIRES(sim) {
     const int pick = cut_held_sets_enter(&s_sets, hold);
     if (hook_reextract_ready_held(RP_SPARKLE, pick)) {
         if (pick >= 0) {

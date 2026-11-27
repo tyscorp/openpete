@@ -178,7 +178,7 @@ static int s_list_held = -1;
  * end pointer at descriptor + 0x08; without a descriptor or base the copy is
  * empty.
  * @param cpu The guest CPU state. */
-static void shadow_latch_list_base(CPUState* cpu) {
+static void shadow_latch_list_base(CPUState* cpu) OP_REQUIRES(sim) {
     /* The first copy of a new canonical epoch retires the current one. */
     const uint32_t epoch = spyro_native_canon_epoch_stamp();
     if (s_list_epoch != epoch) { shadow_list_swap(); s_list_epoch = epoch; }
@@ -1405,7 +1405,7 @@ static int fan_point(const shadow_fan* f, const double inv[3][3], const double w
  * the anchor to 0 at the rim, with vertex alpha 1 marking it as the fan. The
  * depth is biased by shadow_bias_spyro; pvz is unbiased.
  * @param f The fan. */
-static void fan_feed_tris(const shadow_fan* f) {
+static void fan_feed_tris(const shadow_fan* f) OP_REQUIRES_SHARED(sim) {
     const float bias = shadow_bias_spyro();
     for (int k = 0; k < SHADOW_FAN_RING; k++) {
         if (!(f->tri_mask & (1u << k))) continue;
@@ -1424,7 +1424,7 @@ static void fan_feed_tris(const shadow_fan* f) {
     }
 }
 
-void shadow_fan_feed(CPUState* cpu, const shadow_fan* f) {
+void shadow_fan_feed(CPUState* cpu, const shadow_fan* f) OP_REQUIRES_SHARED(sim) {
     (void)cpu;
     double inv[3][3]; shadow_cam_inverse(f->C, inv);
     const double caster = f->caster_up;
@@ -1485,7 +1485,7 @@ void shadow_fan_feed(CPUState* cpu, const shadow_fan* f) {
  * @param cpu The guest CPU state.
  * @param cs Tallies the screen tests for the census; NULL off the canonical
  *        walk. */
-static void shadow_moby_feed_native(CPUState* cpu, shadow_wide_census* cs) {
+static void shadow_moby_feed_native(CPUState* cpu, shadow_wide_census* cs) OP_REQUIRES(sim) {
     shadow_moby_build(cpu, cs, 0);
     if (s_mosh_n <= 0) return;
     render_material_level_push(cpu);
@@ -1700,7 +1700,7 @@ static int on_moby_shadows(CPUState* cpu, uint32_t addr) {
 }
 
 /* Sub-tick moby drop-shadow re-extract; see shadow.h. */
-void shadow_reextract(CPUState* cpu) {
+void shadow_reextract(CPUState* cpu) OP_REQUIRES(sim) {
     if (!hook_reextract_ready_held(RP_MOBY_SHADOW, s_list_held)) return;
     shadow_moby_feed_native(cpu, NULL);
 }

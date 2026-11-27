@@ -3,6 +3,7 @@
 #define OPENPETE_GLINT_H
 
 #include "psx_runtime_internal.h"
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 /** @brief Re-feed the captured glint primitives, rebased onto the pose this present shows.
  *
@@ -21,6 +22,6 @@
  * @param bracketed Nonzero to rebase the primitives at alpha before feeding.
  * @param alpha The present's position in the tick interval, 1 at its end.
  * @param hold Nonzero on a held camera cut. */
-void glint_reextract(CPUState* cpu, int bracketed, double alpha, int hold);
+void glint_reextract(CPUState* cpu, int bracketed, double alpha, int hold) OP_REQUIRES(sim);
 
 #endif

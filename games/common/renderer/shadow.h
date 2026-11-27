@@ -13,6 +13,7 @@
 #include "psx_runtime_internal.h"
 #include "renderer/native_gte.h"
 #include "openpete_native_render.h"   /* openpete_shadow_decal_params */
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 #ifdef __cplusplus
 extern "C" {
@@ -173,7 +174,7 @@ typedef struct {
  * the hull. OPENPETE_SHADOW_FOOTPRINT=0 clears the block's footprint term.
  * @param cpu Unused.
  * @param f The fan. */
-void   shadow_fan_feed(CPUState* cpu, const shadow_fan* f);
+void   shadow_fan_feed(CPUState* cpu, const shadow_fan* f) OP_REQUIRES_SHARED(sim);
 /** @brief The caster height a player feeder stores beside its anchor (shadow_fan.caster_up).
  *
  * Reads the z word of the player position in the player state block
@@ -259,7 +260,7 @@ unsigned shadow_verify_frame(void);
  * player's shadow alone) replays none. The shadows follow their owners'
  * interpolated poses and the interpolated camera.
  * @param cpu guest state, the sub-tick view staged */
-void   shadow_reextract(CPUState* cpu);
+void   shadow_reextract(CPUState* cpu) OP_REQUIRES(sim);
 /** @brief Make the moby drop-shadow re-extract walk tick N-1's drawn-moby list for a held camera cut, or restore the current one.
  *
  * A held cut shows tick N-1's camera, and the list the game built that tick is
@@ -280,7 +281,7 @@ int    shadow_replay_prev_list(int on);
  * holds.
  * @param cpu The guest CPU state, the sub-tick view staged.
  * @param slot The model record the fan renders under. */
-void   shadow_player_reextract(CPUState* cpu, int slot);
+void   shadow_player_reextract(CPUState* cpu, int slot) OP_REQUIRES(sim);
 
 /** @brief Reports whether the player's own ground shadow feeds the native scene; OPENPETE_SHADOW_PLAYER=0 turns it off.
  *

@@ -292,7 +292,7 @@ static void shadow_spyro_build(CPUState* cpu) {
  * (player_hide_active).
  * @param cpu The guest CPU state.
  * @param slot The model record the shadow renders under (spyro_records.h), the player slot of its tag; negative reads as 0. */
-static void shadow_spyro_feed_native(CPUState* cpu, int slot) {
+static void shadow_spyro_feed_native(CPUState* cpu, int slot) OP_REQUIRES(sim) {
     if (!shadow_player_feed_enabled()) return;
     shadow_spyro_build(cpu);
     if (s_sptri_n <= 0) return;
@@ -400,7 +400,7 @@ static int on_80059A48_shadow_spyro(CPUState* cpu, uint32_t addr) {
 }
 
 /* Documented at its declaration in reextract.h. */
-void shadow_spyro_reextract(CPUState* cpu, int slot) {
+void shadow_spyro_reextract(CPUState* cpu, int slot) OP_REQUIRES(sim) {
     if (!hook_reextract_ready_held(RP_SHADOW, player_records_held_pick())) return;
     shadow_spyro_feed_native(cpu, slot);
 }

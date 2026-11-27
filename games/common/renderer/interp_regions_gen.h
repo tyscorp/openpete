@@ -122,7 +122,7 @@ const uint8_t* game_interp_capture_moby_record(uint32_t key, uint32_t m);
  * one epoch add to it. A call on a speculative pass blocks the stash: puts are
  * ignored and the capture reads live RAM until the next non-speculative call.
  * Host memory only. */
-void game_interp_moby_stash_begin(void);
+void game_interp_moby_stash_begin(void) OP_REQUIRES(sim);
 /** @brief Copy one moby's record, as the draw left it, into the draw-time stash.
  *
  * Ignored while the stash is blocked or holds 1024 records, and for an
@@ -185,7 +185,7 @@ void game_interp_capture_zap_pool(void);
  * tracers_mesh_lists reports. Both producers project their points under the
  * tick's camera, so the sub-tick replay needs each point's previous position
  * to rebase onto. Read-only against guest RAM. */
-void game_interp_capture_tracer_pool(void);
+void game_interp_capture_tracer_pool(void) OP_REQUIRES(sim);
 
 /** @brief Walk the particle, gem-glint, glow, zap and tracer pools in one call.
  *
@@ -193,7 +193,7 @@ void game_interp_capture_tracer_pool(void);
  * feeders link their own primitives, so the game registers one walk rather
  * than a list kept in step with the feeders. A pool the game's layout does
  * not locate is skipped by its own walk. */
-void game_interp_capture_feeder_pools(void);
+void game_interp_capture_feeder_pools(void) OP_REQUIRES(sim);
 
 /** @brief Register a game's interp region table and per-object capture in the shared shape.
  *
@@ -211,7 +211,7 @@ void game_interp_capture_feeder_pools(void);
  * @param extra_pools The game's walk of pools outside the moby array, or NULL
  *        when it has none. */
 void game_interp_register_common(const game_interp_row_t* rows, unsigned count,
-                                 uint32_t cam_length, void (*extra_pools)(void));
+                                 uint32_t cam_length, void (*extra_pools)(void) OP_SLOT(sim));
 
 /** @brief Register the game's per-object capture callback with the ring.
  *

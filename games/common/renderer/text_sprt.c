@@ -68,7 +68,7 @@ static int census_on(void) {
  * @param start The first packet's guest address.
  * @param end The primitive cursor after the emitter ran.
  * @param self_linked 1 when no hooked insert linked any of the chain. */
-static void feed_chain(CPUState* cpu, uint32_t start, uint32_t end, int self_linked) {
+static void feed_chain(CPUState* cpu, uint32_t start, uint32_t end, int self_linked) OP_REQUIRES(sim) {
     unsigned tpage = 0;                 /* set by the chain's own DR_MODE */
     int have_tpage = 0;
     uint32_t p = start;

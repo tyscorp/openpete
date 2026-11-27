@@ -156,7 +156,9 @@ class Scan:
 
     def has_form_text(self, c, rel):
         """True when the declarator at c carries a form macro: the text from
-        the identifier to the first top-level `;`, `,`, `=` or `{`."""
+        the identifier to the first top-level `;`, `,`, `=` or `{`. A `)`
+        closing a declarator group the identifier sits in (`(*s_cb)(int)`)
+        leaves the depth at the top level."""
         lines = self.lines(rel)
         n, col = c.location.line - 1, c.location.column - 1
         if n >= len(lines) or c.spelling not in lines[n]:
@@ -168,7 +170,7 @@ class Scan:
                 if ch in STOP_OPEN:
                     depth += 1
                 elif ch in STOP_CLOSE:
-                    depth -= 1
+                    depth = max(depth - 1, 0)
                 elif depth == 0 and ch in ";,={":
                     return bool(FORM_RE.search("".join(seen)))
                 seen.append(ch)

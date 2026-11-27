@@ -675,7 +675,7 @@ typedef struct {
  * @param category The scene category, such as OPENPETE_SCENE_PORTAL_MASK.
  * @param tag Unused. */
 static void p3_emit_tri(const p3_v* a, const p3_v* b, const p3_v* c, const p3_emit_ctx* e,
-                        int category, uint32_t tag) {
+                        int category, uint32_t tag) OP_REQUIRES_SHARED(sim) {
     openpete_scene_tri t = {0};
     const p3_v* v[3] = { a, b, c };
     const float offx = e->offx, offy = e->offy;
@@ -747,7 +747,7 @@ static int p3_decode_face(const p3_mesh* m, uint32_t w0, uint32_t w1, p3_v tri[3
  * @param E The emission context.
  * @param category The scene category.
  * @param tag The provenance tag. */
-static void p3_emit_fan(const p3_v* poly, int n, const p3_emit_ctx* E, int category, uint32_t tag) {
+static void p3_emit_fan(const p3_v* poly, int n, const p3_emit_ctx* E, int category, uint32_t tag) OP_REQUIRES_SHARED(sim) {
     for (int k = 1; k + 1 < n; k++)
         p3_emit_tri(&poly[0], &poly[k], &poly[k + 1], E, category, tag);
     if (category == OPENPETE_SCENE_PORTAL_CYCLORAMA && n >= 3) s_cen_tris += n - 2;
@@ -769,7 +769,7 @@ static void p3_emit_fan(const p3_v* poly, int n, const p3_emit_ctx* E, int categ
  * @param category The scene category.
  * @param tag The provenance tag. */
 static void p3_emit_split(const p3_v* in, int n, const p3_preview* q, const p3_emit_ctx* E,
-                          int category, uint32_t tag) {
+                          int category, uint32_t tag) OP_REQUIRES_SHARED(sim) {
     p3_v P[32], T[32];
     memcpy(P, in, sizeof(p3_v) * (size_t)n);
     const p3_opening* op = E->op;
@@ -801,7 +801,7 @@ static void p3_emit_split(const p3_v* in, int n, const p3_preview* q, const p3_e
  * @param q The preview.
  * @param B The preview's bounds.
  * @param E The preview's emission context. */
-static void p3_emit_mask(const p3_preview* q, p3_bounds B, const p3_emit_ctx* E) {
+static void p3_emit_mask(const p3_preview* q, p3_bounds B, const p3_emit_ctx* E) OP_REQUIRES_SHARED(sim) {
     const p3_v rect[4] = { { B.xmin, B.ymin, 0 }, { B.xmax, B.ymin, 0 },
                            { B.xmax, B.ymax, 0 }, { B.xmin, B.ymax, 0 } };
     p3_emit_split(rect, 4, q, E, OPENPETE_SCENE_PORTAL_MASK, 0);

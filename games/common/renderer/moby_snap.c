@@ -1142,7 +1142,7 @@ typedef struct {
 } ms_pc;
 static ms_pc    s_pc;
 static int      s_pc_mark;       /* the queue length when the last walk pass ended */
-static void ms_rex_end(void);
+static void ms_rex_end(void) OP_REQUIRES(sim);
 
 /* The resolve under way: the table a canonical resolve stores into, and the
  * walk camera it stores under. */
@@ -1352,7 +1352,7 @@ static int mc_verify_mode(void) {
     return s;
 }
 
-void moby_snap_present(int rex, double alpha) {
+void moby_snap_present(int rex, double alpha) OP_REQUIRES(sim) {
     if (!rex && s_rex) ms_rex_end();
     s_rex = rex;
     s_rex_alpha = rex ? alpha : 1.0;
@@ -2783,7 +2783,7 @@ static void rsp_flush(void) {
  * carried plane is exact only for a bit-equal camera.
  * @param cs The census.
  * @return The count of queued mobys, from the front, the contact pass resolves. */
-static int ms_carry_begin(ms_census* cs) {
+static int ms_carry_begin(ms_census* cs) OP_REQUIRES(sim) {
     s_store = NULL; s_vf_on = 0; s_rs_ep = NULL; s_rs_wb = 0;
     s_cr_n = s_cr_pos = 0;
     for (int k = 0; k < s_q_nm; k++) { s_q_mob[k].qi = k; s_q_mob[k].add = 1; }
@@ -3557,7 +3557,7 @@ static int ms_small_decide(ms_moby* mb, float ml, uint32_t ep) {
 }
 
 /** @brief Leave the mobys the screen-size bound excludes out of the queue, keeping the rest in order. */
-static void ms_small_filter(void) {
+static void ms_small_filter(void) OP_REQUIRES(sim) {
     const float ml = ms_small_lines();
     if (ml <= 0.0f) return;
     static int s_pid[2] = { -1, -1 };
@@ -3590,7 +3590,7 @@ static void ms_small_filter(void) {
  * Mobys go to the capture in groups of up to 128 (one bit each in the hit
  * sets); the queue empties afterwards. The carry (ms_carry_begin) may place
  * some mobys' planes first and leave the capture the rest. */
-static void ms_resolve(void) {
+static void ms_resolve(void) OP_REQUIRES(sim) {
     if (!s_q_nm || s_q_epoch != openpete_native_scene_epoch() || !terrain_snap_ready()) return;
     if (s_rex) { s_pc.resolves++; s_pc.seg_res[ms_pc_seg()]++; }
     const uint64_t t0 = ms_census_on() ? ms_cpu_ns() : 0;
@@ -3626,7 +3626,7 @@ static void ms_resolve(void) {
 }
 
 /** @brief Run ms_resolve inside the profiler scope of its leg: mrex.resolve in a sub-tick re-extract, else mcan.resolve. */
-static void ms_resolve_scoped(void) {
+static void ms_resolve_scoped(void) OP_REQUIRES(sim) {
     const uint64_t c0 = s_rex && ms_rc_on() ? ms_cpu_ns() : 0;
     if (s_rex) { OP_PROF_ACCUM_SCOPE("mrex.resolve"); OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_SNAP_REX); ms_resolve(); }
     else       { OP_PROF_ACCUM_SCOPE("mcan.resolve"); OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_SNAP_CANON); ms_resolve(); }
@@ -3702,7 +3702,7 @@ static int ms_rm_passes(const ms_moby* q, int nm, long* cross) {
  * @param nm Its moby count.
  * @param nt Its triangle count.
  * @param nseg Its pass count. */
-static void ms_rm_per_pass(const ms_moby* q, int nm, int nt, int nseg) {
+static void ms_rm_per_pass(const ms_moby* q, int nm, int nt, int nseg) OP_REQUIRES(sim) {
     for (int seg = 0; seg < nseg; seg++) {
         int n = 0;
         for (int k = 0; k < nm; k++) if (q[k].seg == seg) s_q_mob[n++] = q[k];
@@ -3722,7 +3722,7 @@ static void ms_rm_per_pass(const ms_moby* q, int nm, int nt, int nseg) {
  * once. Compared: the packed words and the digests. The single resolve's
  * table is kept; under mode 2 it is the calibration's. The per-pass leg's resolves, captures and walks are not
  * counted in the present's census. */
-static void ms_rm_check(void) {
+static void ms_rm_check(void) OP_REQUIRES(sim) {
     static int s_atexit;
     static ms_moby* q; static int qcap;
     enum { W_CAP = (3 + 128 + 2 * 2048) * 4 };
@@ -3819,7 +3819,7 @@ static void ms_pc_emit(void) {
 }
 
 /** @brief End a sub-tick re-extract's moby passes: resolve the present's queue once when the merge is on (ms_rm_on), then emit and total the present's counts. */
-static void ms_rex_end(void) {
+static void ms_rex_end(void) OP_REQUIRES(sim) {
     if (ms_rm_on()) {
         if (ms_rm_check_on()) ms_rm_check();
         else ms_resolve_scoped();
@@ -3828,7 +3828,7 @@ static void ms_rex_end(void) {
     if (ms_rc_on()) ms_rc_add();
 }
 
-void moby_snap_moby_fed(void) {
+void moby_snap_moby_fed(void) OP_REQUIRES(sim) {
     if (!s_rex) { ms_resolve_scoped(); return; }
     ms_scene_sync();
     const int nq = s_q_nm - s_pc_mark;
@@ -3838,7 +3838,7 @@ void moby_snap_moby_fed(void) {
     s_q_seg++;
 }
 
-void moby_snap_terrain_fed(struct CPUState* cpu) {
+void moby_snap_terrain_fed(struct CPUState* cpu) OP_REQUIRES(sim) {
     s_vf_cpu = cpu;
     ms_resolve_scoped();
 }

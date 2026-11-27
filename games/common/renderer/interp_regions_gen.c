@@ -220,7 +220,7 @@ static int stash_census_on(void) {
     return on;
 }
 
-void game_interp_moby_stash_begin(void) {
+void game_interp_moby_stash_begin(void) OP_REQUIRES(sim) {
     extern int openpete_speculative;
     if (openpete_speculative) { s_stash_blocked = 1; return; }
     const uint32_t epoch = spyro_native_canon_epoch_stamp();
@@ -273,7 +273,7 @@ static int stash_cmp(const void* a, const void* b) {
  * runs once per batch of puts.
  * @return The entry count, or 0 while the stash is blocked or its epoch is
  *         neither the current canonical-render epoch nor fresh. */
-static unsigned stash_prepare(void) {
+static unsigned stash_prepare(void) OP_REQUIRES(sim) {
     if (s_stash_blocked) return 0;
     if (s_stash_epoch != spyro_native_canon_epoch_stamp() &&
         !spyro_native_canon_epoch_fresh(s_stash_epoch)) return 0;
@@ -631,7 +631,7 @@ void game_interp_capture_zap_pool(void) {
 }
 
 /* Tracer ribbon and mesh vertex walk; see interp_regions_gen.h. */
-void game_interp_capture_tracer_pool(void) {
+void game_interp_capture_tracer_pool(void) OP_REQUIRES(sim) {
     const uint32_t stride = game_layout.tracers.stride;
     if (game_layout.tracers.ring && stride) {
         const uint32_t len = openpete_interp_objs_blob_bytes() < stride
@@ -658,7 +658,7 @@ void game_interp_capture_tracer_pool(void) {
 }
 
 /* Every feeder pool walk; see interp_regions_gen.h. */
-void game_interp_capture_feeder_pools(void) {
+void game_interp_capture_feeder_pools(void) OP_REQUIRES(sim) {
     game_interp_capture_particle_pool();
     game_interp_capture_glint_pool();
     game_interp_capture_glow_pool();
@@ -696,7 +696,7 @@ static void capture_env_anim_scroll(void) {
     }
 }
 
-static void (*s_extra_pools)(void);
+static void (*s_extra_pools)(void) OP_SLOT(sim);
 
 /** @brief The per-object capture the game registers: one tick's keyed object snapshots.
  *
@@ -730,7 +730,7 @@ static void capture_objs_common(void) {
 }
 
 void game_interp_register_common(const game_interp_row_t* rows, unsigned count,
-                                 uint32_t cam_length, void (*extra_pools)(void)) {
+                                 uint32_t cam_length, void (*extra_pools)(void) OP_SLOT(sim)) {
     /* ra_commit = 1 on the camera: it presents from the committed timeline under
      * runahead, so a misprediction never shows as a pan that un-shows. The
      * follow camera is where misprediction is catastrophic (it is the view

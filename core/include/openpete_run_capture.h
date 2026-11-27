@@ -10,6 +10,7 @@
 #include "openpete.h"
 
 #include <stdbool.h>
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 #ifdef __cplusplus
 extern "C" {
@@ -22,7 +23,7 @@ extern "C" {
  * the -og leg pairs a PsyCross present with a native scene, and the game
  * scene opens so far (openpete_native_game_scene_opens), by which the leg
  * refuses an OT whose scene a later render superseded. */
-void openpete_capture_note_psyx_walk(void);
+void openpete_capture_note_psyx_walk(void) OP_REQUIRES_SHARED(sim);
 
 /** @brief Write the capture legs read from PsyCross at a canonical present, before the native present step.
  *
@@ -36,7 +37,7 @@ void openpete_capture_note_psyx_walk(void);
  *        --screenshot-on-tick, else the feed key.
  * @return true when this present owes the native canonical leg of the
  *         present sequence, which openpete_capture_canon_native writes. */
-bool openpete_capture_canon_reference(const openpete_options_t *opts, int shot_key);
+bool openpete_capture_canon_reference(const openpete_options_t *opts, int shot_key) OP_REQUIRES(sim);
 
 /** @brief Start a canonical present's capture state, before the present's device services.
  *

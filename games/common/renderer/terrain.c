@@ -19595,7 +19595,7 @@ static void tn_snap_latch(const tn_wcfg* G, int nw) {
 
 /** @brief Note the scene a build's feed went into, then let the moby snap resolve the mobys waiting on it.
  * @param cpu The guest CPU state. */
-static void tn_snap_fed(CPUState* cpu) {
+static void tn_snap_fed(CPUState* cpu) OP_REQUIRES(sim) {
     s_snap_epoch = openpete_native_scene_epoch();
     moby_snap_terrain_fed(cpu);
 }
@@ -23115,7 +23115,7 @@ static float tn_tri_koff(const ttri* t, int blend) {
  * cleared before it returns.
  * @param cpu The guest CPU state.
  */
-static void terrain_feed_native(CPUState* cpu) OP_REQUIRES_SHARED(sim) {
+static void terrain_feed_native(CPUState* cpu) OP_REQUIRES(sim) {
     OP_PROF_SCOPE("ter.feed");
     openpete_native_scene_mark_terrain_feed();
     {

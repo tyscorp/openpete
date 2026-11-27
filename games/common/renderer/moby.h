@@ -379,7 +379,7 @@ int moby_native_view_revealed_mobys(const uint32_t** out);
  * @param out Receives up to @p max moby addresses.
  * @param max Capacity of @p out.
  * @return The count written. */
-int moby_native_simple_mobys(uint32_t* out, int max);
+int moby_native_simple_mobys(uint32_t* out, int max) OP_REQUIRES(sim);
 
 /** @brief Whether the game's cutscene renderer owns the draw, so it draws its own actor set and no other moby.
  *
@@ -398,7 +398,7 @@ int moby_native_cutscene_owns_draw(CPUState* cpu);
  * subset. The paint key is not computed while the rank carry applies the
  * tick's verdict.
  * @param cpu The guest CPU state. */
-void moby_reextract(struct CPUState* cpu);
+void moby_reextract(struct CPUState* cpu) OP_REQUIRES(sim);
 /** @brief Feed the overlay pass held for this canonical present, rebuilt from the overlay moby's current state.
  *
  * The menu screens' one-moby overlay pass (game_layout.moby.overlay_moby) runs
@@ -414,7 +414,7 @@ void moby_reextract(struct CPUState* cpu);
  * another moby or the builder declines; nothing is fed when the scene closed
  * first. Reads guest memory only. No effect on a game that names no overlay
  * word. */
-void moby_native_overlay_commit(void);
+void moby_native_overlay_commit(void) OP_REQUIRES(sim);
 /** @brief Whether the simple models have a queue this present may replay.
  *
  * True when the game provides the kind's replay (moby_game.simple_replay),
@@ -559,7 +559,7 @@ void moby_simple_project_run(const moby_simple_proj_t* pj, const double (*vm)[3]
  * @param radius A bound on the distance of every vertex of the record from
  *        the origin, full world units.
  * @return 1 when the record is hidden behind nearer world depth, else 0. */
-int moby_simple_occluded(struct CPUState* cpu, uint32_t moby, const double org[3], double radius);
+int moby_simple_occluded(struct CPUState* cpu, uint32_t moby, const double org[3], double radius) OP_REQUIRES(sim);
 /* One simple-model record's emit scope, taken after its projection: where its
  * projected vertices are and the record tags every triangle carries. Owned by
  * moby.c; the provider only stores it. */

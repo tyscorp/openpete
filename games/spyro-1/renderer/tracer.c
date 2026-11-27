@@ -103,7 +103,7 @@ static int tracer_project(const ngte_view* v,
  * @param ccol Vertex c colour, 0xBBGGRR. */
 static void emit_tri(double ax, double ay, double az, uint32_t acol,
                      double bx, double by, double bz, uint32_t bcol,
-                     double cx, double cy, double cz, uint32_t ccol) {
+                     double cx, double cy, double cz, uint32_t ccol) OP_REQUIRES_SHARED(sim) {
     openpete_scene_tri st = {0};
     memset(&st, 0, sizeof st);
     st.textured = 0;
@@ -127,7 +127,7 @@ static void emit_tri(double ax, double ay, double az, uint32_t acol,
  * view-Z is below 256000, two additive triangles join the previous and
  * current corner pairs, each vertex at its own view-Z.
  * @param cpu The guest CPU state. */
-static void tracer_build_and_feed(CPUState* cpu) {
+static void tracer_build_and_feed(CPUState* cpu) OP_REQUIRES(sim) {
     if (s_nsets <= 0) return;
     ngte_view view; ngte_view_build(cpu, &view);   /* one projection view per feed */
     const ngte_view* v = &view;
@@ -250,7 +250,7 @@ static int on_800189F0_tracer(CPUState* cpu, uint32_t addr) {
     return hook_bracket_end(&k_tracer_bracket);
 }
 
-void tracer_reextract(CPUState* cpu) {
+void tracer_reextract(CPUState* cpu) OP_REQUIRES(sim) {
     if (!hook_reextract_ready(RP_TRACER)) return;
     tracer_build_and_feed(cpu);
 }

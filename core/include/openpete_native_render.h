@@ -1859,7 +1859,7 @@ void openpete_native_set_shadow_footprint(const openpete_shadow_footprint *f);
  * the terrain builder tags the rebuild with whichever producers feed. The
  * game render's own accumulation begins with
  * openpete_native_scene_begin_frame. */
-void openpete_native_scene_begin(void);
+void openpete_native_scene_begin(void) OP_REQUIRES(sim);
 /** @brief Latch the live settings the producers read, on the sim thread, at a point no tick's render is in progress.
  *
  * The live setters (settings menu, dev overlay, LOD hotkey) store wanted
@@ -1903,7 +1903,7 @@ void openpete_native_scene_mark_replay(void);
  * unpresented at the same stamp is closed without the push.
  * @param frame The VBL counter openpete_frame, or the stamp of the live
  *        scene for a late feeder. */
-void openpete_native_scene_begin_frame(unsigned frame);
+void openpete_native_scene_begin_frame(unsigned frame) OP_REQUIRES(sim);
 /** @brief Return the VBL stamp of the scene currently accumulating.
  *
  * A late feeder appends only to a live scene: begin_frame with a newer
@@ -1921,7 +1921,7 @@ unsigned openpete_native_scene_epoch(void);
  * moves only on a begin_frame call made outside the sub-tick view, so it
  * names the scene of the last tick the game rendered.
  * @return The stamp, or 0xFFFFFFFF before the game's first feed. */
-unsigned openpete_native_scene_game_frame(void);
+unsigned openpete_native_scene_game_frame(void) OP_REQUIRES_SHARED(sim);
 
 /** @brief Register the callback that fires immediately before a frame's accumulation is snapshotted.
  *
@@ -1936,7 +1936,7 @@ unsigned openpete_native_scene_game_frame(void);
  * doing the rotation, which owns the accumulating scene. One callback; a
  * later call replaces it.
  * @param fn Callback taking the closing frame's VBL stamp, or NULL. */
-void openpete_native_scene_register_frame_close(void (*fn)(unsigned frame));
+void openpete_native_scene_register_frame_close(void (*fn)(unsigned frame) OP_SLOT(sim)) OP_REQUIRES(sim);
 
 /** @brief Register the callback that fires when the game's render opens a scene while its previous scene never reached a canonical present.
  *
@@ -1978,7 +1978,7 @@ int openpete_native_render_stamp_current(unsigned vbl, uint32_t rec_tick, unsign
  * pending game scene, or at the pending scene's own VBL while its render
  * has not submitted its OT or the loop anchor has not been entered since.
  * @param frame The VBL the capture runs on (openpete_frame). */
-void openpete_native_scene_note_game_capture(unsigned frame);
+void openpete_native_scene_note_game_capture(unsigned frame) OP_REQUIRES(sim);
 
 /** @brief Set the ordering-table traversal rank stamped on the triangles added next.
  *
@@ -1986,14 +1986,14 @@ void openpete_native_scene_note_game_capture(unsigned frame);
  * 0. No feeder calls it: openpete_native_scene_rank_2d overwrites the rank of
  * every triangle that carries a primitive address.
  * @param seq The rank. */
-void openpete_native_scene_set_seq(uint32_t seq);
+void openpete_native_scene_set_seq(uint32_t seq) OP_REQUIRES(sim);
 
 /** @brief Set the PSX address of the primitive the triangles added next were decoded from.
  *
  * Sticky, cleared at each frame boundary. openpete_native_scene_rank_2d
  * ranks triangles by it.
  * @param prim PSX address, or 0 for none. */
-void openpete_native_scene_set_prim(uint32_t prim);
+void openpete_native_scene_set_prim(uint32_t prim) OP_REQUIRES(sim);
 
 /** @brief Set the framebuffer cell key stamped on the triangles added next.
  *
@@ -2006,7 +2006,7 @@ void openpete_native_scene_set_prim(uint32_t prim);
  * tick's holder of the same key, so a copy whose screen box scales between
  * ticks interpolates its corners, and its borders with it.
  * @param cell Key, or 0 for none. */
-void openpete_native_scene_set_fb_cell(uint32_t cell);
+void openpete_native_scene_set_fb_cell(uint32_t cell) OP_REQUIRES(sim);
 
 /* Texel STP selection of a textured scene triangle: which texels of its
  * texture the fragment stage keeps (psx_scene.frag STP_SELECT). The GPU
@@ -2050,7 +2050,7 @@ void openpete_native_scene_rank_2d(uint32_t (*rank_of)(uint32_t prim));
  * (openpete_native_scene_set_fade); the address lets the feeder rank the
  * fade among the frame's 2D. Cleared at each game-feed frame boundary.
  * @param prim The fade quad's guest address; 0 = none. */
-void openpete_native_scene_set_fade_prim(uint32_t prim);
+void openpete_native_scene_set_fade_prim(uint32_t prim) OP_REQUIRES(sim);
 
 /** @brief Record the ordering-table slot this tick's fade quad was linked into on a slotted table.
  *
@@ -2067,7 +2067,7 @@ void openpete_native_scene_set_fade_slot(int slot);
 /** @brief Return the guest address of this frame's fade POLY_F4, as openpete_native_scene_set_fade_prim recorded it.
  *
  * @return The address, or 0 when the frame linked no fade quad. */
-uint32_t openpete_native_scene_fade_prim(void);
+uint32_t openpete_native_scene_fade_prim(void) OP_REQUIRES_SHARED(sim);
 
 /** @brief Mark every 2D triangle of this frame that ranks after the fade quad as drawn over the fade.
  *
@@ -2293,7 +2293,7 @@ void openpete_native_scene_set_portal_rim(int plane);
  * @param category Scene layer (OPENPETE_SCENE_*); ignored for blended tris.
  * @param carry 1 marks 2D UI the sub-tick re-extract cannot re-derive; else
  *        0. */
-void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, int carry);
+void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, int carry) OP_REQUIRES_SHARED(sim);
 /** @brief Append one screen-space triangle to the current scene with a grouping id.
  *
  * openpete_native_scene_add_tri stores group 0. The portal feeder passes a
@@ -2310,7 +2310,7 @@ void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, 
  *        the overlay carry preserves it; else 0.
  * @param group Portal grouping id. */
 void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int category,
-                                           int carry, int group);
+                                           int carry, int group) OP_REQUIRES_SHARED(sim);
 /** @brief Make room for n triangles after the current scene's last and return the first one's slot, for a feeder that stores them in parallel.
  *
  * Latches the environment instruments the store reads, so the stores that
@@ -2335,7 +2335,7 @@ int openpete_native_scene_reserve(int n);
  * @param host_added Nonzero for host-added geometry.
  * @param pvz_missing Incremented per repaired vertex. */
 void openpete_native_scene_store_tri(int slot, const openpete_scene_tri* tri, int category, uint32_t tag,
-                                     const uint32_t hqfog[3], int host_added, unsigned* pvz_missing);
+                                     const uint32_t hqfog[3], int host_added, unsigned* pvz_missing) OP_REQUIRES_SHARED(sim);
 /** @brief The size of one stored scene triangle, of which openpete_scene_tri is the prefix: the span an instrument compares per triangle.
  * @return The size in bytes. */
 size_t openpete_native_scene_tri_bytes(void);
@@ -2346,7 +2346,7 @@ openpete_scene_tri* openpete_native_scene_stored(int slot);
 /** @brief Add n triangles of one provenance tag to the scene's per-family, per-kind counts, as n adds would.
  * @param tag The tag.
  * @param n The count. */
-void openpete_native_scene_count_kind(uint32_t tag, int n);
+void openpete_native_scene_count_kind(uint32_t tag, int n) OP_REQUIRES(sim);
 /** @brief Take n stored triangles after the scene's last into the scene and count the repaired vertices.
  * @param n The triangle count, the reservation's or fewer.
  * @param pvz_missing Vertices the stores repaired.
@@ -2398,7 +2398,7 @@ void openpete_native_scene_set_key_fold(const float kn[12]);
  * emitted at or after the feed. The retained terrain cache draws geometry
  * the feed does not emit; the mark places the feed in the scene's emission
  * order when the feed emits no triangle of its own. */
-void openpete_native_scene_mark_terrain_feed(void);
+void openpete_native_scene_mark_terrain_feed(void) OP_REQUIRES(sim);
 
 /* ── Provenance tag ──────────────────────────────────────────────────────
  * Sticky per-tri provenance stamped by add_tri until changed (same
@@ -2568,7 +2568,7 @@ void openpete_native_scene_note_torder(uint32_t mid);
  * The family is tag bits 31:28; index 0 is untagged. The counts reset with
  * the scene.
  * @param out Receives 16 counts. */
-void openpete_native_scene_tag_family_counts(uint32_t out[16]);
+void openpete_native_scene_tag_family_counts(uint32_t out[16]) OP_REQUIRES_SHARED(sim);
 /** @brief Copy the accepted-triangle count per tag family and kind of the scene being accumulated.
  *
  * The family is tag bits 31:28; the kind is openpete_tag_kind. The counts
@@ -2664,7 +2664,7 @@ void openpete_native_note_present_draw_area(int clip_x, int clip_y, int clip_w, 
  * canonical capture. The subtractive fade emitted since the previous
  * DrawOTag is added to the held fade sum of the retained draw area this
  * DrawOTag draws into. */
-void openpete_native_note_draw_otag(void);
+void openpete_native_note_draw_otag(void) OP_REQUIRES_SHARED(sim);
 /** @brief Report the env of the DrawOTag that already submitted the scene being presented, if one did.
  *
  * @param env Receives isbg, r0, g0, b0 when the function returns 1.
@@ -2682,7 +2682,7 @@ int openpete_native_drawn_env(uint8_t env[4]);
  * rect (OPENPETE_FRONT_DRAW_PRESENT=0 disables this rule).
  * @param pending 1 when a present is pending already.
  * @return 1 when the yield takes a canonical present, else 0. */
-int openpete_native_scene_yield_owes_present(int pending);
+int openpete_native_scene_yield_owes_present(int pending) OP_REQUIRES(sim);
 /** @brief Return the id of the scene whose primitives the last DrawOTag submitted.
  *
  * A scene's id is the ordinal of the canonical capture that presents it
@@ -2700,7 +2700,7 @@ unsigned openpete_native_otag_scene(void);
  * that scene's id: a DrawOTag tagged with the id before such an open
  * submitted the superseded scene, not the one the capture presents.
  * @return The count. */
-unsigned openpete_native_game_scene_opens(void);
+unsigned openpete_native_game_scene_opens(void) OP_REQUIRES_SHARED(sim);
 /** @brief Return the id of the scene the next canonical capture presents.
  *
  * The ordinal of that capture, one more than the captures taken so far.
@@ -3429,7 +3429,7 @@ void     openpete_phase_set_count(int which, int n);
  * accumulated) shows the scene that capture took: the carry is kept, with
  * the previous set equal to it, and the retained area's held list is left
  * as it was. */
-void openpete_native_scene_capture_overlay(void);
+void openpete_native_scene_capture_overlay(void) OP_REQUIRES(sim);
 /** @brief Bound the 2D accumulation to the latest canonical present the host holds back.
  *
  * Call once per owed canonical present that is not presented (the
@@ -3441,7 +3441,7 @@ void openpete_native_scene_capture_overlay(void);
  * first capture after the hold presents the latest held scene and commits
  * that scene's 2D and anything fed after it, as a capture that had run at
  * every owed present would. */
-void openpete_native_scene_hold_2d(void);
+void openpete_native_scene_hold_2d(void) OP_REQUIRES(sim);
 /** @brief Report whether the canonical present in flight repeats the previous one: no game render since the last capture.
  *
  * The game's render made no begin_frame (it opened and fed no scene) and
@@ -3454,7 +3454,7 @@ void openpete_native_scene_hold_2d(void);
  * Computed on the first call of a canonical present and cleared by the
  * capture.
  * @return 1 for a repeat present, else 0. */
-int openpete_native_scene_canon_repeat(void);
+int openpete_native_scene_canon_repeat(void) OP_REQUIRES(sim);
 /** @brief Turn the repeat present in flight into the present of an empty scene.
  *
  * For a game that cleared the screen without drawing: the scene the
@@ -3464,7 +3464,7 @@ int openpete_native_scene_canon_repeat(void);
  * empty scene (no 2D carry, fade or freeze). A no-op unless
  * openpete_native_scene_canon_repeat reported 1 for this present; the
  * verdict reads 0 afterwards. */
-void openpete_native_scene_open_empty(void);
+void openpete_native_scene_open_empty(void) OP_REQUIRES(sim);
 /** @brief Report what the draw area a display rect shows holds: content, an empty auto-cleared table, or unknown.
  *
  * The area is the first draw clip recorded inside the rect. Its record is
@@ -3492,7 +3492,7 @@ int openpete_native_shown_area_content(int disp_x, int disp_y, int disp_w, int d
  * deterministic capture it comes from the tick grid instead. It falls back
  * to @p alpha until the capture stamps are primed.
  * @param alpha The camera bracket's alpha, 0 when the camera ring dedupes. */
-void openpete_native_scene_apply_overlay(double alpha);
+void openpete_native_scene_apply_overlay(double alpha) OP_REQUIRES(sim);
 /** @brief Mark the accumulating scene's triangle count for openpete_native_scene_front_end. */
 void openpete_native_scene_front_begin(void);
 /** @brief Move the triangles added since openpete_native_scene_front_begin in front of the scene's first 2D triangle.
@@ -3511,7 +3511,7 @@ void openpete_native_scene_front_end(void);
  * post-link primitive mutation is done, so the flush is exact. One callback;
  * a later call replaces it.
  * @param fn Callback, or NULL. */
-void openpete_native_scene_register_overlay_precapture(void (*fn)(void));
+void openpete_native_scene_register_overlay_precapture(void (*fn)(void) OP_SLOT(sim));
 /** @brief Roll the fade and freeze-backdrop carries to the tick just rendered.
  *
  * Call on each canonical present, before the re-extract, so apply_overlay
@@ -3524,7 +3524,7 @@ void openpete_native_scene_register_overlay_precapture(void (*fn)(void));
  * seen flags. A repeat present (openpete_native_scene_canon_repeat) keeps
  * both words, with the previous equal to the current; the first present
  * after a run of repeats rolls from no previous word. */
-void openpete_native_scene_commit_fade(void);
+void openpete_native_scene_commit_fade(void) OP_REQUIRES(sim);
 
 /** @brief Write the offscreen target to a PNG.
  *
@@ -3610,9 +3610,9 @@ int openpete_native_render_capture_rgba(unsigned char **out, int *w, int *h);
  * scene in place, and the next begin_frame would otherwise snapshot the
  * rebuilt scene into the frame-history ring in place of the canonical one.
  * @return 0 on success, 1 when the save buffer could not be sized. */
-int  openpete_native_scene_save(void);
+int  openpete_native_scene_save(void) OP_REQUIRES_SHARED(sim);
 /** @brief Restore the scene openpete_native_scene_save saved, with its moved-to-ring-slot mark; no-op when nothing is saved. */
-void openpete_native_scene_restore(void);
+void openpete_native_scene_restore(void) OP_REQUIRES(sim);
 
 /** @brief Make the screenshot compose read the current scene instead of the lagged history slot.
  *

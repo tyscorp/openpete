@@ -1444,14 +1444,14 @@ static int s_portal_kind = OPENPETE_TAG_PORTAL_FLAT;
  * "a sky run without a matching mask uses its own footprint" behaviour. */
 static int s_aperture_ok = 0;
 static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly, int pn, int clipped,
-                                 int use_plane, double pa, double pb, double pc);
+                                 int use_plane, double pa, double pb, double pc) OP_REQUIRES_SHARED(sim);
 static void outline_offset(const ppt* poly, int pn, const double* d, float* ex, float* ey);
 static double portal_aperture_margin_world(void);
 static double portal_margin_for(CPUState* cpu, uint32_t p);
 static void margin_px_per_vertex(CPUState* cpu, const ngte_view* v, const ppt* poly, int pn,
                                  double world, double* out);
 static void emit_aperture_ring(const ppt* poly, int pn, const double* dpx,
-                               uint32_t rgba, int channel);
+                               uint32_t rgba, int channel) OP_REQUIRES_SHARED(sim);
 /* Portal-guard gate for the terrain feeder (see OPENPETE_SCENE_PORTAL_GUARD):
  * true while a portal fed sky within the last couple of presents. */
 static int      s_sky_fed = 0;
@@ -1464,16 +1464,16 @@ static uint32_t s_sky_fed_epoch = 0;
  * tick the sub-tick re-extract runs at.
  * @param stamp a canonical-render epoch stamp
  * @return 1 when `stamp` is the current or the last committed epoch, else 0 */
-static int canon_epoch_recent(uint32_t stamp) {
+static int canon_epoch_recent(uint32_t stamp) OP_REQUIRES(sim) {
     return stamp == spyro_native_canon_epoch_stamp() || spyro_native_canon_epoch_fresh(stamp);
 }
 
-int openpete_portal_sky_recent(void) {
+int openpete_portal_sky_recent(void) OP_REQUIRES(sim) {
     if (s_pcap_pick == CUT_HELD_EMPTY) return 0;
     return s_sky_fed && canon_epoch_recent(s_sky_fed_epoch);
 }
 /* Plane provider for the terrain OT-conformance clamp; documented in portal.h. */
-int openpete_portal_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_skyplane* out, int max) {
+int openpete_portal_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_skyplane* out, int max) OP_REQUIRES(sim) {
     /* OPENPETE_PORTAL_PLANES_DBG: name the reason a portal produced no plane
      * entry. Every bail here is silent otherwise, and "no colours at all" was
      * repeatedly mistaken for "the classifier rejected everything". */
@@ -1602,7 +1602,7 @@ static unsigned s_tri_col, s_tri_mask;
  * (pvz) is set to its stored depth.
  * @param t The triangle.
  * @param category The scene category (mask or cyclorama). */
-static void portal_add_tri(const openpete_scene_tri* t, int category) {
+static void portal_add_tri(const openpete_scene_tri* t, int category) OP_REQUIRES_SHARED(sim) {
     if (category == OPENPETE_SCENE_PORTAL_MASK) s_tri_mask++; else s_tri_col++;
     openpete_scene_tri w = *t;
     for (int k = 0; k < 3; k++) w.v[k].pvz = w.v[k].z;
@@ -1616,7 +1616,7 @@ static void portal_add_tri(const openpete_scene_tri* t, int category) {
  * triangle's footprint is also its mask and is added to
  * OPENPETE_SCENE_PORTAL_MASK first.
  * @param t The triangle, with depth in each vertex's z. */
-static void portal_add_sky_tri(const openpete_scene_tri* t) {
+static void portal_add_sky_tri(const openpete_scene_tri* t) OP_REQUIRES_SHARED(sim) {
     if (!portal_scene_emit_enabled()) return;
     openpete_native_scene_set_tag(OPENPETE_TAG_PORTAL(s_portal_kind, 0));
     if (!s_aperture_ok)   /* no opening polygon this feed: footprint IS the mask */
@@ -1672,7 +1672,7 @@ static int portal_repr_skip(int is_dome) {
 static int feed_portal_quad(CPUState* cpu, uint32_t a0, int a0_is_skybox,
                             uint32_t portal_hint,
                             uint32_t rgb_override, uint32_t ot_b_hint,
-                            uint32_t fog_rgb, double fog_t) {
+                            uint32_t fog_rgb, double fog_t) OP_REQUIRES(sim) {
     if (portal_repr_skip(0)) return 0;
     if (rgb_override == PORTAL_RGB_RESOLVE &&
         (a0 < 0x80010000u || a0 >= 0x80200000u)) return 0;   /* canonical: a0 must be a RAM pointer */
@@ -1911,7 +1911,7 @@ static int   s_skyout_n = 0;      /* 0 = unavailable -> single-depth fallback */
  * Serves both the dome and the flat-fill paths. Also sets s_ring_vz to the
  * outline's largest view-Z and stamps the portal-sky recency
  * openpete_portal_sky_recent reads with the canonical-render epoch. */
-static void register_skyout(const ppt* poly, int pn) {
+static void register_skyout(const ppt* poly, int pn) OP_REQUIRES(sim) {
     double maxvz = 0.0, mx = 0.0, my = 0.0;
     for (int i = 0; i < pn; i++) {
         if (poly[i].vz > maxvz) maxvz = poly[i].vz;
@@ -2120,7 +2120,7 @@ static void outline_offset(const ppt* poly, int pn, const double* d, float* ex, 
  * @param rgba The ring colour.
  * @param channel The scene category (mask or cyclorama). */
 static void emit_aperture_ring(const ppt* poly, int pn, const double* dpx,
-                               uint32_t rgba, int channel) {
+                               uint32_t rgba, int channel) OP_REQUIRES_SHARED(sim) {
     if (!portal_scene_emit_enabled()) return;
     openpete_native_scene_set_tag(OPENPETE_TAG_PORTAL(s_portal_kind, 0));
     float rx[PORTAL_POLY_MAX], ry[PORTAL_POLY_MAX];
@@ -2200,7 +2200,7 @@ static int portal_outline_corrected(const ppt* raw, int rn, int rclip, const ppt
  * @param Wr The authored world outline.
  * @param Wn The corrected world outline.
  * @param wn The world point count. */
-static void emit_correction_band(const double (*Wr)[3], const double (*Wn)[3], int wn) {
+static void emit_correction_band(const double (*Wr)[3], const double (*Wn)[3], int wn) OP_REQUIRES_SHARED(sim) {
     for (int i = 0; i < wn; i++) {
         const int j = (i + 1) % wn;
         const double* wq[4] = { Wr[i], Wr[j], Wn[j], Wn[i] };
@@ -2245,7 +2245,7 @@ static void emit_correction_band(const double (*Wr)[3], const double (*Wn)[3], i
  * @param pb The plane's inverse-depth y coefficient.
  * @param pc The plane's inverse-depth constant. */
 static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly, int pn, int clipped,
-                                 int use_plane, double pa, double pb, double pc) {
+                                 int use_plane, double pa, double pb, double pc) OP_REQUIRES_SHARED(sim) {
     s_aperture_ok = 0;
     if (!portal_aperture_enabled() || pn < 3 || pn > PORTAL_POLY_MAX) return;
     if (!portal_scene_emit_enabled()) return;
@@ -2315,7 +2315,7 @@ static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly
 /* use_plane: 0 = const_depth, 1 = the opening plane, 2 = that plane pushed
  * BEHIND it (plane_depth_back - the spill outside the opening). */
 static void fan_emit_poly(const pgv* v, int n, float const_depth,
-                          int use_plane, double pa, double pb, double pc);
+                          int use_plane, double pa, double pb, double pc) OP_REQUIRES_SHARED(sim);
 
 /* TEMP band census: 0=off, else tint each band producer a flat colour. */
 static int s_band_dbg = -1;
@@ -2350,7 +2350,7 @@ static int band_dbg(void) {
  * @param pb The plane fit's y coefficient.
  * @param pc The plane fit's constant. */
 static void emit_split_by_outline(const pgv* poly, int n, float depth,
-                                  int use_plane, double pa, double pb, double pc) {
+                                  int use_plane, double pa, double pb, double pc) OP_REQUIRES_SHARED(sim) {
     fan_emit_poly(poly, n, depth, use_plane, pa, pb, pc);
 }
 
@@ -2367,7 +2367,7 @@ static void emit_split_by_outline(const pgv* poly, int n, float depth,
  * @param pb The plane fit's y coefficient.
  * @param pc The plane fit's constant. */
 static void fan_emit_poly(const pgv* v, int n, float const_depth,
-                          int use_plane, double pa, double pb, double pc) {
+                          int use_plane, double pa, double pb, double pc) OP_REQUIRES_SHARED(sim) {
     for (int i = 1; i + 1 < n; i++) {                       /* fan-triangulate */
         openpete_scene_tri t = {0};
         memset(&t, 0, sizeof t);
@@ -2411,7 +2411,7 @@ static void fan_emit_poly(const pgv* v, int n, float const_depth,
  * @param pb The plane fit's y coefficient.
  * @param pc The plane fit's constant. */
 static void emit_clipped_gouraud(pgv v0, pgv v1, pgv v2, int x0, int y0, int x1, int y1,
-                                 float depth, int use_plane, double pa, double pb, double pc) {
+                                 float depth, int use_plane, double pa, double pb, double pc) OP_REQUIRES_SHARED(sim) {
     pgv a[10], b[10];
     a[0] = v0; a[1] = v1; a[2] = v2;
     int n = 3;
@@ -2458,7 +2458,7 @@ typedef struct { pgv a, b, c; double key; } dome_face;
  * @return 1 after emitting, 0 when OPENPETE_PORTAL_REPR suppresses the dome
  *         or the clip rect is empty. */
 static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
-                            int canonical, uint32_t fog_rgb, double fog_t) {
+                            int canonical, uint32_t fog_rgb, double fog_t) OP_REQUIRES(sim) {
     if (portal_repr_skip(1)) return 0;
     s_portal_group = (int)skybox;   /* group id for mask<->colour pairing */
     int y0 = (int32_t)cpu->read_word(D_CLIPRECT + 0x0) >> 16, y1 = (int32_t)cpu->read_word(D_CLIPRECT + 0x4) >> 16;
@@ -2945,7 +2945,7 @@ static uint32_t s_fed_portal[8]; static int s_fed_n = 0;
  * @param real  the leaf's recompiled function
  * @param kind  PORTAL_FLAT, PORTAL_DOME or PORTAL_BLENDED
  * @return 1 after running the leaf, 0 when inert or re-entered */
-static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), int kind) {
+static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), int kind) OP_REQUIRES(sim) {
     int feed = openpete_native_scene_enabled();   /* --renderer vk live */
     if (!portal_dump_enabled() && !feed && !render_paths_active()) return 0; /* inert */
     if (s_leaf_in) return 0;
@@ -3160,7 +3160,7 @@ static int on_8004F4BC(CPUState* cpu, uint32_t a) {
  * staged in the sub-tick view when one is open, else written and restored to
  * its saved value before return.
  * @param cpu guest CPU state */
-static void feed_revealed_portals(CPUState* cpu) {
+static void feed_revealed_portals(CPUState* cpu) OP_REQUIRES(sim) {
     ngte_view_build(cpu, &s_view);
     int nolod = nolod_portal_dome_on();
     /* Widescreen reveals off-4:3 portals; --no-lod ALSO reveals
@@ -3772,7 +3772,7 @@ static void portal_present_note(const portal_cap_t* c, int src, double alpha, co
 }
 
 /* ---- sub-tick re-extract; documented in reextract.h ---- */
-void portal_reextract(CPUState* cpu, double alpha, int interp_on, int hold) {
+void portal_reextract(CPUState* cpu, double alpha, int interp_on, int hold) OP_REQUIRES(sim) {
     s_pcap_pick = cut_held_sets_enter(&s_sets, hold);
     /* A hold whose set is the current one has no tick before it to lerp from. */
     if (s_pcap_pick == CUT_HELD_CURR) interp_on = 0;

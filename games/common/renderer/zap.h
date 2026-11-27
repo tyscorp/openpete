@@ -3,6 +3,7 @@
 #define OPENPETE_ZAP_H
 
 #include "psx_runtime_internal.h"
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 /** @brief Re-feeds the tick's held ribbon primitives for a sub-tick present, rebased onto the present's pose.
  *
@@ -18,6 +19,6 @@
  * @param bracketed Nonzero when the tick's call ran under the bracket.
  * @param alpha The present's sub-tick position, used when bracketed.
  * @param hold Nonzero on a held camera cut. */
-void zap_reextract(CPUState* cpu, int bracketed, double alpha, int hold);
+void zap_reextract(CPUState* cpu, int bracketed, double alpha, int hold) OP_REQUIRES(sim);
 
 #endif

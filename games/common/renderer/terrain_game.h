@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include "psx_runtime_internal.h"
 #include "renderer/native_gte.h"     /* ngte_view: the caller's projection view */
+#include "openpete_thread_roles.h"   /* OP_SLOT */
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -67,11 +68,11 @@ typedef struct {
 
 typedef struct terrain_game {
     /* True while a portal fed sky within the last couple of presents. */
-    int   (*portal_sky_recent)(void);
+    int   (*portal_sky_recent)(void) OP_SLOT(sim);
     /* Fill out[] with the opening planes of every portal whose sky was drawn
      * on the current or immediately-previous canonical frame; returns the
      * count (0 when no portal sky is active). */
-    int   (*portal_sky_planes)(CPUState* cpu, const ngte_view* v, openpete_portal_skyplane* out, int max);
+    int   (*portal_sky_planes)(CPUState* cpu, const ngte_view* v, openpete_portal_skyplane* out, int max) OP_SLOT(sim);
     /* Plane-cover near margin M in world units: inside an opening's footprint
      * the preview covers everything at or behind plane − M. */
     float (*portal_plane_margin)(void);

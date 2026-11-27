@@ -135,7 +135,7 @@ uint32_t cyclorama_native_bg_word(struct CPUState* cpu);
  * spyro_native_canon_capture_* entries do, so a capture taken before its
  * render's first feed carries the render's epoch.
  * @return The epoch; always 0 for a game with no sub-tick spine. */
-uint32_t spyro_native_canon_epoch_stamp(void);
+uint32_t spyro_native_canon_epoch_stamp(void) OP_REQUIRES(sim);
 /** @brief Reports whether a capture stamp belongs to the last closed canonical render.
  *
  * @param stamp A value from spyro_native_canon_epoch_stamp taken at capture.
@@ -183,13 +183,13 @@ static inline int spyro_native_canon_capture_open(void) {
  * @param cpu The guest CPU state.
  * @param off The sub-range's offset into the game's render scratch block.
  * @param len The sub-range's length in bytes. */
-void spyro_native_canon_capture_range(void* cpu, unsigned off, unsigned len);
+void spyro_native_canon_capture_range(void* cpu, unsigned off, unsigned len) OP_REQUIRES(sim);
 /** @brief Captures the moby cull-record region at the canonical moby hook, while the records are live.
  *
  * The capture is stamped with the in-flight epoch; a region that does not
  * map for its length captures nothing.
  * @param cpu The guest CPU state. */
-void spyro_native_canon_capture_recs(void* cpu);
+void spyro_native_canon_capture_recs(void* cpu) OP_REQUIRES(sim);
 
 /** @brief The regular cull records of tick N-1, for a game that keeps them in its scratch capture.
  *
@@ -203,7 +203,7 @@ const uint8_t* spyro_native_canon_prev_recs(uint32_t* len, op_time_t* ref_ns);
  * player hook; a game whose player walk does not read the block back
  * captures nothing.
  * @param cpu The guest CPU state. */
-void spyro_native_canon_capture_sxy(void* cpu);
+void spyro_native_canon_capture_sxy(void* cpu) OP_REQUIRES(sim);
 
 /* The camera a producer drew under. A feeder re-derives its geometry from the
  * camera, which the sub-tick bracket interpolates between tick-end snapshots;
@@ -219,7 +219,7 @@ enum { SPYRO_PROD_MOBYREG = 0, SPYRO_PROD_SPYRO = 1, SPYRO_PROD_SHADED = 2 };
  * @param cpu Unused.
  * @param producer SPYRO_PROD_MOBYREG, SPYRO_PROD_SPYRO or SPYRO_PROD_SHADED;
  *        other values are ignored. */
-void spyro_native_canon_capture_camera(void* cpu, int producer);
+void spyro_native_canon_capture_camera(void* cpu, int producer) OP_REQUIRES(sim);
 /** @brief Installs a producer's captured camera over the re-extract's camera when the producer drew under another.
  *
  * Spyro 1 installs it when the capture is from the last closed epoch and

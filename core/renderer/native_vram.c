@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 /* PsyCross seam (see PsyX_public.h). Declared here to keep this TU free of
  * PsyCross headers. */
@@ -140,7 +141,7 @@ void openpete_vram_load(int x, int y, int w, int h, const uint16_t* src)
  * edge rects). Rows copied top-down; memmove per row (PsyCross uses memcpy on
  * rows that are disjoint in every real caller - the census would flag any
  * intra-row-overlap divergence). */
-void openpete_vram_move(int src_x, int src_y, int w, int h, int dst_x, int dst_y)
+void openpete_vram_move(int src_x, int src_y, int w, int h, int dst_x, int dst_y) OP_REQUIRES_SHARED(sim)
 {
     if (w <= 0 || h <= 0) return;
     src_x &= (OPENPETE_VRAM_W - 1);
@@ -222,7 +223,7 @@ static void nv_load(int x, int y, int w, int h, const unsigned short* src)
  * @param dx Destination X in texels.
  * @param dy Destination Y in rows. */
 static void nv_move(int sx, int sy, int w, int h, int dx, int dy)
-{ openpete_vram_move(sx, sy, w, h, dx, dy); }
+{ OP_ROLE_ASSERT_SHARED(sim); openpete_vram_move(sx, sy, w, h, dx, dy); }
 /** @brief PsyCross clear callback: forwards to openpete_vram_clear.
  *
  * @param x Left edge in texels.

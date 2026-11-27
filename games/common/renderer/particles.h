@@ -7,6 +7,7 @@
 #define OPENPETE_RENDERER_PARTICLES_H
 
 #include "psx_runtime_internal.h"
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 /** @brief Re-feeds the particle primitives the canonical tick captured, rebased onto the pose this present shows.
  *
@@ -26,7 +27,7 @@
  *        passed as the pass holds it and read only when `bracketed` is set.
  *        The staged camera was built at this alpha, so the pool positions the
  *        rebase projects under it are phased onto the same instant. */
-void particles_reextract(CPUState* cpu, int bracketed, double alpha);
+void particles_reextract(CPUState* cpu, int bracketed, double alpha) OP_REQUIRES(sim);
 
 /** @brief Make the particle re-extract show tick N-1's captured set, for a held camera cut or a present before alpha 1, or restore the current one.
  *

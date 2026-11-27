@@ -2,6 +2,7 @@
 #pragma once
 #include <stdint.h>
 #include "psx_runtime_internal.h"
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 /** @brief Re-feeds the tick's captured ribbon and mesh primitives on a sub-tick present, rebased onto the pose it shows.
  *
@@ -18,7 +19,7 @@
  * @param bracketed Nonzero on a present inside a reextract bracket.
  * @param alpha The present's position in the tick interval, 0..1.
  * @param hold Nonzero on a held camera cut. */
-void tracers_reextract(CPUState* cpu, int bracketed, double alpha, int hold);
+void tracers_reextract(CPUState* cpu, int bracketed, double alpha, int hold) OP_REQUIRES(sim);
 
 /* The per-object store key of a mesh vertex: the tag over the vertex's
  * offset in the 8 MiB KSEG0 window. The tag lies outside KSEG0 (0x8xxxxxxx,
@@ -45,4 +46,4 @@ uint32_t tracers_mesh_vertex_key(uint32_t va);
  * @param nverts Receives each list's vertex count.
  * @param max The capacity of addr and nverts.
  * @return The count of lists written. */
-int tracers_mesh_lists(uint32_t* addr, uint32_t* nverts, int max);
+int tracers_mesh_lists(uint32_t* addr, uint32_t* nverts, int max) OP_REQUIRES(sim);
