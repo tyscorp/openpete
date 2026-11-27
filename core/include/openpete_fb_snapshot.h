@@ -126,6 +126,25 @@ int openpete_fb_snapshot_on_move(int src_x, int src_y, int w, int h,
  *         slot holds none. */
 const uint16_t *openpete_fb_snapshot_under(int idx, int *x, int *y, int *w, int *h);
 
+/** @brief Arm the source rect whose window copies are drawn in the centred 4:3 box.
+ *
+ * A window copy whose source rect, in framebuffer screen pixels, equals the
+ * armed rect is recorded as an inset slot: its image is cropped from the
+ * 4:3 box of the widened frame and a quad drawing it is placed in that box
+ * (openpete_fb_snapshot_inset). The arm holds until the next call; w 0
+ * disarms. Copies recorded earlier keep their verdict.
+ * @param x Rect left.
+ * @param y Rect top.
+ * @param w Rect width; 0 disarms.
+ * @param h Rect height. */
+void openpete_fb_snapshot_arm_inset(int x, int y, int w, int h) OP_REQUIRES(sim);
+
+/** @brief Report whether a snapshot index is an inset window slot (openpete_fb_snapshot_arm_inset).
+ *
+ * @param idx Index from openpete_fb_snapshot_find.
+ * @return 1 for an inset window slot, 0 for any other index. */
+int openpete_fb_snapshot_inset(int idx);
+
 /** @brief Report whether any window slot or draw area is waiting for its pixels.
  *
  * @return 1 when one is pending, 0 otherwise. */
@@ -136,7 +155,8 @@ int openpete_fb_snapshot_pending(void);
  * Clears the slot's pending flag and returns its source rect with the scene
  * stamp taken at the copy: the resolving present composes that scene,
  * because the copy reads what the game drew into it, not what it draws
- * next. Any output pointer may be NULL.
+ * next. An inset slot's x span is returned in widened-frame coordinates,
+ * the frame the capture is cropped from. Any output pointer may be NULL.
  * @param idx Receives the slot index.
  * @param src_x Receives the source left, framebuffer screen pixels.
  * @param src_y Receives the source top.

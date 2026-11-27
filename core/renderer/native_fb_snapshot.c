@@ -2,6 +2,7 @@
 
 #include "openpete_fb_snapshot.h"
 #include "openpete_native_vram.h"
+#include "openpete_native_render.h"   /* openpete_native_widescreen_factor */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -72,9 +73,47 @@ typedef struct {
     int pw, ph;
     uint64_t key;             /* unique per stored image (see the header) */
     uint16_t *under;          /* the w x h VRAM texels the copy overwrote */
+    int inset;                /* the source rect is drawn in the centred 4:3 box, not
+                               * the widened frame (openpete_fb_snapshot_arm_inset) */
 } fb_snap_t;
 
 static fb_snap_t s_slot[FB_SNAP_MAX];
+
+/* The source rect, in framebuffer screen pixels, whose next window copies are
+ * inset slots; w 0 when none is armed. */
+static struct { int x, y, w, h; } s_inset_arm OP_GUARDED_BY(sim);
+
+void openpete_fb_snapshot_arm_inset(int x, int y, int w, int h) OP_REQUIRES(sim)
+{
+    s_inset_arm.x = x; s_inset_arm.y = y; s_inset_arm.w = w; s_inset_arm.h = h;
+}
+
+int openpete_fb_snapshot_inset(int idx)
+{
+    return idx >= 0 && idx < FB_SNAP_MAX && s_slot[idx].inset;
+}
+
+/** @brief Express a slot's source span in the widened frame its image is cropped from.
+ *
+ * A snapshot image is cropped from the widened frame: screen x 0 and
+ * FB_BUFFER_W are the visible frame's edges. An inset slot's source rect
+ * lies in the centred 4:3 box, where screen x stands at x_w = c + (x - c) / F
+ * of the widened frame (c the buffer's centre column, F the widescreen
+ * factor), so its span is mapped through that inverse and rounded. Any other
+ * slot's span is returned unchanged.
+ * @param s The slot.
+ * @param x Receives the span's left.
+ * @param w Receives the span's width. */
+static void fb_slot_crop_span(const fb_snap_t *s, int *x, int *w)
+{
+    *x = s->src_x; *w = s->w;
+    const float F = openpete_native_widescreen_factor();
+    if (!s->inset || !(F > 1.0f)) return;
+    const float c = (float)(FB_BUFFER_W / 2);
+    const int x0 = (int)lroundf(c + ((float)s->src_x - c) / F);
+    const int x1 = (int)lroundf(c + ((float)(s->src_x + s->w) - c) / F);
+    *x = x0; *w = x1 - x0;
+}
 
 /* Guards every image pointer, size and key in s_slot and s_area. The guest
  * thread is the only writer (moves, draw-env puts, stores); the presenting
@@ -441,6 +480,8 @@ int openpete_fb_snapshot_on_move(int src_x, int src_y, int w, int h,
 
     fb_snap_t *s = fb_window_slot(dst_x, dst_y, w, h);
     s->src_x = ssx; s->src_y = ssy;
+    s->inset = s_inset_arm.w > 0 && ssx == s_inset_arm.x && ssy == s_inset_arm.y &&
+               w == s_inset_arm.w && h == s_inset_arm.h;
     s->frame = fb_window_frame();
     fb_save_under(s);
     s_taken++;
@@ -450,11 +491,12 @@ int openpete_fb_snapshot_on_move(int src_x, int src_y, int w, int h,
          * present will compose it: crop the frame that stands for its content.
          * The buffer being drawn keeps the next-present rule, since the present
          * that follows this move composes exactly what the copy took. */
-        int asx, asy, pw = 0, ph = 0;
+        int asx, asy, pw = 0, ph = 0, cx, cw;
         fb_area_screen(from, &asx, &asy);
+        fb_slot_crop_span(s, &cx, &cw);
         unsigned char *px = fb_crop_image(from->px, from->pw, from->ph,
                                           asx, asy, from->w, from->h,
-                                          ssx, ssy, w, h, &pw, &ph);
+                                          cx, ssy, cw, h, &pw, &ph);
         if (px) {
             s->pending = 0;
             openpete_fb_snapshot_store((int)(s - s_slot), px, pw, ph);
@@ -537,11 +579,13 @@ int openpete_fb_snapshot_take_pending(int *idx, int *src_x, int *src_y,
     for (int i = 0; i < FB_SNAP_MAX; i++) {
         if (!s_slot[i].pending) continue;
         s_slot[i].pending = 0;
+        int cx, cw;
+        fb_slot_crop_span(&s_slot[i], &cx, &cw);
         if (frame) *frame = s_slot[i].frame;
         if (idx)   *idx   = i;
-        if (src_x) *src_x = s_slot[i].src_x;
+        if (src_x) *src_x = cx;
         if (src_y) *src_y = s_slot[i].src_y;
-        if (w)     *w     = s_slot[i].w;
+        if (w)     *w     = cw;
         if (h)     *h     = s_slot[i].h;
         return 1;
     }

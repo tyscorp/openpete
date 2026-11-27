@@ -63,6 +63,19 @@ typedef struct ui_game {
      * with the cells on presents between ticks. 0 = the game has none. */
     uint32_t fb_grid_emitter;
 
+    /* The window the grid emitter draws, from the game's own tables, indexed
+     * by the step the emitter is called with (its first argument): w_table
+     * holds the window's right edge per step as int16 (entry 0 the full
+     * frame), top_table its top row as a byte; the window's left edge is
+     * screen x 0 and its bottom row `bottom` at every step, and the cells
+     * sample `src_h` rows of the draw buffer. `steps` is the last step (the
+     * window at its end rect). With w_table set, a widescreen aspect places
+     * the window between the widened frame (step 0) and its 4:3 end rect,
+     * the frozen frame cropped from the whole widened image toward its centre
+     * 4:3 at the same progress (ui_sprite.c, gridj_*). w_table 0 = the
+     * window is placed in the widened frame at every step. */
+    struct { uint32_t w_table, top_table; int steps, bottom, src_h; } fb_grid_shape;
+
     /* The cutscene letterbox emitter, called with no arguments: it steps
      * the bar height word at `height` toward its target and, when the height
      * is above 0, links two frame-width opaque black POLY_F4s through

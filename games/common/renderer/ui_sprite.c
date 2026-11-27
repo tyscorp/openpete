@@ -403,6 +403,45 @@ static void ui_widen_quad(openpete_scene_tri quad[2], int mode) {
         for (int j = 0; j < 3; j++) quad[t].v[j].sx = ui_widen_x(quad[t].v[j].sx, mode, F);
 }
 
+/* The window of the framebuffer grid emitter's last call under the widescreen
+ * treatment (ui_game.fb_grid_shape), computed at the hook from the game's
+ * tables for the step the call drew and read when that tick's batch feeds the
+ * call's cells and borders. Scene x throughout: the 4:3 box is 0..UI_FRAME_W
+ * and the widened frame ui_widen_x(0)..ui_widen_x(UI_FRAME_W). */
+static struct {
+    unsigned frame;      /* openpete_frame of the call */
+    int      on;         /* 1 when the treatment places that call's cells and borders */
+    float    cell_w;     /* the step's window width at 4:3: the cells' screen x span 0..cell_w */
+    float    x0, x1;     /* the step's window, scene x */
+    float    left, dw;   /* the frozen frame's left edge and width inside it */
+    float    k;          /* the share of the widened image's width the frame shows */
+    float    bx0, bx1, btop, bbot;   /* the previous step's window: the borders' fill */
+    int      census;     /* OPENPETE_FBWIN_CENSUS: 0 unread, 1 off, 2 on */
+} s_gridj OP_GUARDED_BY(sim);
+
+/** @brief Place a grid emitter step's window between the widened frame and the 4:3 end rect.
+ *
+ * The step's progress is ex = (W(0) - W(s)) / (W(0) - W(last)) from the
+ * game's right-edge table; the window runs from the widened frame (step 0,
+ * x ui_widen_x(0)..ui_widen_x(W(0))) to the end rect at 4:3 (x 0..W(last))
+ * linearly in ex. At F <= 1 it is the game's own x 0..W(s).
+ * @param W The right-edge table, entries 0..last.
+ * @param last The last step.
+ * @param s The step.
+ * @param F The widescreen factor.
+ * @param x0 Receives the window's left edge, scene x.
+ * @param x1 Receives its right edge.
+ * @return The progress ex, 0 at step 0 and 1 at the last step. */
+static float gridj_window(const float* W, int last, int s, float F, float* x0, float* x1) {
+    const float ex = (W[0] - W[s]) / (W[0] - W[last]);
+    const float l = ui_widen_x(0.0f, UI_WIDEN_FRAME, F), r = ui_widen_x(W[0], UI_WIDEN_FRAME, F);
+    *x0 = l + (0.0f - l) * ex;
+    *x1 = r + (W[last] - r) * ex;
+    return ex;
+}
+
+static int gridj_maps(void) OP_REQUIRES_SHARED(sim);   /* after s_claim_frame */
+
 /** @brief Redirects a quad that samples a framebuffer window to the stored native snapshot of that window.
  *
  * A quad sampling a MoveImage'd copy of a draw buffer reads texels the
@@ -469,6 +508,35 @@ static uint32_t fb_cell_key(const openpete_scene_tri* t) {
     return h | 1u;
 }
 
+/** @brief Place a framebuffer grid cell in the step's window under the widescreen treatment, cropping its image.
+ *
+ * The cells cover screen x 0..cell_w at 4:3 and sample the whole draw
+ * buffer. Each vertex x moves to the same fraction of the frozen frame's
+ * span inside the window (s_gridj.left, dw). A cell redirected to a snapshot
+ * image has its u scaled about the image's centre column by s_gridj.k, so
+ * the grid shows the centre k of the widened image; the image (or, while it
+ * is pending, the rect) spans the whole buffer, so its centre is the frame's.
+ * A cell still sampling VRAM spans several texture pages, which no single
+ * triangle can crop: it fills the window uncropped.
+ * @param quad The quad's two triangles, rewritten in place.
+ * @param snap 1 when the quad was redirected to a snapshot image. */
+static void gridj_place_cell(openpete_scene_tri quad[2], int snap) OP_REQUIRES_SHARED(sim) {
+    float cu = 0.0f, k = 1.0f, left = s_gridj.x0, dw = s_gridj.x1 - s_gridj.x0;
+    int rw = 0, pw = 0, ph = 0;
+    if (snap && openpete_fb_snapshot_rect(quad[0].tpage_x, &rw, NULL)) {
+        const int texel_space = quad[0].tpage_y;
+        cu = texel_space || !openpete_fb_snapshot_image(quad[0].tpage_x, NULL, &pw, &ph)
+           ? 0.5f * (float)rw : 0.5f * (float)pw;
+        k = s_gridj.k; left = s_gridj.left; dw = s_gridj.dw;
+    }
+    for (int t = 0; t < 2; t++)
+        for (int j = 0; j < 3; j++) {
+            openpete_scene_vert* v = &quad[t].v[j];
+            v->sx = left + v->sx / s_gridj.cell_w * dw;
+            if (snap && rw) v->u = cu + (v->u - cu) * k;
+        }
+}
+
 /** @brief Adds a textured 2D quad's two triangles to the HUD layer, split by texel STP where the blend class needs it.
  *
  * A quad sampling a framebuffer window is first redirected to its snapshot
@@ -486,7 +554,9 @@ static uint32_t fb_cell_key(const openpete_scene_tri* t) {
  * (fb_cell_key), computed from the primitive before any redirect. A quad
  * showing a piece of the framebuffer (redirected to a snapshot, or keyed as
  * a cell) is placed in the widened frame (UI_WIDEN_FRAME), the frame its
- * snapshot image is cropped from.
+ * snapshot image is cropped from, except an inset window slot, placed in
+ * the 4:3 box its image is cropped from (openpete_fb_snapshot_inset), and a
+ * grid cell under the widescreen treatment (gridj_place_cell).
  * @param in The quad's two triangles.
  * @return 1 for a quad fed as an STP pair, else 0. */
 static int feed_hud_tex_quad(const openpete_scene_tri in[2]) OP_REQUIRES(sim) {
@@ -501,7 +571,9 @@ static int feed_hud_tex_quad(const openpete_scene_tri in[2]) OP_REQUIRES(sim) {
         tex_tri_psx_texel_centre(&quad[t]);
         uvedge_note(&in[t], &quad[t]);
     }
-    if (!vram || cell[0] || cell[1]) ui_widen_quad(quad, UI_WIDEN_FRAME);
+    if (!vram && openpete_fb_snapshot_inset(quad[0].tpage_x)) { /* placed in the 4:3 box */ }
+    else if ((!vram || cell[0] || cell[1]) && gridj_maps()) gridj_place_cell(quad, !vram);
+    else if (!vram || cell[0] || cell[1]) ui_widen_quad(quad, UI_WIDEN_FRAME);
     /* ui_blend's classes 2-4 are ABR 1-3. */
     const int split = quad[0].blend > 1 && vram;
     if (split) {
@@ -606,6 +678,8 @@ static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) OP_REQUIRES(sim) {
     s_fed_prims++;
 }
 
+static void feed_f4_at(const float sx[4], const float sy[4], uint32_t w1, int category,
+                       uint32_t alpha, int blend) OP_REQUIRES(sim);
 /** @brief Feeds one screen-space untextured POLY_F4 (flat quad) into a native 2D layer.
  *
  * Three uses, chosen by the caller:
@@ -640,6 +714,19 @@ static void feed_f4(CPUState* cpu, uint32_t p, uint32_t w1, int category, uint32
         sx[k] = ui_widen_x((float)(int16_t)(xy & 0xFFFFu), widen, F);
         sy[k] = (float)(int16_t)(xy >> 16);
     }
+    feed_f4_at(sx, sy, w1, category, alpha, blend);
+}
+
+/** @brief Feeds an untextured quad at given scene corners (TL, TR, BL, BR) as two triangles.
+ *
+ * @param sx The corners' scene x.
+ * @param sy The corners' scene y.
+ * @param w1 The primitive's word 1; its low 24 bits are the colour.
+ * @param category The scene layer (OPENPETE_SCENE_*).
+ * @param alpha The vertex alpha.
+ * @param blend The scene blend class. */
+static void feed_f4_at(const float sx[4], const float sy[4], uint32_t w1, int category,
+                       uint32_t alpha, int blend) OP_REQUIRES(sim) {
     uint32_t rgba = (w1 & 0xFFFFFFu) | (alpha << 24);
 
     scene_begin_for_feed();
@@ -929,6 +1016,13 @@ static mod_fvec s_claim_v;
 #define s_claim ((ui_claim_t*)s_claim_v.data)   /* moves on growth: index, never hold */
 static unsigned s_claim_n;            /* claimed, awaiting release */
 static unsigned s_claim_frame;        /* openpete_frame the batch's first claim was made in */
+
+/** @brief Report whether the batch being fed holds a grid emitter call the widescreen treatment places.
+ *
+ * A batch never spans ticks, so the call belongs to the batch when it ran in
+ * the batch's build tick.
+ * @return 1 when the call's cells and borders are placed by s_gridj. */
+static int gridj_maps(void) OP_REQUIRES_SHARED(sim) { return s_gridj.on && s_gridj.frame == s_claim_frame; }
 static unsigned s_claim_lost;         /* claims dropped on overflow (engagement: 0) */
 static int      s_ot_ranked;          /* 2D tris the table walk ranked at the last release: the
                                        * engagement counter for the traversal rank (0 means the
@@ -1564,9 +1658,17 @@ static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux)
          * where it spans x 0..512: it feeds the panel layer in the widened
          * frame the grid's cells are placed in (UI_WIDEN_FRAME), on every
          * step. */
+        /* Under the widescreen treatment a border fills the previous step's
+         * window (gridj_note), under the cells: the vacated strips and the
+         * pillars beside the frozen frame are black. */
         const int full = !aux && f4_spans_frame_width(cpu, prim);
         openpete_native_scene_set_fb_cell(aux);
-        if (full) feed_f4(cpu, prim, w1, OPENPETE_SCENE_OVERLAY, 0xFFu, 0, UI_WIDEN_BAR);
+        if (aux && gridj_maps()) {
+            const float x[4] = { s_gridj.bx0, s_gridj.bx1, s_gridj.bx0, s_gridj.bx1 };
+            const float y[4] = { s_gridj.btop, s_gridj.btop, s_gridj.bbot, s_gridj.bbot };
+            feed_f4_at(x, y, w1, OPENPETE_SCENE_HUD_PANEL, 0xFFu, 0);
+        }
+        else if (full) feed_f4(cpu, prim, w1, OPENPETE_SCENE_OVERLAY, 0xFFu, 0, UI_WIDEN_BAR);
         else      feed_f4(cpu, prim, w1, OPENPETE_SCENE_HUD_PANEL, 0xFFu, 0,
                           aux ? UI_WIDEN_FRAME : UI_WIDEN_NONE);
         openpete_native_scene_set_fb_cell(0u);
@@ -2239,11 +2341,69 @@ static int on_fade_emitter(CPUState* cpu, uint32_t addr) {
     return 1;
 }
 
+/** @brief Compute the widescreen treatment's window for a grid emitter call from the game's tables (s_gridj).
+ *
+ * Reads the right edge W(i) and top row of steps 0..last from
+ * ui_game.fb_grid_shape. The window is gridj_window's; the frozen frame
+ * inside it is a centre crop of the widened image whose width narrows from
+ * the whole widened frame (W(0) * F) to the 4:3 frame (W(0)) at the same
+ * progress, k its share of the widened width. Its height is the window's,
+ * as the game maps the src_h buffer rows onto it, and its width the crop at
+ * that row scale, capped at the window's: black pillars fill the rest
+ * (gridj_place_cell, the borders). At 4:3 the cap holds at every step, so
+ * the frame fills the window as the game draws it. The borders fill the
+ * previous step's window. The last step arms the inset copy of the end rect
+ * (openpete_fb_snapshot_arm_inset) and any other step disarms it.
+ * OPENPETE_FBWIN_CENSUS prints the step's window, frame, crop and border
+ * fill. Reads guest RAM only.
+ * @param cpu The guest CPU state.
+ * @param s The step the emitter is called with. */
+static void gridj_note(CPUState* cpu, int s) OP_REQUIRES(sim) {
+    s_gridj.on = 0;
+    s_gridj.frame = openpete_frame;
+    const int last = ui_game.fb_grid_shape.steps;
+    if (!ui_game.fb_grid_shape.w_table || last < 1 || last > 64 || s < 1 || s > last) return;
+    float W[65], top[65];
+    for (int i = 0; i <= last; i++) {
+        W[i] = (float)(int16_t)cpu->read_half(ui_game.fb_grid_shape.w_table + 2u * (uint32_t)i);
+        top[i] = (float)cpu->read_byte(ui_game.fb_grid_shape.top_table + (uint32_t)i);
+    }
+    const float bottom = (float)ui_game.fb_grid_shape.bottom;
+    if (s == last) openpete_fb_snapshot_arm_inset(0, (int)top[last], (int)W[last], (int)(bottom - top[last]));
+    else           openpete_fb_snapshot_arm_inset(0, 0, 0, 0);
+    const float F = openpete_native_widescreen_factor();
+    if (!(F > 1.0f) || !(W[0] > W[last]) || ui_game.fb_grid_shape.src_h <= 0) return;
+    float x0, x1, bx0, bx1;
+    const float ex = gridj_window(W, last, s, F, &x0, &x1);
+    gridj_window(W, last, s - 1, F, &bx0, &bx1);
+    const float full = W[0] * F, sw = full + (W[0] - full) * ex;
+    const float rh = bottom - top[s];
+    const float dw = fminf(x1 - x0, sw * rh / (float)ui_game.fb_grid_shape.src_h);
+    s_gridj.cell_w = W[s];
+    s_gridj.x0 = x0; s_gridj.x1 = x1;
+    s_gridj.dw = dw; s_gridj.left = 0.5f * (x0 + x1) - 0.5f * dw;
+    s_gridj.k = sw / full;
+    s_gridj.bx0 = bx0; s_gridj.bx1 = bx1; s_gridj.btop = top[s - 1]; s_gridj.bbot = bottom;
+    s_gridj.on = W[s] > 0.0f;
+    if (!s_gridj.census) {
+        const char* e = getenv("OPENPETE_FBWIN_CENSUS");
+        s_gridj.census = (e && *e && *e != '0') ? 2 : 1;
+    }
+    if (s_gridj.census == 2)
+        fprintf(stderr, "[gridj f=%u] step=%d ex=%.4f window=%.2f..%.2f,%.0f..%.0f frame=%.2f..%.2f "
+                        "crop=%.2f k=%.4f border=%.2f..%.2f,%.0f..%.0f\n",
+                openpete_frame, s, (double)ex, (double)x0, (double)x1, (double)top[s], (double)bottom,
+                (double)s_gridj.left, (double)(s_gridj.left + dw), (double)sw, (double)s_gridj.k,
+                (double)bx0, (double)bx1, (double)top[s - 1], (double)bottom);
+}
+
 /** @brief Hooks the framebuffer grid emitter and numbers the primitives it links.
  *
  * The real emitter runs unchanged with s_in_grid set and the emission
  * ordinal s_grid_ord restarted, so the chokepoint keys each opaque F4 the
- * call links by its ordinal (grid_elem_key). Reads no guest RAM; writes none.
+ * call links by its ordinal (grid_elem_key). The step argument places the
+ * call's window under the widescreen treatment (gridj_note). Reads guest
+ * RAM only; writes none.
  * @param cpu The guest CPU state.
  * @param addr The hooked entry address.
  * @return 0 when the native scene is off or on re-entry (the ordinary
@@ -2251,6 +2411,7 @@ static int on_fade_emitter(CPUState* cpu, uint32_t addr) {
 static int on_fb_grid_emitter(CPUState* cpu, uint32_t addr) {
     OP_ROLE_ASSERT(sim);
     if (!openpete_native_scene_enabled() || s_in_grid) return 0;
+    gridj_note(cpu, (int)cpu->a0);
     s_in_grid = 1;
     s_grid_ord = 0;
     { OP_PROF_FLAGS_ACCUM_SCOPE("ui_sprite.srend", OP_PROF_F_GUEST); OP_PACE_SPLIT_SCOPE(OP_PACE_SPLIT_GUEST);

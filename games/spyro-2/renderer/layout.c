@@ -855,6 +855,14 @@ const ui_game_t spyro2_ui_game = {
      * of the pause window's shrink and grow (drawutil/func_8004DF84.s:37-42,
      * draw/func_800145AC.s:95,336). */
     .fb_grid_emitter = F_UI_FB_GRID,
+    /* func_8004DF84(step) reads the right edge at D_800633BC + 2 * step and
+     * the top row at D_800633E0 + step (W 512 down to 256 by 16, top 8 up to
+     * 120), links its cells down to row 0xE4 and samples rows 12 + 54 * row
+     * of the buffer, 216 in all (drawutil/func_8004DF84.s:28-36, :43-44,
+     * :57, :77); the shrink calls steps 1..16 (draw/func_800145AC.s:93-105)
+     * and the unpause grow 14 down to 2 by 2 (:334-346). */
+    .fb_grid_shape = { .w_table = 0x800633BCu, .top_table = 0x800633E0u,
+                       .steps = 16, .bottom = 0xE4, .src_h = 4 * 0x36 },
 
     /* The cutscene letterbox: func_8004D604 steps D_8006701C and draws the
      * bars over rows 12..12+h and 228-h..228 (drawutil/func_8004D604.s:6-94). */
