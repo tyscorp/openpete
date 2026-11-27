@@ -49,7 +49,7 @@ def helper_spans(text):
     """{helper: (start, end)} character spans of the two helper bodies."""
     spans = {}
     for h in HELPERS:
-        m = re.search(r"\bstatic\s+void\s+%s\s*\([^)]*\)\s*\{" % h, text)
+        m = re.search(r"\bstatic\s+void\s+%s\s*\([^)]*\)(?:\s*OP_\w+\(\w*\))*\s*\{" % h, text)
         if not m:
             continue
         depth, i = 1, m.end()

@@ -22,7 +22,9 @@ lock, not by propagation. A check 3 refusal of the last pass is printed too.
 
 Every declaration is found by libclang 14 in the TUs that define or name
 the function; the attribute goes directly after the parameter list's
-closing parenthesis, the place the fence reads it from. A declaration whose
+closing parenthesis, or, for a function returning a pointer to an array or
+a function (`T (*f(P))[N]`), after the declarator's last suffix, outside
+its groups, the place the fence reads it from. A declaration whose
 parameter list cannot be placed in in-scope text (a macro expansion, a
 generated header) is a stop.
 
@@ -205,6 +207,60 @@ def close_paren(b, i):
     return -1
 
 
+QUALIFIER = re.compile(rb"(?<![\w])(?:const|volatile|restrict|__restrict|__restrict__)$")
+
+
+def group_depth(b, at):
+    """-> how many parenthesised declarator groups enclose the name at `at`:
+    each `(` of the run of `(`, `*` and pointer qualifiers that ends at the
+    name, as in `T (*name`, `T (* const name` or `T (*(*name`."""
+    depth, j = 0, at
+    while True:
+        k = j
+        while k > 0 and b[k - 1:k] in b" \t\r\n":
+            k -= 1
+        m = QUALIFIER.search(b, max(0, k - 16), k)
+        if k > 0 and b[k - 1:k] == b"*":
+            j = k - 1
+        elif m:
+            j = m.start()
+        elif k > 0 and b[k - 1:k] == b"(":
+            depth, j = depth + 1, k - 1
+        else:
+            return depth
+
+
+def suffixes_end(b, i):
+    """-> the offset past the array bounds and parameter lists that follow
+    offset i (`[N][M]`, `(int)`)."""
+    while True:
+        k = skip_ws_comments(b, i)
+        if b[k:k + 1] == b"[":
+            j = b.find(b"]", k)
+            if j < 0:
+                return i
+            i = j + 1
+        elif b[k:k + 1] == b"(":
+            j = close_paren(b, k)
+            if j < 0:
+                return i
+            i = j
+        else:
+            return i
+
+
+def close_groups(b, i, depth, line, col):
+    """-> the offset past `depth` declarator-group closers that follow offset
+    i, each with the suffixes after it; raises ValueError when a `)` is not
+    there."""
+    for _ in range(depth):
+        k = skip_ws_comments(b, i)
+        if b[k:k + 1] != b")":
+            raise ValueError("an unclosed declarator group after %d:%d" % (line, col))
+        i = suffixes_end(b, k + 1)
+    return i
+
+
 def line_offset(b, line, col):
     off = 0
     for _ in range(line - 1):
@@ -226,6 +282,9 @@ def place(b, line, col, name, role, excl):
     end = close_paren(b, i)
     if end < 0:
         raise ValueError("unbalanced parameter list at %d:%d" % (line, col))
+    # A function returning a pointer to an array or a function, `T (*f(P))[N]`:
+    # the attribute goes past the whole declarator, outside its groups.
+    end = close_groups(b, end, group_depth(b, at), line, col)
     # the attribute region: up to the declaration's ';' or the body's '{'
     stop = len(b)
     for t in (b";", b"{"):
@@ -509,22 +568,17 @@ def scan_of(rel, directory, flags):
 
 def declarator_end(b, at, name):
     """-> the offset past the declarator whose identifier is at `at` in b:
-    past array bounds, or past a function pointer's closing `)` and
-    parameter list. -1 when the bytes there do not spell the name."""
+    past its array bounds and past each enclosing group's `)` with the array
+    bounds or parameter list after it (`(*name)(int)`, `(*name)[3][3]`). -1
+    when the bytes there do not spell the name or a group is unclosed."""
     nm = name.encode()
     if b[at:at + len(nm)] != nm:
         return -1
-    i = at + len(nm)
-    k = skip_ws_comments(b, i)
-    while b[k:k + 1] == b"[":
-        i = b.index(b"]", k) + 1
-        k = skip_ws_comments(b, i)
-    if b[k:k + 1] == b")" and b[:at].rstrip().endswith(b"*"):
-        k = skip_ws_comments(b, k + 1)
-        if b[k:k + 1] == b"(":
-            return close_paren(b, k)
-        return k
-    return i
+    i = suffixes_end(b, at + len(nm))
+    try:
+        return close_groups(b, i, group_depth(b, at), 0, 0)
+    except ValueError:
+        return -1
 
 
 def declaration_sites(keys, entries, which):

@@ -677,6 +677,34 @@ class AnnotatorTextTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.ta.place(b"#define G f\nint G(void);\n", 2, 5, "f", "sim", True)
 
+    def test_place_past_a_returned_array_pointer(self):
+        # T (*f(P))[N][M]: the attribute after the parameter list would sit
+        # inside the declarator group; it goes past the array bounds.
+        b = b"float (*room(int n))[3][3];\nfloat (*room(int n))[3][3] {\n  return 0;\n}\n"
+        out, changed = self.ta.place(b, 1, 9, "room", "sim", False)
+        self.assertTrue(changed)
+        self.assertIn(b"float (*room(int n))[3][3] OP_REQUIRES_SHARED(sim);\n", out)
+        out, changed = self.ta.place(out, 2, 9, "room", "sim", True)
+        self.assertIn(b"float (*room(int n))[3][3] OP_REQUIRES(sim) {", out)
+        self.assertFalse(self.ta.place(out, 2, 9, "room", "sim", False)[1])
+
+    def test_place_past_a_returned_function_pointer(self):
+        b = b"void (*(*pick(int k))(char))(double);\nint (* const get(void))(int);\n"
+        out, _ = self.ta.place(b, 1, 10, "pick", "sim", True)
+        self.assertIn(b"void (*(*pick(int k))(char))(double) OP_REQUIRES(sim);", out)
+        out, _ = self.ta.place(out, 2, 14, "get", "sim", True)
+        self.assertIn(b"int (* const get(void))(int) OP_REQUIRES(sim);", out)
+
+    def test_declarator_end_past_groups(self):
+        for text, name, want in (
+                (b"static float (*s_t)[3][3];", b"s_t", b"static float (*s_t)[3][3]"),
+                (b"static void (*s_cb)(int a);", b"s_cb", b"static void (*s_cb)(int a)"),
+                (b"static void (*s_cbs[4])(int);", b"s_cbs", b"static void (*s_cbs[4])(int)"),
+                (b"static int s_a[2][8];", b"s_a", b"static int s_a[2][8]"),
+                (b"static char *s_p;", b"s_p", b"static char *s_p")):
+            at = text.index(name)
+            self.assertEqual(text[:self.ta.declarator_end(text, at, name.decode())], want)
+
     def test_ensure_include_after_the_last_top_include(self):
         b = b'#include <a.h>\n#include "b.h"\nstruct s { int x; };\n#include "c.h"\n'
         out = self.ta.ensure_include(b)
