@@ -613,7 +613,7 @@ typedef struct {
 typedef char nr_cover_block_layout_assert[
     (offsetof(nr_cover_block, margin) == 32 && offsetof(nr_cover_block, abc) == 48 &&
      offsetof(nr_cover_block, bbox) == 144 && offsetof(nr_cover_block, poly) == 240) ? 1 : -1];
-static nr_cover_block s_cover_live;   /* this scene's terrain feed's planes (fc unset) */
+static nr_cover_block s_cover_live OP_GUARDED_BY(sim);   /* this scene's terrain feed's planes (fc unset) */
 static openpete_native_cover_plane s_cvp[8];   /* the same openings, for the cover check */
 static int   s_cvp_n = 0;
 /** @brief Drop the published portal openings at a scene wipe.
@@ -647,7 +647,7 @@ typedef struct {
     nr_snap_ent   ent[NR_SNAP_ENTS];
     nr_snap_plane pl[NR_SNAP_PLANES];
 } nr_snap_table;
-static nr_snap_table s_snap_live;    /* the accumulating scene's table */
+static nr_snap_table s_snap_live OP_GUARDED_BY(sim);    /* the accumulating scene's table */
 static uint32_t s_snap_ver_next = 1;
 /** @brief Copy a snap table's held part: the header and the used entries and planes.
  * @param dst Destination.
@@ -660,7 +660,7 @@ static void snap_copy(nr_snap_table *dst, const nr_snap_table *src)
     memcpy(dst->pl, src->pl, (size_t)src->np * sizeof src->pl[0]);
 }
 /** @brief Empty the accumulating scene's snap table at a scene wipe, keeping the unprojection. */
-static void snap_table_clear(void)
+static void snap_table_clear(void) OP_REQUIRES(sim)
 {
     s_snap_live.ne = s_snap_live.np = 0;
     s_snap_live.S = 0.0f;
@@ -678,7 +678,7 @@ int openpete_native_moby_snap_on(void)
     return s_on;
 }
 
-void openpete_native_snap_view(float H, float ofx, float ofy)
+void openpete_native_snap_view(float H, float ofx, float ofy) OP_REQUIRES(sim)
 {
     s_snap_live.H = H; s_snap_live.ofx = ofx; s_snap_live.ofy = ofy;
 }
@@ -716,7 +716,7 @@ int openpete_native_snap_add(uint32_t mid, int mordinal, float off_m,
     return 1;
 }
 
-void openpete_native_snap_census(int *ne, int *np, unsigned *ovf)
+void openpete_native_snap_census(int *ne, int *np, unsigned *ovf) OP_REQUIRES_SHARED(sim)
 {
     if (ne) *ne = s_snap_live.ne;
     if (np) *np = s_snap_live.np;
@@ -1549,7 +1549,7 @@ static unsigned bw_rank_key(const scene_tri_t* t);
  * first triangle marked ter_after or tagged terrain; every key when neither
  * occurs). A published scene carries its own copy (scene_slot_t.bw), which
  * the compose reads through ps_bw(). */
-static bw_order_t s_bw;
+static bw_order_t s_bw OP_GUARDED_BY(sim);
 /** @brief Return a blended-world key's rank in a recorded first-emission order.
  *
  * The rank is the key's position in the recording game-render scene's
@@ -2712,14 +2712,14 @@ void openpete_native_note_put_draw_env(int isbg, int r, int g, int b) OP_REQUIRE
     s_drawenv_put[2] = (uint8_t)g;    s_drawenv_put[3] = (uint8_t)b;
     s_drawenv_put_scene = s_scene_frame;
 }
-static int s_geom_in[8];   /* disp x,y,w,h, clip x,y,w,h - guest-side */
+static int s_geom_in[8] OP_GUARDED_BY(sim);   /* disp x,y,w,h, clip x,y,w,h - guest-side */
 
 /** @brief Record that a DrawOTag submitted the uncaptured scene with a given stamp into the current draw clip.
  *
  * Reuses the entry of the same clip origin, else the first presented one,
  * else entry 0.
  * @param frame The stamp of the submitted scene. */
-static void note_drawn_area(unsigned frame) {
+static void note_drawn_area(unsigned frame) OP_REQUIRES_SHARED(sim) {
     int k = -1;
     for (int i = 0; i < DRAWN_AREA_MAX && k < 0; i++)
         if (s_drawn_area[i].w > 0 && s_drawn_area[i].x == s_geom_in[4] && s_drawn_area[i].y == s_geom_in[5]) k = i;
@@ -2749,7 +2749,7 @@ static void drawn_area_presented(unsigned frame) {
  * @param w Rect width.
  * @param h Rect height.
  * @return 1 when the rect is non-empty and inside a non-empty display rect, else 0. */
-static int rect_on_display(int x, int y, int w, int h) {
+static int rect_on_display(int x, int y, int w, int h) OP_REQUIRES_SHARED(sim) {
     const int dx = s_geom_in[0], dy = s_geom_in[1], dw = s_geom_in[2], dh = s_geom_in[3];
     if (dw <= 0 || dh <= 0 || w <= 0 || h <= 0) return 0;
     return x >= dx && y >= dy && x + w <= dx + dw && y + h <= dy + dh;
@@ -2852,7 +2852,7 @@ static int otag_area_claim(int x, int y, int w, int h) {
  * leaves content; an empty one (s_table_empty) leaves the fill under an
  * auto-clearing DRAWENV, and the area as it was without one.
  * @param fed Nonzero when the game fed the scene being built since the last capture. */
-static void otag_area_note_draw(int fed) {
+static void otag_area_note_draw(int fed) OP_REQUIRES_SHARED(sim) {
     if (s_geom_in[6] <= 0 || s_geom_in[7] <= 0) return;
     const int content = fed || !s_table_empty;
     if (!content && !s_drawenv_put[0]) return;
@@ -2973,9 +2973,9 @@ static game_signal_t s_game_freeze_seen;
 /* Freeze-backdrop production mode (see openpete_native_scene_set_freeze_retained):
  * 0 = the game emits a grayscale+tinted quad, 1 = the game suppresses the
  * framebuffer clear and the snapshot is drawn unaltered. */
-static int      s_freeze_retained = 0;
+static int      s_freeze_retained OP_GUARDED_BY(sim) = 0;
 
-void openpete_native_scene_set_freeze_retained(int retained) { s_freeze_retained = retained ? 1 : 0; }
+void openpete_native_scene_set_freeze_retained(int retained) OP_REQUIRES(sim) { s_freeze_retained = retained ? 1 : 0; }
 
 void openpete_native_scene_set_fade(int mode, int r, int g, int b) OP_REQUIRES(sim) {
     uint32_t v;
@@ -5581,6 +5581,14 @@ typedef struct {
     unsigned frame;                                /* scene_select_frame */
     unsigned key;                                  /* s_scene_key */
     int      n;                                    /* s_scene_n: the accumulator's count */
+    const int *geom;                               /* s_geom_in: display then clip rect */
+    const openpete_hud_vert *ovl; int ovl_n;       /* the mod overlay list */
+    const openpete_shadow_decal_params *shadow;    /* s_shadow_decal */
+    const openpete_shadow_footprint *shadow_foot;  /* s_shadow_foot */
+    const openpete_occl_camera *occl_cam;          /* s_occl_cam_live */
+    const bw_order_t *bw;                          /* s_bw */
+    int      freeze_retained;                      /* s_freeze_retained */
+    nr_pack_fog pack_fog;                          /* pack_fog_capture */
 } scene_live_t;
 /* The live compose source, NULL outside a live compose. Set and cleared only
  * by the thread that runs the guest (ps_live_begin, ps_live_end); a compose
@@ -9221,7 +9229,7 @@ int openpete_native_fullscreen_active(void)
  * a guest-side staging copy, and every compose entry copies its source's
  * rects into s_nr at its start (ps_apply_geometry): a scene composed from
  * the ring carries the rects that were current when it was extracted. */
-void openpete_native_set_display_rect(int x, int y, int w, int h)
+void openpete_native_set_display_rect(int x, int y, int w, int h) OP_REQUIRES(sim)
 {
     /* Log size changes only; the disp origin flips every frame (double buffer). */
     if (s_nr.enabled && (w != s_geom_in[2] || h != s_geom_in[3]))
@@ -9229,7 +9237,7 @@ void openpete_native_set_display_rect(int x, int y, int w, int h)
     s_geom_in[0] = x; s_geom_in[1] = y; s_geom_in[2] = w; s_geom_in[3] = h;
 }
 
-void openpete_native_set_draw_clip(int x, int y, int w, int h)
+void openpete_native_set_draw_clip(int x, int y, int w, int h) OP_REQUIRES(sim)
 {
     /* Log on size change; the clip origin flips per frame like disp. The
      * overscan band (per side) is derived from the sizes, not clip.y. */
@@ -10258,9 +10266,9 @@ static void tercache_clip_params(openpete_tercache_clip *out)
  * publish; the delayed history does not, so a compose of it reads the live
  * copy: a 1-present staleness moves the reconstruction by the camera's
  * per-present delta (a few world units), far under the wall_height threshold. */
-static openpete_shadow_decal_params s_shadow_decal;
+static openpete_shadow_decal_params s_shadow_decal OP_GUARDED_BY(sim);
 /* Documented at the declaration. */
-void openpete_native_set_shadow_decal_params(const openpete_shadow_decal_params *p)
+void openpete_native_set_shadow_decal_params(const openpete_shadow_decal_params *p) OP_REQUIRES(sim)
 {
     if (p) s_shadow_decal = *p; else s_shadow_decal.valid = 0;
 }
@@ -10269,9 +10277,9 @@ void openpete_native_set_shadow_decal_params(const openpete_shadow_decal_params 
  * shadow feed emits the untextured SHADOW triangles that read it, and that
  * feed writes it in the same call, so a scene never pairs its hull with
  * another extraction's fan. Snapshotted into each scene slot. */
-static openpete_shadow_footprint s_shadow_foot;
+static openpete_shadow_footprint s_shadow_foot OP_GUARDED_BY(sim);
 /* Documented at the declaration. */
-void openpete_native_set_shadow_footprint(const openpete_shadow_footprint *f)
+void openpete_native_set_shadow_footprint(const openpete_shadow_footprint *f) OP_REQUIRES(sim)
 {
     if (f) s_shadow_foot = *f;
 }
@@ -13297,13 +13305,13 @@ static int occl_camdbg(void)
  * the terrain feeder every extract (sub-tick re-extracts included) and
  * snapshotted per scene, so the grid built from a present's depth pre-pass
  * carries the camera that pre-pass was rasterized under. */
-static openpete_occl_camera s_occl_cam_live;
-void openpete_native_occl_set_camera(const openpete_occl_camera *c)
+static openpete_occl_camera s_occl_cam_live OP_GUARDED_BY(sim);
+void openpete_native_occl_set_camera(const openpete_occl_camera *c) OP_REQUIRES(sim)
 {
     if (c) s_occl_cam_live = *c; else s_occl_cam_live.valid = 0;
 }
 
-void openpete_native_occl_live_camera(openpete_occl_camera *c)
+void openpete_native_occl_live_camera(openpete_occl_camera *c) OP_REQUIRES_SHARED(sim)
 {
     if (c) *c = s_occl_cam_live;
 }
@@ -13694,7 +13702,7 @@ void openpete_native_widescreen_x_bounds(float *xlo, float *xhi)
 }
 
 /* Visible PSX screen-Y range; documented at the declaration. */
-void openpete_native_visible_y_bounds(float *ylo, float *yhi)
+void openpete_native_visible_y_bounds(float *ylo, float *yhi) OP_REQUIRES_SHARED(sim)
 {
     const float disp_h = s_geom_in[3] > 0 ? (float)s_geom_in[3] : 240.0f;
     const float clip_h = s_geom_in[7] > 0 ? (float)s_geom_in[7] : 224.0f;
@@ -20206,9 +20214,9 @@ void openpete_native_set_overlay_glyphs(const openpete_hud_vert *verts, int nver
  * include it (a HUD mod's drawing is content, not chrome). Screenshot
  * dumps include it too: the windowed -vk is a readback of the presented
  * frame, and the recompose paths call draw_mod_overlay themselves. */
-static openpete_hud_vert s_mod_overlay_verts[MOD_OVL_MAX_VERTS];
-static int               s_mod_overlay_n = 0;
-void openpete_native_set_mod_overlay(const openpete_hud_vert *verts, int nverts) {
+static openpete_hud_vert s_mod_overlay_verts[MOD_OVL_MAX_VERTS] OP_GUARDED_BY(sim);
+static int               s_mod_overlay_n OP_GUARDED_BY(sim) = 0;
+void openpete_native_set_mod_overlay(const openpete_hud_vert *verts, int nverts) OP_REQUIRES(sim) {
     if (nverts < 0) nverts = 0;
     if (nverts > MOD_OVL_MAX_VERTS) nverts = MOD_OVL_MAX_VERTS;
     if (nverts > 0 && verts) memcpy(s_mod_overlay_verts, verts, (size_t)nverts * sizeof(verts[0]));
@@ -20481,8 +20489,8 @@ static bool draw_overlay_glyphs_3d(float ax, float ay, float ox, float oy) {
  * one is set, else the live list. It runs in screenshot and record composes
  * too: a mod's HUD is content, not chrome. */
 static void draw_mod_overlay(void) {
-    const openpete_hud_vert *ov = s_ps_slot ? s_ps_slot->ovl : s_mod_overlay_verts;
-    const int ovn = s_ps_slot ? s_ps_slot->ovl_n : s_mod_overlay_n;
+    const openpete_hud_vert *ov = s_ps_slot ? s_ps_slot->ovl : ps_live()->ovl;
+    const int ovn = s_ps_slot ? s_ps_slot->ovl_n : ps_live()->ovl_n;
     if (ovn < 3 || !s_nr.gouraud_pipe || !s_nr.mod_ovl_vb) return;
     if (s_nr.win_w <= 0 || s_nr.win_h <= 0) return;
     static rhi_vertex buf[MOD_OVL_MAX_VERTS];
@@ -23685,16 +23693,23 @@ static int  s_last_frame_presented;
 static SDL_Mutex *ring_mx(void) {
     return openpete_mutex_once(&s_ring_mx);
 }
-/** @brief Load the display and clip rectangles of the scene being composed into s_nr.
- *
- * Takes the ring slot's snapshot when a slot is being composed, else the
- * live guest-side rectangles. */
-static void ps_apply_geometry(void) {
-    const int *g = s_ps_slot ? s_ps_slot->geom : s_geom_in;
+/** @brief Load display and clip rectangles in the s_geom_in layout into s_nr.
+ * @param g Display x, y, w, h then clip x, y, w, h. */
+static void nr_load_geometry(const int g[8]) {
     s_nr.disp_x = g[0]; s_nr.disp_y = g[1]; s_nr.disp_w = g[2]; s_nr.disp_h = g[3];
     s_nr.clip_x = g[4]; s_nr.clip_y = g[5]; s_nr.clip_w = g[6]; s_nr.clip_h = g[7];
-
 }
+/** @brief Return the display and clip rectangles of the scene being composed: the ring slot's snapshot, else the live source's.
+ * @return Display x, y, w, h then clip x, y, w, h. */
+static const int *ps_geom(void) { return s_ps_slot ? s_ps_slot->geom : ps_live()->geom; }
+/** @brief Load the display and clip rectangles of the scene being composed (ps_geom) into s_nr. */
+static void ps_apply_geometry(void) { nr_load_geometry(ps_geom()); }
+/** @brief Load the guest's current display and clip rectangles into s_nr, outside any compose.
+ *
+ * For the capture entries the thread that runs the guest calls between
+ * composes, where no ring slot is the compose source. The role is stated
+ * here because passing the array reads no element the analysis sees. */
+static void nr_apply_live_geometry(void) OP_REQUIRES(sim) { nr_load_geometry(s_geom_in); }
 /** @brief The draw-environment clear colour of the composed scene: the slot's copy, the history entry's under a framebuffer resolve, else the live value.
  *
  * A framebuffer resolve composes an earlier scene from the completed-scene
@@ -23715,9 +23730,9 @@ static uint32_t scene_select_clear(void) OP_REQUIRES(sim) {
     return scene_clear_word();
 }
 /** @brief The shadow decal parameters of the composed scene: the slot's snapshot, or the live block inline. */
-static const openpete_shadow_decal_params *ps_shadow(void) { return s_ps_slot ? &s_ps_slot->shadow : &s_shadow_decal; }
+static const openpete_shadow_decal_params *ps_shadow(void) { return s_ps_slot ? &s_ps_slot->shadow : ps_live()->shadow; }
 /** @brief The player shadow fan footprint of the composed scene: the slot's snapshot, or the live block inline. */
-static const openpete_shadow_footprint *ps_shadow_foot(void) { return s_ps_slot ? &s_ps_slot->shadow_foot : &s_shadow_foot; }
+static const openpete_shadow_footprint *ps_shadow_foot(void) { return s_ps_slot ? &s_ps_slot->shadow_foot : ps_live()->shadow_foot; }
 /** @brief Return the portal openings of the scene the present draws, chosen as scene_present_view chooses the scene.
  *
  * The openings travel with their scene: a compose of a kept or history
@@ -23751,12 +23766,12 @@ static const nr_snap_table *scene_select_snap(void) OP_REQUIRES(sim) {
     const scene_slot_t *ms = scene_moved_slot();
     return ms ? &ms->snap : &s_snap_live;
 }
-/** @brief The camera the composed scene was projected from: the slot's snapshot, or the live occlusion camera inline. */
-static const openpete_occl_camera *ps_occl_cam(void) { return s_ps_slot ? &s_ps_slot->occl_cam : &s_occl_cam_live; }
-/** @brief The blended-world order the composed scene recorded: the slot's copy, or the live record inline. */
-static const bw_order_t *ps_bw(void) { return s_ps_slot ? &s_ps_slot->bw : &s_bw; }
-/** @brief The freeze-backdrop production mode of the composed scene: the slot's copy, or the live mode inline. */
-static int ps_freeze_retained(void) { return s_ps_slot ? s_ps_slot->freeze_retained : s_freeze_retained; }
+/** @brief The camera the composed scene was projected from: the slot's snapshot, or the live source's inline. */
+static const openpete_occl_camera *ps_occl_cam(void) { return s_ps_slot ? &s_ps_slot->occl_cam : ps_live()->occl_cam; }
+/** @brief The blended-world order the composed scene recorded: the slot's copy, or the live source's inline. */
+static const bw_order_t *ps_bw(void) { return s_ps_slot ? &s_ps_slot->bw : ps_live()->bw; }
+/** @brief The freeze-backdrop production mode of the composed scene: the slot's copy, or the live source's inline. */
+static int ps_freeze_retained(void) { return s_ps_slot ? s_ps_slot->freeze_retained : ps_live()->freeze_retained; }
 /** @brief The VBL at which the composed scene was extracted: the slot's, or the accumulator's published stamp inline. */
 static unsigned ps_frame(void)          { return s_ps_slot ? s_ps_slot->frame : scene_frame_pub(); }
 /** @brief The feed key the composed scene began at: the slot's, or the live source's inline. */
@@ -23774,29 +23789,38 @@ static void pack_fog_capture(nr_pack_fog *f)
     if (!f->lad_on) f->lad[0] = f->lad[1] = 0.0f;
     f->shift_on = texture_pack_fog_shift_get(f->shift_s, f->shift_o);
 }
-/** @brief The texture-pack fog inputs of the composed scene: the slot's copy, or the live values inline.
+/** @brief The texture-pack fog inputs of the composed scene: the slot's copy, or the live source's.
  *
  * A slot compose may run on the present thread while the next walk
- * rewrites the live values, so it reads the copy taken at publish.
- * @return The inputs; the inline value is valid until the next call. */
+ * rewrites the live values, so it reads the copy taken at publish; the
+ * live source takes its copy at ps_live_begin.
+ * @return The inputs. */
 static const nr_pack_fog *ps_pack_fog(void)
 {
-    static nr_pack_fog live;
-    if (s_ps_slot) return &s_ps_slot->pack_fog;
-    pack_fog_capture(&live);
-    return &live;
+    return s_ps_slot ? &s_ps_slot->pack_fog : &ps_live()->pack_fog;
 }
 
 /** @brief Return the live compose source: the one ps_live_begin installed, else an empty scene.
  *
  * A compose of the live scene outside a ps_live_begin scope has no source:
- * it draws an empty scene with the accumulator's portal openings and snap
- * table, and the first such compose of the run logs an error naming it.
+ * it draws an empty scene with no portal openings, an empty snap table
+ * and zero geometry, and the first such compose of the run logs an error
+ * naming it.
  * @return The source; never NULL. */
 static const scene_live_t *ps_live(void)
 {
-    static const scene_live_t none = { .cover = &s_cover_live, .snap = &s_snap_live,
-                                       .frame = 0xFFFFFFFFu, .key = 0xFFFFFFFFu };
+    static const int no_geom[8];
+    static const openpete_shadow_decal_params no_shadow;
+    static const openpete_shadow_footprint no_foot;
+    static const openpete_occl_camera no_cam;
+    static const bw_order_t no_bw;
+    static const nr_cover_block no_cover;
+    static const nr_snap_table no_snap;
+    static const scene_live_t none = { .cover = &no_cover, .snap = &no_snap,
+                                       .frame = 0xFFFFFFFFu, .key = 0xFFFFFFFFu,
+                                       .geom = no_geom, .shadow = &no_shadow,
+                                       .shadow_foot = &no_foot, .occl_cam = &no_cam,
+                                       .bw = &no_bw };
     static _Atomic(int) s_unwrapped;
     if (s_ps_live) return s_ps_live;
     if (!atomic_exchange_explicit(&s_unwrapped, 1, memory_order_relaxed))
@@ -23822,6 +23846,15 @@ static const scene_live_t *ps_live_begin(scene_live_t *lv) OP_REQUIRES(sim)
     lv->frame = scene_select_frame();
     lv->key = s_scene_key;
     lv->n = s_scene_n;
+    lv->geom = s_geom_in;
+    lv->ovl = s_mod_overlay_verts;
+    lv->ovl_n = s_mod_overlay_n;
+    lv->shadow = &s_shadow_decal;
+    lv->shadow_foot = &s_shadow_foot;
+    lv->occl_cam = &s_occl_cam_live;
+    lv->bw = &s_bw;
+    lv->freeze_retained = s_freeze_retained;
+    pack_fog_capture(&lv->pack_fog);
     const scene_live_t *prev = s_ps_live;
     s_ps_live = lv;
     return prev;
@@ -25865,7 +25898,7 @@ static int hold_take_for_compose(int area, unsigned stamp)
         s_hold.c_slot_ref += branch >= HOLD_B_REF;
         s_hold.c_moved += branch == HOLD_B_MOVED;
     } else {
-        const int shown = hold_area_shown(s_ps_slot ? s_ps_slot->geom : s_geom_in);
+        const int shown = hold_area_shown(ps_geom());
         s_hold.c_vram++;
         s_hold.c_lost += branch == HOLD_B_LOST;
         s_hold.c_vram_area += area < 0 && shown >= 0 && s_hold.a[shown].writer == HOLD_W_VRAM;
@@ -25951,7 +25984,7 @@ static uint32_t held_fade_compose(uint32_t kept, uint32_t present)
  * @param fill The fill the compose draws. */
 static void hold_fill_census(uint32_t fill)
 {
-    const int shown = hold_area_shown(s_ps_slot ? s_ps_slot->geom : s_geom_in);
+    const int shown = hold_area_shown(ps_geom());
     const uint32_t own = ps_drawenv_clear();
     const uint32_t now = shown >= 0 && s_hold.a[shown].writer == HOLD_W_CLEAR
                        ? s_hold.a[shown].clear : (own ? own : 0xFF000000u);
@@ -25990,7 +26023,7 @@ static int hold_redirect_begin(const scene_slot_t **prev)
     int retained_only = 0;
     if (scene_content_test(v.tri, v.n, v.freeze, bg, &retained_only)) return -1;
     uint32_t fill = 0;
-    const int area = s_ps_slot ? s_ps_slot->hold_area : hold_verdict(s_geom_in, &fill, NULL);
+    const int area = s_ps_slot ? s_ps_slot->hold_area : hold_verdict(ps_geom(), &fill, NULL);
     if (s_ps_slot) fill = s_ps_slot->hold_fill;
     if (area == HOLD_V_CLEAR) {
         /* The buffer holds the fill alone: the present composes it, under
@@ -26052,7 +26085,7 @@ void openpete_native_render_snapshot_settle(void) OP_REQUIRES_SHARED(sim)
 void openpete_native_render_snapshot_frozen(float cap_wf) OP_REQUIRES(sim)
 {
     if (!s_nr.enabled || !s_nr.headless) return;
-    ps_apply_geometry();
+    nr_apply_live_geometry();
     if (cap_wf < 1.0f) cap_wf = 1.0f;
     if (!freeze_src_verdict()) {
         /* The present-begin verdict left a pin unrendered because this
@@ -27441,23 +27474,23 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
 }
 
 int openpete_native_render_screenshot_ext(const char *path, const char *what,
-                                          int *out_w, int *out_h)
+                                          int *out_w, int *out_h) OP_REQUIRES(sim)
 {
     if (out_w) *out_w = 0;
     if (out_h) *out_h = 0;
-    ps_apply_geometry();
+    nr_apply_live_geometry();
     if (!s_nr.enabled || !path) return 1;
     return shot_write_offscreen_ext(path, what ? what : "offscreen", out_w, out_h);
 }
 
-int openpete_native_render_screenshot(const char *path, const char *what)
+int openpete_native_render_screenshot(const char *path, const char *what) OP_REQUIRES(sim)
 {
     return openpete_native_render_screenshot_ext(path, what, NULL, NULL);
 }
 
-int openpete_native_render_screenshot_async(const char *path, const char *what)
+int openpete_native_render_screenshot_async(const char *path, const char *what) OP_REQUIRES(sim)
 {
-    ps_apply_geometry();
+    nr_apply_live_geometry();
     if (!s_nr.enabled || !path) return 1;
     const size_t cap = (size_t)s_nr.win_w * (size_t)s_nr.win_h * 4u;
     if (cap == 0) return 1;

@@ -1197,7 +1197,6 @@ core/renderer/native_render.c	-	s_background_requested	static	-
 core/renderer/native_render.c	-	s_bdl	static	-	presenting thread: the present thread while eager production is active, the host loop otherwise; the display handoff orders them
 core/renderer/native_render.c	-	s_bdt	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	-	s_box	static	-	
-core/renderer/native_render.c	-	s_bw	static	-	
 core/renderer/native_render.c	-	s_canon_repeat	static	-	
 core/renderer/native_render.c	-	s_capture_drawn	static	-	
 core/renderer/native_render.c	-	s_capture_seq	static	-	
@@ -1211,7 +1210,6 @@ core/renderer/native_render.c	-	s_cdata_n	static	-
 core/renderer/native_render.c	-	s_cen	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	-	s_chain_ubo	static	-	
 core/renderer/native_render.c	-	s_commit_cb	static	-	
-core/renderer/native_render.c	-	s_cover_live	static	-	
 core/renderer/native_render.c	-	s_cover_ubo	static	-	
 core/renderer/native_render.c	-	s_cur_fog_delta	static	atomic	1 storing function(s), none reads it
 core/renderer/native_render.c	-	s_cur_host_added	static	atomic	1 storing function(s), none reads it
@@ -1284,14 +1282,12 @@ core/renderer/native_render.c	-	s_fps_frames	static	-
 core/renderer/native_render.c	-	s_fps_in_record	static	-	
 core/renderer/native_render.c	-	s_fps_in_record_pref	static	-	
 core/renderer/native_render.c	-	s_fps_win_start	static	-	
-core/renderer/native_render.c	-	s_freeze_retained	static	atomic	1 storing function(s), none reads it
 core/renderer/native_render.c	-	s_front_mark	static	-	
 core/renderer/native_render.c	-	s_frz	static	-	
 core/renderer/native_render.c	-	s_game_fade	static	-	
 core/renderer/native_render.c	-	s_game_fade_seen	static	-	
 core/renderer/native_render.c	-	s_game_freeze	static	-	
 core/renderer/native_render.c	-	s_game_freeze_seen	static	-	
-core/renderer/native_render.c	-	s_geom_in	static	-	
 core/renderer/native_render.c	-	s_glow_order	static	-	owed: declared with no form and no row before the new-global refusal
 core/renderer/native_render.c	-	s_glyph_mx	static	-	
 core/renderer/native_render.c	-	s_gpuz	static	-	
@@ -1357,12 +1353,9 @@ core/renderer/native_render.c	-	s_menu_glyph_stage	static	-
 core/renderer/native_render.c	-	s_menu_glyph_stage_v	static	-	
 core/renderer/native_render.c	-	s_menu_glyph_verts	static	-	
 core/renderer/native_render.c	-	s_moby_truescope	static	-	
-core/renderer/native_render.c	-	s_mod_overlay_n	static	-	
-core/renderer/native_render.c	-	s_mod_overlay_verts	static	-	
 core/renderer/native_render.c	-	s_notex	static	-	
 core/renderer/native_render.c	-	s_notex_pending	static	-	
 core/renderer/native_render.c	-	s_nr	static	-	
-core/renderer/native_render.c	-	s_occl_cam_live	static	-	
 core/renderer/native_render.c	-	s_occl_census_fn	static	-	
 core/renderer/native_render.c	-	s_occl_census_n	static	-	
 core/renderer/native_render.c	-	s_occl_dec	static	-	
@@ -1524,13 +1517,10 @@ core/renderer/native_render.c	-	s_scene_shot_lag	static	-
 core/renderer/native_render.c	-	s_scene_shot_nodelay	static	atomic	1 storing function(s), none reads it
 core/renderer/native_render.c	-	s_scene_superseded_cb	static	-	
 core/renderer/native_render.c	-	s_scene_v	static	-	
-core/renderer/native_render.c	-	s_shadow_decal	static	-	
-core/renderer/native_render.c	-	s_shadow_foot	static	-	
 core/renderer/native_render.c	-	s_shell_live	static	-	
 core/renderer/native_render.c	-	s_shfoot_ubo	static	-	
 core/renderer/native_render.c	-	s_shot_chrome_composes	static	-	
 core/renderer/native_render.c	-	s_shot_chrome_menu_verts	static	-	
-core/renderer/native_render.c	-	s_snap_live	static	-	
 core/renderer/native_render.c	-	s_snap_ssbo	static	-	
 core/renderer/native_render.c	-	s_snap_stages	static	-	
 core/renderer/native_render.c	-	s_snap_ver_next	static	-	

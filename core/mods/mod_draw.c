@@ -348,7 +348,7 @@ static int emit_buf(const cmd_buf_t* b, int n) {
  * caller brackets it in the RAM guard window.
  * @param canonical 1 for a tick's canonical present, 0 for a sub-tick
  *        present. */
-static void present_flush_draw(int canonical) {
+static void present_flush_draw(int canonical) OP_REQUIRES(sim) {
     if (!s_any_draw) return;
 
     /* Commit the tick buffer once per canonical present: the sim tick
@@ -471,7 +471,7 @@ static void present_flush_fault_store(void) {
     *w = *w;
 }
 
-void openpete_mods_present_flush(CPUState* cpu, int canonical) {
+void openpete_mods_present_flush(CPUState* cpu, int canonical) OP_REQUIRES(sim) {
     /* Per-mod time report window: every 512 sim ticks (~17 s at 29.913),
      * counted at the canonical commit. ABOVE the draw gates - tick-hook
      * timing must report in headless runs too.

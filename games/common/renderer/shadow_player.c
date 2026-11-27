@@ -143,7 +143,7 @@ static int plsh_frame_bytes(CPUState* cpu, uint32_t table, uint32_t anim_sel,
  * ordering key is not negative. Pushes the decal camera parameters. Reads PSX
  * RAM only.
  * @param cpu The guest CPU state. */
-static void shadow_player_build(CPUState* cpu) {
+static void shadow_player_build(CPUState* cpu) OP_REQUIRES(sim) {
     s_tri_n = 0;
     s_fan.tri_mask = 0;
     const uint32_t st = game_layout.shadow.player.state;
@@ -314,7 +314,7 @@ static void shadow_player_dump(CPUState* cpu) {
  * captured triangle it prints VACUOUS instead: a negative-control row reads
  * native=0 G3=0, which is not a pass.
  * @param cpu The guest CPU state. */
-static void shadow_player_compare(CPUState* cpu) {
+static void shadow_player_compare(CPUState* cpu) OP_REQUIRES(sim) {
     shadow_player_build(cpu);
     int np = shadow_prim_count(), g3 = 0;
     for (int p = 0; p < np; p++) {

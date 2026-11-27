@@ -137,7 +137,7 @@ void   shadow_project(const int R[3][3], const double TR[3], double ofx, double 
  * @param out When non-NULL, receives the pushed parameters. */
 void   shadow_push_decal_params(CPUState* cpu, const ngte_view* v, const int C[3][3],
                                 double ofx, double ofy, double H,
-                                openpete_shadow_decal_params* out);
+                                openpete_shadow_decal_params* out) OP_REQUIRES(sim);
 
 /* A player ground-shadow fan as the footprint decal (shadow_decal.frag) draws
  * it: the anchor and the 16 ring points as projected, the triangles the

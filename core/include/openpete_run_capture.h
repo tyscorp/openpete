@@ -76,7 +76,7 @@ void openpete_capture_canon_intermediate(const openpete_options_t *opts, void *c
  * The present reads the native offscreen at the window extent, the image
  * the sub-tick present just drew.
  * @param opts Session options. */
-void openpete_capture_subtick_present(const openpete_options_t *opts);
+void openpete_capture_subtick_present(const openpete_options_t *opts) OP_REQUIRES(sim);
 
 /** @brief Log the present sequence's engagement when --screenshot-presents-start was given.
  *

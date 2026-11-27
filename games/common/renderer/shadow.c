@@ -462,7 +462,7 @@ static void shadow_cam_inverse(const int C[3][3], double inv[3][3]) {
 /* Pushes the shadow decal's camera-reconstruction parameters; see shadow.h. */
 void shadow_push_decal_params(CPUState* cpu, const ngte_view* v, const int C[3][3],
                               double ofx, double ofy, double H,
-                              openpete_shadow_decal_params* out) {
+                              openpete_shadow_decal_params* out) OP_REQUIRES(sim) {
     openpete_shadow_decal_params sp;
     openpete_shadow_decal_params* p = &sp;
     double inv[3][3];
@@ -1045,7 +1045,7 @@ static void shadow_list_refresh(CPUState* cpu, uint32_t desc, shadow_wide_census
  *        walk.
  * @param game_only 1 walks the game's records alone under the game's own
  *        screen test, the form the GTE comparison needs. */
-static void shadow_moby_build(CPUState* cpu, shadow_wide_census* cs, int game_only) {
+static void shadow_moby_build(CPUState* cpu, shadow_wide_census* cs, int game_only) OP_REQUIRES(sim) {
     s_mosh_n = 0;
     const uint32_t desc = game_layout.shadow.desc;
     if (!desc || !s_list_base) return;
@@ -1522,7 +1522,7 @@ static void shadow_moby_feed_native(CPUState* cpu, shadow_wide_census* cs) OP_RE
  * with nothing to compare is not a pass. OPENPETE_SHADOW_VERIFY_DETAIL prints
  * the first eight triangle pairs once.
  * @param cpu The guest CPU state. */
-static void shadow_moby_compare(CPUState* cpu) {
+static void shadow_moby_compare(CPUState* cpu) OP_REQUIRES(sim) {
     shadow_moby_build(cpu, NULL, 1);
     int ft3 = 0;
     for (int p = 0; p < s_gte_n; p++) if (s_gte[p].textured && s_gte[p].nv == 3) ft3++;

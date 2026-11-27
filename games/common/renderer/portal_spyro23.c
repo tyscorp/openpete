@@ -564,7 +564,7 @@ static int p3_dilate_polygon(const double V[][3], int n, double w, double D[][3]
  * @param o Receives the opening; ok is 0 when the record is unknown, the
  *        pentagon lies wholly behind SZ 256, or the bounds are empty, and
  *        offscreen is nonzero in the last case. */
-static void p3_native_opening(CPUState* cpu, const ngte_view* v, const p3_preview* p, p3_opening* o) {
+static void p3_native_opening(CPUState* cpu, const ngte_view* v, const p3_preview* p, p3_opening* o) OP_REQUIRES_SHARED(sim) {
     memset(o, 0, sizeof *o);
     if (!p->rec) return;
     double W[5][3], V[5][3], D[5][3];
@@ -638,7 +638,7 @@ static float p3_vertex_depth(const p3_opening* op, float depth_world, double pla
  * @param p The captured (or lerped) preview.
  * @param q Receives the preview to draw.
  * @param op Receives the opening. */
-static void p3_resolve(CPUState* cpu, const ngte_view* v, const p3_preview* p, p3_preview* q, p3_opening* op) {
+static void p3_resolve(CPUState* cpu, const ngte_view* v, const p3_preview* p, p3_preview* q, p3_opening* op) OP_REQUIRES_SHARED(sim) {
     *q = *p;
     p3_native_opening(cpu, v, p, op);
     if (!op->ok) return;
@@ -1026,7 +1026,7 @@ static void p3_extract_one(CPUState* cpu, const p3_preview* p, const p3_opening*
  * @param cpu Reads the portal records.
  * @param T The tick whose previews were fed.
  * @param vw The view; supplies the screen recentring offset. */
-static void p3_census(CPUState* cpu, const p3_tick* T, const ngte_view* vw) {
+static void p3_census(CPUState* cpu, const p3_tick* T, const ngte_view* vw) OP_REQUIRES_SHARED(sim) {
     const float offx = (float)(vw->ofx - P3_CX), offy = (float)(vw->ofy - P3_CY);
     fprintf(stderr, "[portal3-feed f=%u src=%s a=%.3f portals=%d tris=%d emitted=%d]\n",
             openpete_feed_key_now(), s_feed_src, (double)s_feed_alpha, T->n, s_cen_tris, s_emitted);
@@ -1240,7 +1240,7 @@ static void p3_skyplane_fill(openpete_portal_skyplane* o, const p3_preview* p, c
     o->rim_fragment = op->ok ? 1 : 0;
 }
 
-int portal_s23_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_skyplane* out, int max) {
+int portal_s23_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_skyplane* out, int max) OP_REQUIRES_SHARED(sim) {
     /* No preview paints an opening while the portal path is deselected
      * (p3_feed), so terrain keeps its faces there. */
     if (!render_path_enabled(RP_PORTAL)) return 0;

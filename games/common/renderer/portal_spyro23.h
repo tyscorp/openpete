@@ -153,7 +153,7 @@ int portal_s23_sky_recent(void);
  * @param max The capacity of `out`.
  * @return The number of planes written; 0 when no recent capture holds a
  *         preview or the portal render path is deselected. */
-int portal_s23_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_skyplane* out, int max);
+int portal_s23_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_skyplane* out, int max) OP_REQUIRES_SHARED(sim);
 
 /** @brief 1 when the running world draw is the draw dispatcher's and this tick's portal pass follows it uncaptured.
  *

@@ -21,6 +21,7 @@
 #include <stdio.h> /* FILE - savestate mods-section hooks */
 
 #include "openpete.h" /* openpete_options_t */
+#include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
 #ifdef __cplusplus
 extern "C" {
@@ -1006,7 +1007,7 @@ const char* openpete_mods_modset_tag(void);
  * @param cpu the game CPU, passed to the tick boundary.
  * @param canonical 1 for a tick's canonical present, 0 for a sub-tick
  *        present. */
-void openpete_mods_present_flush(CPUState* cpu, int canonical);
+void openpete_mods_present_flush(CPUState* cpu, int canonical) OP_REQUIRES(sim);
 
 /* Game-registered text rasterizer: lays out `str` at (x, y) with glyph
  * cap-height cap_h (overlay space) and tint rgb into out_verts (an

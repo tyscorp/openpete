@@ -1073,7 +1073,7 @@ int  openpete_native_perf_anchor(void);
  * composes, since a mod's drawing is content. Renderer state only.
  * @param verts Triangle list, 3 vertices per triangle.
  * @param nverts Vertex count; 0 clears. */
-void openpete_native_set_mod_overlay(const openpete_hud_vert *verts, int nverts);
+void openpete_native_set_mod_overlay(const openpete_hud_vert *verts, int nverts) OP_REQUIRES(sim);
 
 /** @brief Return the window aspect (width over height) for overlay-space layout.
  *
@@ -1225,7 +1225,7 @@ void openpete_native_set_isolation(bool on);
  * @param y VRAM y.
  * @param w Width in VRAM pixels.
  * @param h Height in VRAM pixels. */
-void openpete_native_set_display_rect(int x, int y, int w, int h);
+void openpete_native_set_display_rect(int x, int y, int w, int h) OP_REQUIRES(sim);
 /** @brief Record the active PSX DRAWENV clip rect, the drawn region the display rect is cropped to.
  *
  * Called from the PutDrawEnv thunk. A change of size is logged when the
@@ -1236,7 +1236,7 @@ void openpete_native_set_display_rect(int x, int y, int w, int h);
  * @param y VRAM y.
  * @param w Width in VRAM pixels.
  * @param h Height in VRAM pixels. */
-void openpete_native_set_draw_clip(int x, int y, int w, int h);
+void openpete_native_set_draw_clip(int x, int y, int w, int h) OP_REQUIRES(sim);
 
 /* ---- native 3D scene (cyclorama/sky and world from gamestate) -------
  *
@@ -1814,7 +1814,7 @@ typedef struct {
  * slot and a compose of that slot reads the snapshot; a compose of the
  * delayed history or the live accumulator reads the live block.
  * @param p Parameters from the game, or NULL to invalidate. */
-void openpete_native_set_shadow_decal_params(const openpete_shadow_decal_params *p);
+void openpete_native_set_shadow_decal_params(const openpete_shadow_decal_params *p) OP_REQUIRES(sim);
 
 /* The player ground-shadow fan in the form the footprint decal reads
  * (shadow_decal.frag, the std140 block at set 2). The decal shadows (A) the
@@ -1843,7 +1843,7 @@ typedef struct {
  * compose of the delayed history or the live accumulator reads the live
  * block.
  * @param f Footprint block; NULL leaves the stored block unchanged. */
-void openpete_native_set_shadow_footprint(const openpete_shadow_footprint *f);
+void openpete_native_set_shadow_footprint(const openpete_shadow_footprint *f) OP_REQUIRES(sim);
 
 /** @brief Begin a sub-tick or lag re-extract's rebuild of the native scene.
  *
@@ -2228,7 +2228,7 @@ int openpete_native_moby_snap_on(void);
  * @param H The projection distance in PSX screen pixels.
  * @param ofx The screen X of the optical axis.
  * @param ofy The screen Y of the optical axis. */
-void openpete_native_snap_view(float H, float ofx, float ofy);
+void openpete_native_snap_view(float H, float ofx, float ofy) OP_REQUIRES(sim);
 /** @brief Append one pulled moby's contact planes to the current scene's snap table.
  *
  * The ACTOR snap stages find the entry by @p mid (unranked faces) or
@@ -2248,7 +2248,7 @@ int openpete_native_snap_add(uint32_t mid, int mordinal, float off_m,
  * @param ne Receives the entry count.
  * @param np Receives the plane count.
  * @param ovf Receives the entries plus planes refused at the caps. */
-void openpete_native_snap_census(int *ne, int *np, unsigned *ovf);
+void openpete_native_snap_census(int *ne, int *np, unsigned *ovf) OP_REQUIRES_SHARED(sim);
 /* The current scene's snap table counts and version at one instant
  * (openpete_native_snap_mark), for an instrument that adds, compares and
  * takes back a run of entries. */
@@ -2781,7 +2781,7 @@ void openpete_native_scene_set_freeze_backdrop(int r, int g, int b, int fade) OP
  * because the arming signal is a latched draw-environment word the game
  * clears in one write rather than a primitive it stops emitting.
  * @param retained Non-zero selects mode 1. */
-void openpete_native_scene_set_freeze_retained(int retained);
+void openpete_native_scene_set_freeze_retained(int retained) OP_REQUIRES(sim);
 
 /** @brief Set whether the flat 2D HUD and text draw under the player this frame.
  *
@@ -2844,7 +2844,7 @@ void  openpete_native_widescreen_x_bounds(float *xlo, float *xhi);
  * Reads the guest-side geometry, so it is valid on the extracting thread.
  * @param ylo Receives the top bound; may be NULL.
  * @param yhi Receives the bottom bound; may be NULL. */
-void  openpete_native_visible_y_bounds(float *ylo, float *yhi);
+void  openpete_native_visible_y_bounds(float *ylo, float *yhi) OP_REQUIRES_SHARED(sim);
 
 /* ---- field of view display policy ------------------------------------ */
 /** @brief Set --fov, the vertical FOV in degrees of the visible band; 0 or less keeps the game's projection.
@@ -3250,10 +3250,10 @@ typedef struct openpete_occl_camera {
  * copies it into the ring slot so the occluder grid built from that scene's
  * depth pre-pass carries the camera it was rasterized under.
  * @param c Camera to copy; NULL marks the published camera invalid. */
-void openpete_native_occl_set_camera(const openpete_occl_camera *c);
+void openpete_native_occl_set_camera(const openpete_occl_camera *c) OP_REQUIRES(sim);
 /** @brief Copy the camera the terrain walk now feeding the scene published (openpete_native_occl_set_camera).
  * @param c Receives the camera; valid is 0 when none is published. */
-void openpete_native_occl_live_camera(openpete_occl_camera *c);
+void openpete_native_occl_live_camera(openpete_occl_camera *c) OP_REQUIRES_SHARED(sim);
 /** @brief Return 1 when every grid cell over a screen rect is nearer than vz_near: the geometry is occluded.
  *
  * Called on the extracting thread; it reads that thread's copy of the last
@@ -3536,7 +3536,7 @@ void openpete_native_scene_commit_fade(void) OP_REQUIRES(sim);
  * @param what Label for the log line; NULL reads as offscreen.
  * @return 0 on success, nonzero when native render is disabled, @p path is
  *         NULL, or the readback or write fails. */
-int openpete_native_render_screenshot(const char *path, const char *what);
+int openpete_native_render_screenshot(const char *path, const char *what) OP_REQUIRES(sim);
 
 /** @brief Write the offscreen target to a PNG and report the written extent.
  *
@@ -3550,7 +3550,7 @@ int openpete_native_render_screenshot(const char *path, const char *what);
  * @return 0 on success, nonzero when native render is disabled, @p path is
  *         NULL, or the readback or write fails. */
 int openpete_native_render_screenshot_ext(const char *path, const char *what,
-                                          int *out_w, int *out_h);
+                                          int *out_w, int *out_h) OP_REQUIRES(sim);
 
 /** @brief Read the offscreen target back and queue it for PNG encoding and writing off the calling thread.
  *
@@ -3562,7 +3562,7 @@ int openpete_native_render_screenshot_ext(const char *path, const char *what,
  * @param what Label for the log line; NULL reads as offscreen.
  * @return 0 when the image was read back and queued, nonzero when native
  *         render is disabled, @p path is NULL, or the readback fails. */
-int openpete_native_render_screenshot_async(const char *path, const char *what);
+int openpete_native_render_screenshot_async(const char *path, const char *what) OP_REQUIRES(sim);
 
 /** @brief Drain the --record readback ring's queued tail images to the encoder.
  *

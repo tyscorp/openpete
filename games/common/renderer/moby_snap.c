@@ -454,7 +454,7 @@ static double s_up[3];
 static const double* s_up_p;
 
 /** @brief Set s_up and s_up_p from the camera the terrain walk now feeding the scene published. */
-static void ms_up_sync(void) {
+static void ms_up_sync(void) OP_REQUIRES_SHARED(sim) {
     openpete_occl_camera c;
     openpete_native_occl_live_camera(&c);
     const double u[3] = { -(double)c.M[1], -(double)c.M[4], -(double)c.M[7] };
@@ -1000,7 +1000,7 @@ static uint64_t ms_cpu_ns(void) {
 /** @brief Print one resolve's census line with the running mean contact-stage CPU time.
  * @param cs The resolve's counters.
  * @param ns Its CPU time. */
-static void ms_census_print(const ms_census* cs, uint64_t ns) {
+static void ms_census_print(const ms_census* cs, uint64_t ns) OP_REQUIRES_SHARED(sim) {
     static double s_sum_us; static long s_n;
     s_sum_us += (double)ns / 1000.0; s_n++;
     int ne = 0, np = 0; unsigned ovf = 0;

@@ -2581,7 +2581,7 @@ void psyq_MoveImage(CPUState* cpu) {
  *
  * A DISPENV span that runs past its region returns 0 with nothing done.
  * @param cpu Guest CPU state. */
-void psyq_PutDispEnv(CPUState* cpu) {
+void psyq_PutDispEnv(CPUState* cpu) OP_REQUIRES(sim) {
     DISPENV* env = (DISPENV*)SPAN(cpu->a0, sizeof(DISPENV));
     if (!env) { cpu->v0 = 0u; return; }
     /* libgpu keeps a copy of the current DISPENV in its environment block. */
@@ -2636,7 +2636,7 @@ static void psyq_pack_draw_env(DRAWENV* env) {
  * The span is PsyCross's DRAWENV, which PutDrawEnv copies whole. A span
  * that runs past its region returns 0 with nothing done.
  * @param cpu Guest CPU state. */
-void psyq_PutDrawEnv(CPUState* cpu) OP_REQUIRES_SHARED(sim) {
+void psyq_PutDrawEnv(CPUState* cpu) OP_REQUIRES(sim) {
     DRAWENV* env = (DRAWENV*)SPAN(cpu->a0, sizeof(DRAWENV));
     if (!env) { cpu->v0 = 0u; return; }
     psyq_pack_draw_env(env);

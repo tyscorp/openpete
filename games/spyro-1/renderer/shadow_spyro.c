@@ -139,7 +139,7 @@ static sptri s_sptri[MAX_SPTRI]; static int s_sptri_n;
 static shadow_fan s_fan;
 
 /** @brief Builds the Spyro shadow fan from the live shadow record and pushes the footprint decal's parameters. */
-static void shadow_spyro_build(CPUState* cpu) {
+static void shadow_spyro_build(CPUState* cpu) OP_REQUIRES(sim) {
     s_sptri_n = 0;
     if ((int)cpu->read_word(D_SPYROSHADOW + 0x24) > 0) return;     /* over water: no shadow */
 
@@ -315,7 +315,7 @@ static void shadow_spyro_feed_native(CPUState* cpu, int slot) OP_REQUIRES(sim) {
  * triangle or the native
  * fan is empty.
  * @param cpu The guest CPU state. */
-static void shadow_spyro_compare(CPUState* cpu) {
+static void shadow_spyro_compare(CPUState* cpu) OP_REQUIRES(sim) {
     shadow_spyro_build(cpu);
     int np = shadow_prim_count();
     int g3 = 0;

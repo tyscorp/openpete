@@ -300,7 +300,7 @@ static void vram_dump_leg(const openpete_options_t *opts, int shot_key)
  * read the native offscreen.
  * @param opts Session options.
  * @param kind The capture kind label: psycross-canonical, native-canonical or native-intermediate. */
-static void presents_write(const openpete_options_t *opts, const char *kind)
+static void presents_write(const openpete_options_t *opts, const char *kind) OP_REQUIRES(sim)
 {
     char path[1024];
     int sw = 0, sh = 0;
@@ -569,7 +569,7 @@ void openpete_capture_canon_intermediate(const openpete_options_t *opts, void *c
     }
 }
 
-void openpete_capture_subtick_present(const openpete_options_t *opts)
+void openpete_capture_subtick_present(const openpete_options_t *opts) OP_REQUIRES(sim)
 {
     if (!presents_open(opts)) return;
     s_cap.presents_native_kind++;
