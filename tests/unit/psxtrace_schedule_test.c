@@ -6,8 +6,12 @@
  * sidecar's rows after the trace's last record is one the capture stopped
  * before: it is counted as past the trace end and the schedule stays
  * live. The same read inside the records is a call the reference never
- * made, a schedule failure. The schedule keeps its state in file statics,
- * so each case runs in its own process (argv[1]: past-end or inside).
+ * made, a schedule failure. The bounds cases load the bitmap and card
+ * sidecars: a row naming a VBLANK past the bitmap bound, or a card row
+ * whose step count would wrap the step table's size, fails that sidecar's
+ * load (bounds), and the same sidecars with rows inside the bounds load
+ * (bounds-ok). The schedule keeps its state in file statics, so each case
+ * runs in its own process (argv[1]: past-end, inside, bounds or bounds-ok).
  */
 #include "openpete_psxtrace.h"
 
@@ -57,7 +61,7 @@ static int write_file(const char* path, const char* ext, const char* text) {
 
 /** @brief Remove the sidecars and the captured log of a case. */
 static void cleanup(const char* path) {
-    const char* exts[] = { ".loads", ".vsync", ".log" };
+    const char* exts[] = { ".loads", ".vsync", ".padcmd", ".sio0", ".card", ".log" };
     for (size_t i = 0; i < sizeof(exts) / sizeof(exts[0]); i++) {
         char p[512];
         snprintf(p, sizeof(p), "%s%s", path, exts[i]);
@@ -128,15 +132,60 @@ static int run_case(int past_end) {
     return g_fail;
 }
 
-/** @brief Run the case argv[1] names (past-end or inside).
+/** @brief Run a bounds case and return its exit status.
+ *
+ * `.sio0` holds runs inside the bound in both cases, the engaged control.
+ * In the refused case `.padcmd` names VBLANK 2^31, whose bitmap growth
+ * overflowed a 32-bit size, and the second `.card` row carries 2^32 - 2
+ * steps, which wrapped the step table's size past its first row's two;
+ * each load fails and its sidecar reads as not loaded. In the accepted
+ * case both carry rows inside the bounds and load.
+ * @param refused 1 for the out-of-bound rows, 0 for the in-bound rows.
+ * @return 0 when every check passed, else 1. */
+static int run_bounds(int refused) {
+    const char* trace = refused ? "psxtrace_schedule_test.bounds" : "psxtrace_schedule_test.bounds-ok";
+    cleanup(trace);
+    check(write_file(trace, ".loads", "psxtrace-loads v1\n0 1 12 1200 0 4 80010000 80 1 14 1400\n"), "write .loads");
+    check(write_file(trace, ".vsync", "psxtrace-vsync v1\n0 1 0 15 16 1500 1600 0\n"), "write .vsync");
+    check(write_file(trace, ".sio0", "psxtrace-sio0 v1\n0 1 100 3\n1 1 200 2\n"), "write .sio0");
+    check(write_file(trace, ".padcmd", refused ? "psxtrace-padcmd v1\n0 1 300 0 42\n1 1 2147483648 0 42\n"
+                                               : "psxtrace-padcmd v1\n0 1 300 0 42\n1 1 301 0 42\n"), "write .padcmd");
+    check(write_file(trace, ".card", refused ? "psxtrace-card v2\n0 1 400 7 2 10 20\n1 1 500 9 4294967294 30 40 50\n"
+                                             : "psxtrace-card v2\n0 1 400 7 2 10 20\n1 1 500 9 3 30 40 50\n"), "write .card");
+    check(openpete_sched_open(trace) == 1, "schedule opens the sidecars");
+
+    int known = 0;
+    (void)openpete_sched_sio0_served(101, &known);
+    check(known == 1, "the in-bound .sio0 loads");
+    known = 0;
+    (void)openpete_sched_padcmd_at(300, &known);
+    check(known == !refused, refused ? "a .padcmd row past the VBLANK bound fails the load"
+                                     : "an in-bound .padcmd loads");
+    uint32_t off = 0, n = 0;
+    const int started = openpete_sched_card_start(400, &off);
+    const uint32_t* steps = openpete_sched_card_steps(500, &n);
+    if (refused) {
+        check(!started && !steps, "a .card step count that wraps the table fails the load");
+    } else {
+        check(started && off == 7, "the in-bound .card start loads");
+        check(steps && n == 3 && steps[0] == 30 && steps[2] == 50, "the in-bound .card steps load");
+    }
+    cleanup(trace);
+    printf("%s: %s\n", refused ? "bounds" : "bounds-ok", g_fail ? "FAIL" : "PASS");
+    return g_fail;
+}
+
+/** @brief Run the case argv[1] names (past-end, inside, bounds or bounds-ok).
  *
  * @param argc Argument count.
  * @param argv Arguments.
  * @return 0 on PASS, 1 on a failed check, 64 on a usage error. */
 int main(int argc, char** argv) {
-    if (argc != 2) { fprintf(stderr, "usage: psxtrace_schedule_test past-end|inside\n"); return 64; }
+    if (argc != 2) { fprintf(stderr, "usage: psxtrace_schedule_test past-end|inside|bounds|bounds-ok\n"); return 64; }
     if (strcmp(argv[1], "past-end") == 0) return run_case(1);
     if (strcmp(argv[1], "inside") == 0) return run_case(0);
+    if (strcmp(argv[1], "bounds") == 0) return run_bounds(1);
+    if (strcmp(argv[1], "bounds-ok") == 0) return run_bounds(0);
     fprintf(stderr, "psxtrace_schedule_test: unknown case %s\n", argv[1]);
     return 64;
 }

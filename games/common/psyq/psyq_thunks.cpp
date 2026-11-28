@@ -1870,6 +1870,7 @@ static uint32_t s_cd_data_vbl = 0, s_cd_data_rec = 0; static uint8_t s_cd_data_s
  * landed by the completion lands with it. */
 #define CD_LAND_MAX 1024u
 static uint8_t* s_cd_land_buf = NULL; static uint32_t s_cd_land_cap = 0;
+static SDL_AtomicInt s_cd_land_oom;   /* landing allocations refused */
 static uint32_t s_cd_land_dst = 0, s_cd_land_sectors = 0, s_cd_land_next = 0;
 static uint32_t s_cd_land_vbl[CD_LAND_MAX], s_cd_land_rec[CD_LAND_MAX];
 /** @brief Copy sector k of the deferred read's host buffer into its guest destination.
@@ -3795,22 +3796,36 @@ void psyq_CdControlF(CPUState* cpu) {
  * resident overlay's bytes. */
 #include "spyro_overlay_table.h"
 
+/** @brief Log the first allocation failure of the sector-paced landing; later ones are counted only.
+ * @param bytes The read's size. */
+static void cd_land_oom(uint32_t bytes) {
+    if (SDL_AddAtomicInt(&s_cd_land_oom, 1) == 0)
+        OPL_ERROR_F("cd", "sector-paced landing: allocation of %u bytes failed; the read lands whole at the drain", bytes);
+}
+
 /** @brief Copy the guest bytes a read of @p sectors sectors at @p dst will overwrite, for the sector-paced landing.
  *
  * Sizes the landing buffer to the read and returns a malloc'd copy of the
  * destination's current bytes, which the caller restores after the drain
- * and frees; the read's own bytes then land sector by sector.
+ * and frees; the read's own bytes then land sector by sector. A failed
+ * allocation keeps the landing buffer and its capacity as they were.
  * @param dst The read's guest destination.
  * @param sectors The read's sector count.
- * @return The copy, or NULL when @p sectors is not positive or the range
- *         leaves main RAM. */
+ * @return The copy, or NULL when @p sectors is not positive, the range
+ *         leaves main RAM or an allocation fails; the read then lands
+ *         whole at the drain. */
 static uint8_t* cd_land_snapshot(uint32_t dst, int sectors) {
     if (sectors <= 0) return NULL;
     uint32_t bytes = (uint32_t)sectors * 2048u;
-    if (s_cd_land_cap < bytes) { s_cd_land_buf = (uint8_t*)realloc(s_cd_land_buf, bytes); s_cd_land_cap = bytes; }
     uint32_t phys = (dst & 0x1FFFFFFFu);
     if (phys + bytes > 0x200000u) return NULL;
+    if (s_cd_land_cap < bytes) {
+        uint8_t* grown = (uint8_t*)realloc(s_cd_land_buf, bytes);
+        if (!grown) { cd_land_oom(bytes); return NULL; }
+        s_cd_land_buf = grown; s_cd_land_cap = bytes;
+    }
     uint8_t* old = (uint8_t*)malloc(bytes);
+    if (!old) { cd_land_oom(bytes); return NULL; }
     memcpy(old, openpete_psx_get_ram() + phys, bytes);
     return old;
 }

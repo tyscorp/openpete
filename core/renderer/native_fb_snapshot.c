@@ -433,8 +433,8 @@ static void fb_save_under(fb_snap_t *s)
 {
     const size_t n = (size_t)s->w * (size_t)s->h;
     uint16_t *u = (uint16_t *)realloc(s->under, n * sizeof *u);
+    if (!u) { free(s->under); s->under = NULL; return; }
     s->under = u;
-    if (!u) return;
     const uint16_t *vr = openpete_vram_data();
     for (int row = 0; row < s->h; row++)
         memcpy(u + (size_t)row * s->w,

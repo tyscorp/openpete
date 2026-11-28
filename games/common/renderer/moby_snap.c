@@ -3043,11 +3043,12 @@ static void mc_tab_mark_back(mc_tab* t, const mc_tab_mark* m) {
 
 /* What one commit appended to the carry table: its entries, world planes,
  * resolved planes, source faces, corners, queued corners and corner face
- * keys, copied out. */
+ * keys, copied out. Each array keeps its own capacity, so a failed growth
+ * of one leaves every array's capacity true. */
 typedef struct {
     mc_ent* e; int ne, cap_e;
-    mc_wplane* w; openpete_snap_plane* c; ms_pid* id; int npl, cap_p;
-    double (*wc)[3]; float (*rc)[3]; uint32_t* fk; int nwc, cap_wc;
+    mc_wplane* w; openpete_snap_plane* c; ms_pid* id; int npl, cap_p, cap_c, cap_id;
+    double (*wc)[3]; float (*rc)[3]; uint32_t* fk; int nwc, cap_wc, cap_rc, cap_fk;
     long dup, full; unsigned hg[MC_HSIZE]; int hi[MC_HSIZE];
 } mc_tab_span;
 
@@ -3055,16 +3056,18 @@ typedef struct {
  * @param t The table.
  * @param m The mark.
  * @param o Receives the appended entries, planes and corners and the table's counters and slots.
- * @return 0 on an allocation failure, else 1. */
+ * @return 0 on an allocation failure, which leaves the span empty with its arrays and capacities intact, else 1. */
 static int mc_tab_span_take(const mc_tab* t, const mc_tab_mark* m, mc_tab_span* o) {
-    o->ne = t->ne - m->ne; o->npl = t->npl - m->npl; o->nwc = t->nwc - m->nwc;
-    if (!ms_grow((void**)&o->e, &o->cap_e, o->ne + 1, sizeof *o->e) ||
-        !ms_grow((void**)&o->w, &o->cap_p, o->npl + 1, sizeof *o->w) ||
-        !(o->c = (openpete_snap_plane*)realloc(o->c, (size_t)o->cap_p * sizeof *o->c)) ||
-        !(o->id = (ms_pid*)realloc(o->id, (size_t)o->cap_p * sizeof *o->id)) ||
-        !ms_grow((void**)&o->wc, &o->cap_wc, o->nwc + 1, sizeof *o->wc) ||
-        !(o->rc = (float (*)[3])realloc(o->rc, (size_t)o->cap_wc * sizeof *o->rc)) ||
-        !(o->fk = (uint32_t*)realloc(o->fk, (size_t)o->cap_wc * sizeof *o->fk))) return 0;
+    const int ne = t->ne - m->ne, npl = t->npl - m->npl, nwc = t->nwc - m->nwc;
+    o->ne = o->npl = o->nwc = 0;
+    if (!ms_grow((void**)&o->e, &o->cap_e, ne + 1, sizeof *o->e) ||
+        !ms_grow((void**)&o->w, &o->cap_p, npl + 1, sizeof *o->w) ||
+        !ms_grow((void**)&o->c, &o->cap_c, npl + 1, sizeof *o->c) ||
+        !ms_grow((void**)&o->id, &o->cap_id, npl + 1, sizeof *o->id) ||
+        !ms_grow((void**)&o->wc, &o->cap_wc, nwc + 1, sizeof *o->wc) ||
+        !ms_grow((void**)&o->rc, &o->cap_rc, nwc + 1, sizeof *o->rc) ||
+        !ms_grow((void**)&o->fk, &o->cap_fk, nwc + 1, sizeof *o->fk)) return 0;
+    o->ne = ne; o->npl = npl; o->nwc = nwc;
     memcpy(o->e, t->e + m->ne, (size_t)o->ne * sizeof *o->e);
     memcpy(o->w, t->w + m->npl, (size_t)o->npl * sizeof *o->w);
     memcpy(o->c, t->c + m->npl, (size_t)o->npl * sizeof *o->c);

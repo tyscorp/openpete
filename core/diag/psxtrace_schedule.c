@@ -20,6 +20,7 @@
 #include "openpete_psxtrace.h"
 #include "openpete_psx.h"
 #include "openpete_log.h"
+#include "openpete_rows.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -114,6 +115,41 @@ static char* read_sidecar(const char* trace, const char* ext, const char* magic)
     return buf;
 }
 
+/** @brief Fail a sidecar load on an allocation failure: log it and release the sidecar's text and its row table.
+ *
+ * The caller then clears its table pointer and row count, which leaves the
+ * sidecar as not loaded.
+ * @param buf The sidecar's text.
+ * @param table The rows read so far, or NULL.
+ * @param ext The sidecar's extension, for the message.
+ * @param rows The rows read so far.
+ * @return 0, the loaders' failure value. */
+static int sidecar_oom(char* buf, void* table, const char* ext, uint32_t rows) {
+    OPL_ERROR_F("psxtrace", "schedule: out of memory after %u rows of %s; the sidecar is not loaded", rows, ext);
+    free(buf);
+    free(table);
+    return 0;
+}
+
+/** @brief Fail a sidecar load on a row value above its bound: log it and release the sidecar's text and its row table.
+ *
+ * The caller then clears its table pointer and row count, as after
+ * sidecar_oom.
+ * @param buf The sidecar's text.
+ * @param table The rows read so far, or NULL.
+ * @param ext The sidecar's extension, for the message.
+ * @param what The value's name, for the message.
+ * @param value The row's value.
+ * @param bound The largest value the loader accepts.
+ * @return 0, the loaders' failure value. */
+static int sidecar_refuse(char* buf, void* table, const char* ext, const char* what,
+                          unsigned long long value, unsigned long long bound) {
+    OPL_ERROR_F("psxtrace", "schedule: %s %llu in %s is above %llu; the sidecar is not loaded", what, value, ext, bound);
+    free(buf);
+    free(table);
+    return 0;
+}
+
 /** @brief Load the `.vsync` sidecar into s_vs and count its waited rows, queries and registrations.
  *
  * Rows starting with `#` or `p` are skipped, as are rows with fewer than
@@ -124,14 +160,21 @@ static char* read_sidecar(const char* trace, const char* ext, const char* magic)
 static int load_vsync(const char* trace) {
     char* buf = read_sidecar(trace, ".vsync", "psxtrace-vsync");
     if (!buf) return 0;
-    uint32_t cap = 4096;
-    s_vs = (sched_vsync_t*)malloc(cap * sizeof(*s_vs));
+    uint32_t cap = 0;
+    s_vs = openpete_rows_reserve(NULL, &cap, 1u, sizeof(*s_vs), 4096u);
+    if (!s_vs) return sidecar_oom(buf, NULL, ".vsync", 0);
     for (char* line = strtok(buf, "\n"); line; line = strtok(NULL, "\n")) {
         if (line[0] == '#' || line[0] == 'p') continue;
         unsigned idx, rec, evbl, rvbl; int mode; unsigned long long et, rt; unsigned v0, n = 1, ra = 0;
         if (sscanf(line, "%u %u %d %u %u %llu %llu %u %u %x", &idx, &rec, &mode, &evbl, &rvbl, &et, &rt, &v0, &n, &ra) < 8)
             continue;
-        if (s_vs_n == cap) { cap *= 2; s_vs = (sched_vsync_t*)realloc(s_vs, cap * sizeof(*s_vs)); }
+        sched_vsync_t* grown = openpete_rows_reserve(s_vs, &cap, s_vs_n + 1ull, sizeof(*s_vs), 4096u);
+        if (!grown) {
+            sidecar_oom(buf, s_vs, ".vsync", s_vs_n);
+            s_vs = NULL; s_vs_n = 0; s_vs_waits = 0; s_reg_total = 0; s_q_total = 0; s_counter_k = 0; s_counter_k_set = 0;
+            return 0;
+        }
+        s_vs = grown;
         sched_vsync_t* r = &s_vs[s_vs_n++];
         r->rec = rec; r->mode = mode; r->entry_vbl = evbl; r->ret_vbl = rvbl;
         r->counter = (mode == -1) ? (int32_t)v0 : -1; r->n = (mode == -1 && n) ? n : 1u; r->ra = ra;
@@ -158,8 +201,9 @@ static int load_vsync(const char* trace) {
 static int load_reads(const char* trace) {
     char* buf = read_sidecar(trace, ".loads", "psxtrace-loads");
     if (!buf) return 0;
-    uint32_t cap = 256;
-    s_rd = (sched_read_t*)malloc(cap * sizeof(*s_rd));
+    uint32_t cap = 0;
+    s_rd = openpete_rows_reserve(NULL, &cap, 1u, sizeof(*s_rd), 256u);
+    if (!s_rd) return sidecar_oom(buf, NULL, ".loads", 0);
     for (char* line = strtok(buf, "\n"); line; line = strtok(NULL, "\n")) {
         if (line[0] == '#' || line[0] == 'p') continue;
         unsigned idx, irec, ivbl, iline, sectors, dst, mode; unsigned long long itick;
@@ -167,7 +211,9 @@ static int load_reads(const char* trace) {
         if (sscanf(line, "%u %u %u %llu %u %u %x %x %31s %31s %31s", &idx, &irec, &ivbl, &itick, &iline,
                    &sectors, &dst, &mode, d_rec, d_vbl, d_tick) < 10)
             continue;
-        if (s_rd_n == cap) { cap *= 2; s_rd = (sched_read_t*)realloc(s_rd, cap * sizeof(*s_rd)); }
+        sched_read_t* grown = openpete_rows_reserve(s_rd, &cap, s_rd_n + 1ull, sizeof(*s_rd), 256u);
+        if (!grown) { sidecar_oom(buf, s_rd, ".loads", s_rd_n); s_rd = NULL; s_rd_n = 0; return 0; }
+        s_rd = grown;
         sched_read_t* r = &s_rd[s_rd_n++];
         r->idx = idx; r->issue_rec = irec; r->issue_vbl = ivbl; r->sectors = sectors; r->dst = dst; r->mode = mode;
         r->done = (d_rec[0] != '-');
@@ -186,13 +232,16 @@ static int load_reads(const char* trace) {
 static int load_seeds(const char* trace) {
     char* buf = read_sidecar(trace, ".srand", "psxtrace-srand");
     if (!buf) return 0;
-    uint32_t cap = 16;
-    s_seed = (uint32_t*)malloc(cap * sizeof(*s_seed));
+    uint32_t cap = 0;
+    s_seed = openpete_rows_reserve(NULL, &cap, 1u, sizeof(*s_seed), 16u);
+    if (!s_seed) return sidecar_oom(buf, NULL, ".srand", 0);
     for (char* line = strtok(buf, "\n"); line; line = strtok(NULL, "\n")) {
         if (line[0] == '#' || line[0] == 'p') continue;
         unsigned idx, rec, vbl, seed;
         if (sscanf(line, "%u %u %u %x", &idx, &rec, &vbl, &seed) != 4) continue;
-        if (s_seed_n == cap) { cap *= 2; s_seed = (uint32_t*)realloc(s_seed, cap * sizeof(*s_seed)); }
+        uint32_t* grown = openpete_rows_reserve(s_seed, &cap, s_seed_n + 1ull, sizeof(*s_seed), 16u);
+        if (!grown) { sidecar_oom(buf, s_seed, ".srand", s_seed_n); s_seed = NULL; s_seed_n = 0; return 0; }
+        s_seed = grown;
         s_seed[s_seed_n++] = seed;
     }
     free(buf);
@@ -208,14 +257,17 @@ static int load_seeds(const char* trace) {
 static int load_rcnt2(const char* trace) {
     char* buf = read_sidecar(trace, ".rcnt2", "psxtrace-rcnt2");
     if (!buf) return 0;
-    uint32_t cap = 16;
-    s_rc2 = (sched_rcnt2_t*)malloc(cap * sizeof(*s_rc2));
+    uint32_t cap = 0;
+    s_rc2 = openpete_rows_reserve(NULL, &cap, 1u, sizeof(*s_rc2), 16u);
+    if (!s_rc2) return sidecar_oom(buf, NULL, ".rcnt2", 0);
     for (char* line = strtok(buf, "\n"); line; line = strtok(NULL, "\n")) {
         if (line[0] == '#' || line[0] == 'p') continue;
         unsigned idx, rec, vbl, pc, value;
         if (sscanf(line, "%u %u %u %x %x", &idx, &rec, &vbl, &pc, &value) != 5) continue;
         (void)pc;
-        if (s_rc2_n == cap) { cap *= 2; s_rc2 = (sched_rcnt2_t*)realloc(s_rc2, cap * sizeof(*s_rc2)); }
+        sched_rcnt2_t* grown = openpete_rows_reserve(s_rc2, &cap, s_rc2_n + 1ull, sizeof(*s_rc2), 16u);
+        if (!grown) { sidecar_oom(buf, s_rc2, ".rcnt2", s_rc2_n); s_rc2 = NULL; s_rc2_n = 0; return 0; }
+        s_rc2 = grown;
         s_rc2[s_rc2_n].rec = rec;
         s_rc2[s_rc2_n].value = (uint16_t)value;
         s_rc2_n++;
@@ -304,8 +356,9 @@ static int load_watch(const char* trace) {
     char* buf = read_sidecar(trace, ".watch", "psxtrace-watch");
     if (!buf) return 0;
     if (!psyq_game_load_window_active) { free(buf); return 0; }
-    uint32_t cap = 64;
-    s_win = (sched_window_t*)malloc(cap * sizeof(*s_win));
+    uint32_t cap = 0;
+    s_win = openpete_rows_reserve(NULL, &cap, 1u, sizeof(*s_win), 64u);
+    if (!s_win) return sidecar_oom(buf, NULL, ".watch", 0);
     /* Each store's value is the next store's "old" (the breakpoint fires
      * before the store lands). */
     unsigned prev_rec = 0; int have_prev = 0; int active = 0;
@@ -316,7 +369,9 @@ static int load_watch(const char* trace) {
         if (have_prev) {
             int a = psyq_game_load_window_active(oldv);   /* value the previous store set */
             if (a && !active) {
-                if (s_win_n == cap) { cap *= 2; s_win = (sched_window_t*)realloc(s_win, cap * sizeof(*s_win)); }
+                sched_window_t* grown = openpete_rows_reserve(s_win, &cap, s_win_n + 1ull, sizeof(*s_win), 64u);
+                if (!grown) { sidecar_oom(buf, s_win, ".watch", s_win_n); s_win = NULL; s_win_n = 0; return 0; }
+                s_win = grown;
                 s_win[s_win_n].enter_rec = prev_rec; s_win[s_win_n].leave_rec = 0xFFFFFFFFu;
             } else if (!a && active && s_win_n < cap) {
                 s_win[s_win_n].leave_rec = prev_rec; s_win_n++;
@@ -338,21 +393,42 @@ static int load_watch(const char* trace) {
  * libpad's command sequence advanced on; a served vblank without one is
  * an exchange libpad abandoned. */
 typedef struct { uint8_t* bits; uint32_t n, first, served, skipped; } vbl_set_t;
+/* The bitmap sidecars' rows name VBLANKs below this bound: 2^26 VBLANKs is
+ * about 312 hours at 59.826 Hz and an 8 MiB bitmap. */
+#define SCHED_VBL_MAX (1u << 26)
 static vbl_set_t s_sio0, s_padcmd;
 
 /** @brief Add reference VBLANK vbl to the bitmap set, growing it by doubling from 4096 bits.
  *
- * Tracks the lowest member in first. New bits start cleared. */
-static void vbl_set_add(vbl_set_t* v, uint32_t vbl) {
+ * Tracks the lowest member in first. New bits start cleared. A failed
+ * growth leaves the set unchanged. The loaders refuse a VBLANK at or above
+ * SCHED_VBL_MAX first; the growth is computed in 64 bits regardless.
+ * @param v The set.
+ * @param vbl The VBLANK.
+ * @return 1 when vbl was added, 0 when the growth failed. */
+static int vbl_set_add(vbl_set_t* v, uint32_t vbl) {
     if (vbl >= v->n) {
-        uint32_t n = v->n ? v->n : 4096u;
+        uint64_t n = v->n ? v->n : 4096u;
         while (n <= vbl) n *= 2u;
-        v->bits = (uint8_t*)realloc(v->bits, n / 8u + 1u);
-        memset(v->bits + (v->n / 8u), 0, (n - v->n) / 8u + 1u);
-        v->n = n;
+        if (n > UINT32_MAX) n = UINT32_MAX;
+        uint8_t* grown = (uint8_t*)realloc(v->bits, (size_t)(n / 8u + 1u));
+        if (!grown) return 0;
+        v->bits = grown;
+        memset(v->bits + (v->n / 8u), 0, (size_t)((n - v->n) / 8u + 1u));
+        v->n = (uint32_t)n;
     }
     v->bits[vbl / 8u] |= (uint8_t)(1u << (vbl % 8u));
     if (!v->first || vbl < v->first) v->first = vbl;
+    return 1;
+}
+
+/** @brief Empty a bitmap set after its sidecar load failed, which leaves the sidecar as not loaded.
+ * @param v The set.
+ * @return 0, the loaders' failure value. */
+static int vbl_set_drop(vbl_set_t* v) {
+    free(v->bits);
+    memset(v, 0, sizeof(*v));
+    return 0;
 }
 /** @brief Return 1 when the set holds vbl, counting the answer as served or skipped.
  *
@@ -380,7 +456,11 @@ static int load_padcmd(const char* trace) {
         if (line[0] == '#' || line[0] == 'p') continue;
         unsigned idx, rec, vbl, port, cmd;
         if (sscanf(line, "%u %u %u %u %x", &idx, &rec, &vbl, &port, &cmd) != 5) continue;
-        vbl_set_add(&s_padcmd, vbl);
+        if (vbl >= SCHED_VBL_MAX) {
+            sidecar_refuse(buf, NULL, ".padcmd", "vblank", vbl, SCHED_VBL_MAX - 1u);
+            return vbl_set_drop(&s_padcmd);
+        }
+        if (!vbl_set_add(&s_padcmd, vbl)) { sidecar_oom(buf, NULL, ".padcmd", s_padcmd.n); return vbl_set_drop(&s_padcmd); }
         if (vbl > max) max = vbl;
     }
     free(buf);
@@ -402,7 +482,13 @@ static int load_sio0(const char* trace) {
         if (line[0] == '#' || line[0] == 'p') continue;
         unsigned idx, rec, vbl, n;
         if (sscanf(line, "%u %u %u %u", &idx, &rec, &vbl, &n) != 4) continue;
-        for (unsigned i = 0; i < n; i++) vbl_set_add(&s_sio0, vbl + i);
+        if (n == 0) continue;
+        if (vbl >= SCHED_VBL_MAX || n > SCHED_VBL_MAX - vbl) {
+            sidecar_refuse(buf, NULL, ".sio0", "run end", (unsigned long long)vbl + n - 1u, SCHED_VBL_MAX - 1u);
+            return vbl_set_drop(&s_sio0);
+        }
+        for (unsigned i = 0; i < n; i++)
+            if (!vbl_set_add(&s_sio0, vbl + i)) { sidecar_oom(buf, NULL, ".sio0", s_sio0.n); return vbl_set_drop(&s_sio0); }
         if (vbl + n - 1u > max) max = vbl + n - 1u;
     }
     free(buf);
@@ -436,13 +522,16 @@ static uint32_t s_cs_answered = 0, s_cs_unmade = 0, s_cs_charged = 0;
 static int load_cdsync(const char* trace) {
     char* buf = read_sidecar(trace, ".cdsync", "psxtrace-cdsync");
     if (!buf) return 0;
-    uint32_t cap = 1024;
-    s_cs = (sched_cdsync_t*)malloc(cap * sizeof(*s_cs));
+    uint32_t cap = 0;
+    s_cs = openpete_rows_reserve(NULL, &cap, 1u, sizeof(*s_cs), 1024u);
+    if (!s_cs) return sidecar_oom(buf, NULL, ".cdsync", 0);
     for (char* line = strtok(buf, "\n"); line; line = strtok(NULL, "\n")) {
         if (line[0] == '#' || line[0] == 'p') continue;
         unsigned idx, rec, vbl, n, ra; int mode, ret; unsigned long long tick;
         if (sscanf(line, "%u %u %u %d %d %u %x %llu", &idx, &rec, &vbl, &mode, &ret, &n, &ra, &tick) != 8) continue;
-        if (s_cs_n == cap) { cap *= 2; s_cs = (sched_cdsync_t*)realloc(s_cs, cap * sizeof(*s_cs)); }
+        sched_cdsync_t* grown = openpete_rows_reserve(s_cs, &cap, s_cs_n + 1ull, sizeof(*s_cs), 1024u);
+        if (!grown) { sidecar_oom(buf, s_cs, ".cdsync", s_cs_n); s_cs = NULL; s_cs_n = 0; return 0; }
+        s_cs = grown;
         s_cs[s_cs_n].rec = rec; s_cs[s_cs_n].vbl = vbl; s_cs[s_cs_n].ra = ra; s_cs[s_cs_n].n = n;
         s_cs[s_cs_n].mode = mode; s_cs[s_cs_n].ret = ret; s_cs[s_cs_n].tick = tick; s_cs_n++;
     }
@@ -492,6 +581,21 @@ static sched_card_t* s_card = NULL; static uint32_t s_card_n = 0;
 static uint32_t* s_card_steps = NULL; static uint32_t s_card_steps_n = 0, s_card_steps_cap = 0;
 static uint32_t s_card_timed = 0;   /* rows carrying steps */
 
+/* The most step ticks one `.card` row may carry. */
+#define SCHED_CARD_STEPS_MAX (1u << 16)
+
+/** @brief Release the card transfer starts and their steps after the `.card` load failed, which leaves the sidecar as not loaded.
+ *
+ * The caller has logged the failure and released the sidecar's text and
+ * s_card (sidecar_oom, sidecar_refuse).
+ * @return 0, the loader's failure value. */
+static int card_drop(void) {
+    free(s_card_steps);
+    s_card = NULL; s_card_n = 0; s_card_timed = 0;
+    s_card_steps = NULL; s_card_steps_n = 0; s_card_steps_cap = 0;
+    return 0;
+}
+
 /** @brief Load the reference's card transfer starts and their steps from the `.card` sidecar into s_card.
  *
  * A row is `idx rec vbl off`, then, from version 2, the step count and
@@ -502,22 +606,29 @@ static uint32_t s_card_timed = 0;   /* rows carrying steps */
 static int load_card(const char* trace) {
     char* buf = read_sidecar(trace, ".card", "psxtrace-card");
     if (!buf) return 0;
-    uint32_t cap = 256;
-    s_card = (sched_card_t*)malloc(cap * sizeof(*s_card));
+    uint32_t cap = 0;
+    s_card = openpete_rows_reserve(NULL, &cap, 1u, sizeof(*s_card), 256u);
+    if (!s_card) return sidecar_oom(buf, NULL, ".card", 0);
     for (char* line = strtok(buf, "\n"); line; line = strtok(NULL, "\n")) {
         if (line[0] == '#' || line[0] == 'p') continue;
         unsigned idx, rec, vbl, nsteps = 0; unsigned long long off; int used = 0;
         if (sscanf(line, "%u %u %u %llu%n", &idx, &rec, &vbl, &off, &used) != 4) continue;
-        if (s_card_n == cap) { cap *= 2; s_card = (sched_card_t*)realloc(s_card, cap * sizeof(*s_card)); }
+        sched_card_t* grown = openpete_rows_reserve(s_card, &cap, s_card_n + 1ull, sizeof(*s_card), 256u);
+        if (!grown) { sidecar_oom(buf, s_card, ".card", s_card_n); return card_drop(); }
+        s_card = grown;
         sched_card_t* row = &s_card[s_card_n++];
         row->vbl = vbl; row->off = (uint32_t)off; row->first = s_card_steps_n; row->n = 0;
         const char* p = line + used; int adv = 0;
         if (sscanf(p, "%u%n", &nsteps, &adv) != 1) continue;
         p += adv;
-        while (s_card_steps_n + nsteps > s_card_steps_cap) {
-            s_card_steps_cap = s_card_steps_cap ? s_card_steps_cap * 2u : 4096u;
-            s_card_steps = (uint32_t*)realloc(s_card_steps, s_card_steps_cap * sizeof(*s_card_steps));
+        if (nsteps > SCHED_CARD_STEPS_MAX) {
+            sidecar_refuse(buf, s_card, ".card", "step count", nsteps, SCHED_CARD_STEPS_MAX);
+            return card_drop();
         }
+        uint32_t* steps = openpete_rows_reserve(s_card_steps, &s_card_steps_cap, (uint64_t)s_card_steps_n + nsteps + 1u,
+                                                sizeof(*s_card_steps), 4096u);
+        if (!steps) { sidecar_oom(buf, s_card, ".card", s_card_n); return card_drop(); }
+        s_card_steps = steps;
         for (unsigned i = 0; i < nsteps && sscanf(p, "%u%n", &s_card_steps[s_card_steps_n], &adv) == 1; i++, p += adv) {
             s_card_steps_n++; row->n++;
         }
@@ -1065,8 +1176,9 @@ void openpete_sched_clock_seeded(uint64_t tick) { if (!s_clock_seed_tick) s_cloc
 static int load_vblpos(const char* trace) {
     char* buf = read_sidecar(trace, ".vblpos", "psxtrace-vblpos");
     if (!buf) return 0;
-    uint32_t cap = 4096;
-    s_vp = (sched_vblpos_t*)malloc(cap * sizeof(*s_vp));
+    uint32_t cap = 0;
+    s_vp = openpete_rows_reserve(NULL, &cap, 1u, sizeof(*s_vp), 4096u);
+    if (!s_vp) return sidecar_oom(buf, NULL, ".vblpos", 0);
     for (char* line = strtok(buf, "\n"); line; line = strtok(NULL, "\n")) {
         if (line[0] == '#' || line[0] == 'p') continue;
         unsigned idx, rec, vbl;
@@ -1074,7 +1186,13 @@ static int load_vblpos(const char* trace) {
         if (sscanf(line, "%u %u %u %15s %15s %15s %15s %15s %15s %15s %23s %15s %15s", &idx, &rec, &vbl, via, epc,
                    entry, insns, t, t_rec, k, tick, rt, rk) < 10)
             continue;
-        if (s_vp_n == cap) { cap *= 2; s_vp = (sched_vblpos_t*)realloc(s_vp, cap * sizeof(*s_vp)); }
+        sched_vblpos_t* grown = openpete_rows_reserve(s_vp, &cap, s_vp_n + 1ull, sizeof(*s_vp), 4096u);
+        if (!grown) {
+            sidecar_oom(buf, s_vp, ".vblpos", s_vp_n);
+            s_vp = NULL; s_vp_n = 0; s_vp_read_rows = 0; memset(s_vp_read_bits, 0, sizeof(s_vp_read_bits));
+            return 0;
+        }
+        s_vp = grown;
         sched_vblpos_t* r = &s_vp[s_vp_n++];
         r->rec = rec; r->vbl = vbl;
         r->t = (uint32_t)strtoul(t, NULL, 16);
@@ -1114,8 +1232,9 @@ static int spuq_kind(const char* name) {
 static int load_spuq(const char* trace) {
     char* buf = read_sidecar(trace, ".spuq", "psxtrace-spuq");
     if (!buf) return 0;
-    uint32_t cap = 4096;
-    s_sq = (sched_spuq_t*)malloc(cap * sizeof(*s_sq));
+    uint32_t cap = 0;
+    s_sq = openpete_rows_reserve(NULL, &cap, 1u, sizeof(*s_sq), 4096u);
+    if (!s_sq) return sidecar_oom(buf, NULL, ".spuq", 0);
     for (char* line = strtok(buf, "\n"); line; line = strtok(NULL, "\n")) {
         if (line[0] == '#' || line[0] == 'p') continue;
         unsigned idx, rec, vbl, pc, ra; unsigned long long tick; char kind[16], a0[24] = "0", a1[24] = "0";
@@ -1123,7 +1242,9 @@ static int load_spuq(const char* trace) {
             continue;
         const int kd = spuq_kind(kind);
         if (kd < 0) continue;
-        if (s_sq_n == cap) { cap *= 2; s_sq = (sched_spuq_t*)realloc(s_sq, cap * sizeof(*s_sq)); }
+        sched_spuq_t* grown = openpete_rows_reserve(s_sq, &cap, s_sq_n + 1ull, sizeof(*s_sq), 4096u);
+        if (!grown) { sidecar_oom(buf, s_sq, ".spuq", s_sq_n); s_sq = NULL; s_sq_n = 0; return 0; }
+        s_sq = grown;
         sched_spuq_t* r = &s_sq[s_sq_n++];
         r->rec = rec; r->ra = ra; r->tick = tick; r->kind = (uint8_t)kd; r->used = 0;
         r->idx = idx; r->reg_first = 0; r->reg_n = 0;
@@ -1168,8 +1289,9 @@ static void spureg_link(void) {
 static int load_spureg(const char* trace) {
     char* buf = read_sidecar(trace, ".spureg", "psxtrace-spureg");
     if (!buf) return 0;
-    uint32_t cap = 4096;
-    s_sr = (sched_spureg_t*)malloc(cap * sizeof(*s_sr));
+    uint32_t cap = 0;
+    s_sr = openpete_rows_reserve(NULL, &cap, 1u, sizeof(*s_sr), 4096u);
+    if (!s_sr) return sidecar_oom(buf, NULL, ".spureg", 0);
     for (char* line = strtok(buf, "\n"); line; line = strtok(NULL, "\n")) {
         if (line[0] == '#' || line[0] == 'p') continue;
         unsigned idx, rec, vbl, pc, addr; int spuq; unsigned long long tick; char kind[16], value[16];
@@ -1178,7 +1300,9 @@ static int load_spureg(const char* trace) {
         const int kd = spureg_kind(kind);
         if (kd < 0 || spuq < 0) continue;
         const uint32_t a = addr & 0x1FFFFFFFu;
-        if (s_sr_n == cap) { cap *= 2; s_sr = (sched_spureg_t*)realloc(s_sr, cap * sizeof(*s_sr)); }
+        sched_spureg_t* grown = openpete_rows_reserve(s_sr, &cap, s_sr_n + 1ull, sizeof(*s_sr), 4096u);
+        if (!grown) { sidecar_oom(buf, s_sr, ".spureg", s_sr_n); s_sr = NULL; s_sr_n = 0; return 0; }
+        s_sr = grown;
         sched_spureg_t* r = &s_sr[s_sr_n++];
         r->spuq = (uint32_t)spuq; r->tick = tick; r->kind = (uint8_t)kd; r->used = 0;
         r->unit = (uint8_t)(kd == 0 ? (a & 2u) >> 1 : ((a - 0x1F801C00u) >> 4) & 0x1Fu);

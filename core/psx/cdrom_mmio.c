@@ -37,6 +37,7 @@
 #include "openpete_log.h"
 #include "openpete_psxtrace.h"
 #include "openpete_cdrom_mmio.h"
+#include "openpete_rows.h"
 
 #define CD_FIFO  OPENPETE_CDROM_MMIO_FIFO
 #define CD_QUEUE OPENPETE_CDROM_MMIO_QUEUE
@@ -66,6 +67,84 @@ static int s_replay = 0;
 
 void openpete_cdrom_mmio_set_raw_pc_min(uint32_t pc) { s_raw_pc_min = pc; }
 
+/* Capacities of the three row tables while the sidecar loads. */
+typedef struct { uint32_t cmd, irq, read; } cd_row_caps_t;
+
+/** @brief Append a `C` row (a command, its parameters and the index of its first interrupt) to s_rc.
+ *
+ * A row with fewer than six fields is skipped; parameters past the FIFO
+ * size are dropped.
+ * @param line The row.
+ * @param caps The tables' capacities, raised on a growth.
+ * @return 0 when the table could not grow, else 1. */
+static int cd_row_cmd_add(const char* line, cd_row_caps_t* caps) {
+    unsigned idx, rec, vbl, pc, cmd, n; int off = 0;
+    if (sscanf(line, "C %u %u %u %x %x %u%n", &idx, &rec, &vbl, &pc, &cmd, &n, &off) != 6) return 1;
+    cd_row_cmd_t* grown = openpete_rows_reserve(s_rc, &caps->cmd, s_rc_n + 1ull, sizeof(*s_rc), 256u);
+    if (!grown) return 0;
+    s_rc = grown;
+    cd_row_cmd_t* r = &s_rc[s_rc_n++];
+    memset(r, 0, sizeof(*r));
+    r->rec = rec; r->vbl = vbl; r->pc = pc; r->cmd = (uint8_t)cmd; r->nparam = (uint8_t)(n > CD_FIFO ? CD_FIFO : n);
+    const char* p = line + off;
+    for (unsigned i = 0; i < r->nparam; i++) { unsigned b; int k = 0; if (sscanf(p, " %x%n", &b, &k) != 1) break; r->param[i] = (uint8_t)b; p += k; }
+    r->first_irq = s_ri_n;
+    return 1;
+}
+
+/** @brief Append an `I` row (an interrupt and its response) to s_ri and count it on the last command.
+ *
+ * A row with fewer than five fields is skipped; response bytes past the
+ * FIFO size are dropped.
+ * @param line The row.
+ * @param caps The tables' capacities, raised on a growth.
+ * @return 0 when the table could not grow, else 1. */
+static int cd_row_irq_add(const char* line, cd_row_caps_t* caps) {
+    unsigned idx, rec, vbl, irq, n; int off = 0;
+    if (sscanf(line, "I %u %u %u %u %u%n", &idx, &rec, &vbl, &irq, &n, &off) != 5) return 1;
+    cd_row_irq_t* grown = openpete_rows_reserve(s_ri, &caps->irq, s_ri_n + 1ull, sizeof(*s_ri), 1024u);
+    if (!grown) return 0;
+    s_ri = grown;
+    cd_row_irq_t* r = &s_ri[s_ri_n++];
+    memset(r, 0, sizeof(*r));
+    r->rec = rec; r->vbl = vbl; r->irq = (uint8_t)irq; r->n = (uint8_t)(n > CD_RESP ? CD_RESP : n);
+    const char* p = line + off;
+    for (unsigned i = 0; i < r->n; i++) { unsigned b; int k = 0; if (sscanf(p, " %x%n", &b, &k) != 1) break; r->resp[i] = (uint8_t)b; p += k; }
+    if (s_rc_n) s_rc[s_rc_n - 1].irq_count++;
+    return 1;
+}
+
+/** @brief Append an `R` row (a register read by the game's own code and the value it saw) to s_rr.
+ *
+ * A row with fewer than six fields is skipped.
+ * @param line The row.
+ * @param caps The tables' capacities, raised on a growth.
+ * @return 0 when the table could not grow, else 1. */
+static int cd_row_read_add(const char* line, cd_row_caps_t* caps) {
+    unsigned idx, rec, vbl, pc, off, value;
+    if (sscanf(line, "R %u %u %u %x %u %x", &idx, &rec, &vbl, &pc, &off, &value) != 6) return 1;
+    cd_row_read_t* grown = openpete_rows_reserve(s_rr, &caps->read, s_rr_n + 1ull, sizeof(*s_rr), 4096u);
+    if (!grown) return 0;
+    s_rr = grown;
+    s_rr[s_rr_n].rec = rec; s_rr[s_rr_n].off = (uint8_t)off; s_rr[s_rr_n].value = (uint8_t)value;
+    s_rr_n++;
+    return 1;
+}
+
+/** @brief Release the reference's command, interrupt and read rows and fail the sidecar load on an allocation failure.
+ * @param fp The open sidecar, closed here.
+ * @param path Its path, for the message.
+ * @return 0, the load's failure value. */
+static int cd_rows_fail(FILE* fp, const char* path) {
+    OPL_ERROR_F("cdrom", "controller replay: out of memory at %u commands, %u interrupts, %u reads of %s; replay off",
+                s_rc_n, s_ri_n, s_rr_n, path);
+    fclose(fp);
+    free(s_rc); free(s_ri); free(s_rr);
+    s_rc = NULL; s_ri = NULL; s_rr = NULL;
+    s_rc_n = s_ri_n = s_rr_n = 0;
+    return 0;
+}
+
 int openpete_cdrom_mmio_open(const char* trace_path) {
     char path[4096];
     snprintf(path, sizeof(path), "%s.cdirq", trace_path);
@@ -73,38 +152,16 @@ int openpete_cdrom_mmio_open(const char* trace_path) {
     if (!fp) return 0;
     char line[512];
     if (!fgets(line, sizeof(line), fp) || strncmp(line, "psxtrace-cdirq", 14) != 0) { fclose(fp); return 0; }
-    uint32_t ccap = 256, icap = 1024, rcap = 4096;
-    s_rc = (cd_row_cmd_t*)malloc(ccap * sizeof(*s_rc));
-    s_ri = (cd_row_irq_t*)malloc(icap * sizeof(*s_ri));
-    s_rr = (cd_row_read_t*)malloc(rcap * sizeof(*s_rr));
+    cd_row_caps_t caps = { 0, 0, 0 };
+    s_rc = openpete_rows_reserve(NULL, &caps.cmd, 1u, sizeof(*s_rc), 256u);
+    s_ri = openpete_rows_reserve(NULL, &caps.irq, 1u, sizeof(*s_ri), 1024u);
+    s_rr = openpete_rows_reserve(NULL, &caps.read, 1u, sizeof(*s_rr), 4096u);
+    if (!s_rc || !s_ri || !s_rr) return cd_rows_fail(fp, path);
     while (fgets(line, sizeof(line), fp)) {
-        if (line[0] == 'C') {
-            unsigned idx, rec, vbl, pc, cmd, n; int off = 0;
-            if (sscanf(line, "C %u %u %u %x %x %u%n", &idx, &rec, &vbl, &pc, &cmd, &n, &off) != 6) continue;
-            if (s_rc_n == ccap) { ccap *= 2; s_rc = (cd_row_cmd_t*)realloc(s_rc, ccap * sizeof(*s_rc)); }
-            cd_row_cmd_t* r = &s_rc[s_rc_n++];
-            memset(r, 0, sizeof(*r));
-            r->rec = rec; r->vbl = vbl; r->pc = pc; r->cmd = (uint8_t)cmd; r->nparam = (uint8_t)(n > CD_FIFO ? CD_FIFO : n);
-            const char* p = line + off;
-            for (unsigned i = 0; i < r->nparam; i++) { unsigned b; int k = 0; if (sscanf(p, " %x%n", &b, &k) != 1) break; r->param[i] = (uint8_t)b; p += k; }
-            r->first_irq = s_ri_n;
-        } else if (line[0] == 'I') {
-            unsigned idx, rec, vbl, irq, n; int off = 0;
-            if (sscanf(line, "I %u %u %u %u %u%n", &idx, &rec, &vbl, &irq, &n, &off) != 5) continue;
-            if (s_ri_n == icap) { icap *= 2; s_ri = (cd_row_irq_t*)realloc(s_ri, icap * sizeof(*s_ri)); }
-            cd_row_irq_t* r = &s_ri[s_ri_n++];
-            memset(r, 0, sizeof(*r));
-            r->rec = rec; r->vbl = vbl; r->irq = (uint8_t)irq; r->n = (uint8_t)(n > CD_RESP ? CD_RESP : n);
-            const char* p = line + off;
-            for (unsigned i = 0; i < r->n; i++) { unsigned b; int k = 0; if (sscanf(p, " %x%n", &b, &k) != 1) break; r->resp[i] = (uint8_t)b; p += k; }
-            if (s_rc_n) s_rc[s_rc_n - 1].irq_count++;
-        } else if (line[0] == 'R') {
-            unsigned idx, rec, vbl, pc, off, value;
-            if (sscanf(line, "R %u %u %u %x %u %x", &idx, &rec, &vbl, &pc, &off, &value) != 6) continue;
-            if (s_rr_n == rcap) { rcap *= 2; s_rr = (cd_row_read_t*)realloc(s_rr, rcap * sizeof(*s_rr)); }
-            s_rr[s_rr_n].rec = rec; s_rr[s_rr_n].off = (uint8_t)off; s_rr[s_rr_n].value = (uint8_t)value;
-            s_rr_n++;
-        }
+        const int ok = line[0] == 'C' ? cd_row_cmd_add(line, &caps)
+                     : line[0] == 'I' ? cd_row_irq_add(line, &caps)
+                     : line[0] == 'R' ? cd_row_read_add(line, &caps) : 1;
+        if (!ok) return cd_rows_fail(fp, path);
     }
     fclose(fp);
     s_replay = 1;

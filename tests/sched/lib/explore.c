@@ -53,9 +53,11 @@ typedef struct child {
 static void ps_push(pstack *st, prefix p)
 {
     if (st->n == st->cap) {
-        st->cap = st->cap ? st->cap * 2 : 1024;
-        st->v = realloc(st->v, (size_t)st->cap * sizeof *st->v);
-        if (!st->v) { perror("sched: realloc"); exit(2); }
+        const long cap = st->cap ? st->cap * 2 : 1024;
+        prefix *v = realloc(st->v, (size_t)cap * sizeof *st->v);
+        if (!v) { perror("sched: realloc"); exit(2); }
+        st->v = v;
+        st->cap = cap;
     }
     st->v[st->n++] = p;
 }
@@ -130,9 +132,11 @@ static int child_spawn(const sched_config *cfg, prefix pre, int pct, uint64_t se
 static int child_read(child *c)
 {
     if (c->cap - c->len < 65536) {
-        c->cap = c->cap ? c->cap * 2 : 131072;
-        c->buf = realloc(c->buf, c->cap);
-        if (!c->buf) return -1;
+        const size_t cap = c->cap ? c->cap * 2 : 131072;
+        uint8_t *buf = realloc(c->buf, cap);
+        if (!buf) return -1;
+        c->buf = buf;
+        c->cap = cap;
     }
     const ssize_t r = read(c->fd, c->buf + c->len, c->cap - c->len);
     if (r < 0) return errno == EINTR ? 0 : -1;
@@ -382,9 +386,11 @@ static int worker_send(worker *w, prefix pre)
 static int worker_read(const sched_config *cfg, worker *w, const bounds *bd, pstack *now, pstack *later, sched_result *r)
 {
     if (w->rcap - w->rlen < 65536) {
-        w->rcap = w->rcap ? w->rcap * 2 : 131072;
-        w->raw = realloc(w->raw, w->rcap);
-        if (!w->raw) return -1;
+        const size_t cap = w->rcap ? w->rcap * 2 : 131072;
+        uint8_t *raw = realloc(w->raw, cap);
+        if (!raw) return -1;
+        w->raw = raw;
+        w->rcap = cap;
     }
     const ssize_t got = read(w->rep_fd, w->raw + w->rlen, w->rcap - w->rlen);
     if (got < 0) return errno == EINTR ? 0 : -1;

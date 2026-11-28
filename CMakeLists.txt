@@ -1055,6 +1055,11 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     add_test(NAME worker_line_guard_selftest
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_worker_line_guard.py)
     set_tests_properties(worker_line_guard_selftest PROPERTIES LABELS "fence")
+    # The realloc fence's own tests: planted bad forms refuse, the accepted
+    # forms pass, a root with no call is VACUOUS.
+    add_test(NAME realloc_guard_selftest
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_realloc_guard.py)
+    set_tests_properties(realloc_guard_selftest PROPERTIES LABELS "fence")
     # The provenance fence's own tests: the token and form rules, the
     # allow-list and marker, and planted-token controls in a scratch repo.
     add_test(NAME provenance_census_selftest

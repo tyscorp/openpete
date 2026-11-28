@@ -258,7 +258,8 @@ add_test(NAME psx_region_test COMMAND psx_region_test)
 
 # psxtrace_schedule_test - the oracle schedule's account of a CdRead or
 # waited VSync its sidecars have no row left for: counted past the trace's
-# last record, a failure inside the records. One process per case, since
+# last record, a failure inside the records; a bitmap or card sidecar row
+# outside its bound fails that load. One process per case, since
 # the schedule keeps its state in file statics. Compiles
 # psxtrace_schedule.c and log.c directly; the test defines the anchor
 # counters and the root counter 2 hook the schedule links against.
@@ -272,6 +273,9 @@ target_include_directories(psxtrace_schedule_test PRIVATE
 set_target_properties(psxtrace_schedule_test PROPERTIES C_STANDARD 11)
 add_test(NAME psxtrace_schedule_past_end COMMAND psxtrace_schedule_test past-end)
 add_test(NAME psxtrace_schedule_beyond_inside COMMAND psxtrace_schedule_test inside)
+add_test(NAME psxtrace_schedule_bounds COMMAND psxtrace_schedule_test bounds)
+add_test(NAME psxtrace_schedule_bounds_ok COMMAND psxtrace_schedule_test bounds-ok)
+set_tests_properties(psxtrace_schedule_bounds PROPERTIES TIMEOUT 30)
 
 # psxtrace_ratchet_test - the oracle's event ratchet: a row's listed GTE
 # events, VBL events and gameplay bursts pass, an unlisted one is new, a

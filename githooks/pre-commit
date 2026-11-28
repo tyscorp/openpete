@@ -5,15 +5,17 @@
 # Dispatcher: the golden-image scan (golden-png-guard.py: no image staged
 # under tests/golden outside the tracked exception set), the tile-census
 # accessor fence (tile_census_accessor.py), the per-worker cache-line fence
-# (worker_line_guard.py), the host-control fence (host_control_coverage.py:
-# every host control goes through its knob registry row), the provenance
+# (worker_line_guard.py), the realloc fence (realloc_guard.py: every
+# realloc result is NULL-tested before it replaces its block), the
+# host-control fence (host_control_coverage.py: every host control goes
+# through its knob registry row), the provenance
 # fence (provenance_census.py: no staged line names another emulator's
 # internals), the upstream-text fence
 # (upstream_text_census.py: the DuckStation series holds no upstream line),
 # then the complexity, documentation and warning ratchets and the thread-role
 # fence (their shared machinery is scripts/fences/ratchet_lib.py). Every
 # report prints, and the commit aborts when any refuses, so one retry answers
-# all ten.
+# all eleven.
 fences="$(git rev-parse --show-toplevel)/scripts/fences"
 python3 "$fences/golden-png-guard.py" hook
 golden=$?
@@ -21,6 +23,8 @@ python3 "$fences/tile_census_accessor.py" hook
 accessor=$?
 python3 "$fences/worker_line_guard.py" hook
 workerline=$?
+python3 "$fences/realloc_guard.py" hook
+realloc=$?
 python3 "$fences/host_control_coverage.py" hook
 hostcontrol=$?
 python3 "$fences/provenance_census.py" hook
@@ -35,7 +39,8 @@ python3 "$fences/thread_roles.py" hook
 roles=$?
 python3 "$fences/warning_ratchet.py" hook
 warnings=$?
-[ "$golden" -eq 0 ] && [ "$accessor" -eq 0 ] && [ "$workerline" -eq 0 ] && [ "$hostcontrol" -eq 0 ] && [ "$provenance" -eq 0 ] \
+[ "$golden" -eq 0 ] && [ "$accessor" -eq 0 ] && [ "$workerline" -eq 0 ] && [ "$realloc" -eq 0 ] \
+    && [ "$hostcontrol" -eq 0 ] && [ "$provenance" -eq 0 ] \
     && [ "$upstream" -eq 0 ] \
     && [ "$complexity" -eq 0 ] && [ "$docs" -eq 0 ] && [ "$roles" -eq 0 ] \
     && [ "$warnings" -eq 0 ]

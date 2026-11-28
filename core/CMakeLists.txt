@@ -817,6 +817,16 @@ if(NOT CMAKE_HOST_WIN32)
         COMMENT "worker-line fence: per-worker arrays fill whole cache lines"
         VERBATIM)
 
+    # A realloc result is held apart from the block it replaces and tested
+    # before use: `p = realloc(p, n)` loses the block on failure and leaves
+    # a NULL table behind its capacity. scripts/fences/realloc_guard.py
+    # refuses that form, a result used before a NULL test, and a bare call.
+    add_custom_target(openpete_realloc_guard ALL
+        COMMAND ${CMAKE_COMMAND} -E echo "Checking realloc results..."
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/realloc_guard.py tree ${CMAKE_SOURCE_DIR}
+        COMMENT "realloc fence: every realloc result is NULL-tested before it replaces its block"
+        VERBATIM)
+
     # The oracle and the older forensic emulator are named as tools, never by
     # their internals (an upstream source path or line, an upstream symbol).
     # scripts/fences/provenance_census.py refuses a tracked line with a listed

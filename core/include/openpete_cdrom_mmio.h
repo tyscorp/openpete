@@ -39,7 +39,8 @@ void openpete_cdrom_mmio_vbl(uint32_t vbls);
  *
  * Reads `<trace_path>.cdirq`, which starts with a `psxtrace-cdirq` line,
  * into its command (C), interrupt (I) and register-read (R) rows;
- * malformed rows are skipped.
+ * malformed rows are skipped. An allocation failure releases the rows
+ * read so far and leaves the controller out of replay.
  * @param trace_path The golden's path.
  * @return 1 when the file was found and loaded, else 0. */
 int  openpete_cdrom_mmio_open(const char* trace_path);
