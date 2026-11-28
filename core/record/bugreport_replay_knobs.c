@@ -87,20 +87,10 @@ static const rk_row_t* rk_row(const char* id)
     return NULL;
 }
 
-/** @brief Find this build's registry row by id, or NULL. */
-static knob_desc_t* rk_registry_row(const char* id)
-{
-    size_t n = 0;
-    knob_desc_t* ks = knob_registry(&n);
-    for (size_t i = 0; i < n; i++)
-        if (!strcmp(ks[i].id, id)) return &ks[i];
-    return NULL;
-}
-
 /** @brief This build's replay class of a row id (openpete_bugknobs_class), or NULL when this build has no row of that id. */
 static const char* rk_class(const char* id)
 {
-    const knob_desc_t* k = rk_registry_row(id);
+    const knob_desc_t* k = knob_registry_find(id);
     return k ? openpete_bugknobs_class(k) : NULL;
 }
 
@@ -111,7 +101,7 @@ static const char* rk_class(const char* id)
  * @return 0, or -1 when this build has no live row of that id or its setter refuses the value. */
 static int rk_apply(const char* id, const char* value, const char* raw)
 {
-    knob_desc_t* k = rk_registry_row(id);
+    knob_desc_t* k = knob_registry_find(id);
     if (!k || k->mut != KNOB_LIVE) return -1;
     if (k->type == KNOB_STRING) return k->set_str ? k->set_str(k, value) : -1;
     if (!k->set_num || !strcmp(raw, "-")) return -1;

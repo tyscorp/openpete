@@ -1151,19 +1151,6 @@ static bool slider_int_stepped(const char *label, int *v, int mn, int mx)
     return changed;
 }
 
-/** @brief Find the registry row with an id, hidden or not.
- *
- * @param id The row id.
- * @return The row, or NULL when no row has the id (compiled out). */
-static knob_desc_t *row_by_id(const char *id)
-{
-    size_t n = 0;
-    knob_desc_t *ks = knob_registry(&n);
-    for (size_t i = 0; i < n; i++)
-        if (strcmp(ks[i].id, id) == 0) return &ks[i];
-    return nullptr;
-}
-
 /** @brief Write a value through a row's setter, logging it as the row drawers do.
  *
  * @param k The row, or NULL (nothing is written).
@@ -1184,7 +1171,7 @@ static bool row_write(knob_desc_t *k, double v)
 // host-control: drawer
 static bool row_button(const char *id, const char *caption)
 {
-    knob_desc_t *k = row_by_id(id);
+    knob_desc_t *k = knob_registry_find(id);
     const bool ready = k && (!k->get_num || k->get_num(k) != 0.0);
     if (!ready) ImGui::BeginDisabled();
     const bool fired = ImGui::Button(caption) && row_write(k, 1.0);
@@ -1199,7 +1186,7 @@ static bool row_button(const char *id, const char *caption)
 // host-control: drawer
 static void row_checkbox(const char *id, const char *caption)
 {
-    knob_desc_t *k = row_by_id(id);
+    knob_desc_t *k = knob_registry_find(id);
     bool b = k && (k->get_num ? k->get_num(k) : k->stored_num) != 0.0;
     if (ImGui::Checkbox(caption, &b)) (void)row_write(k, b ? 1.0 : 0.0);
 }
@@ -2253,19 +2240,19 @@ static void custom_level_tooltip(int i, const openpete_mods_custom_info_t &ci)
  * @param ci The level's descriptor. */
 static void draw_custom_level_line(int i, const openpete_mods_custom_info_t &ci)
 {
-    knob_desc_t *target = row_by_id("custom_level");
+    knob_desc_t *target = knob_registry_find("custom_level");
     const bool playable = ci.files_ok && openpete_mods_is_enabled(ci.owner) != 0;
     if (!playable) ImGui::BeginDisabled();
     // host-control: custom_level_go
     if (ImGui::Button(ci.active ? "In slot" : "Warp") && row_write(target, i))
-        (void)row_write(row_by_id("custom_level_go"), 1.0);
+        (void)row_write(knob_registry_find("custom_level_go"), 1.0);
     if (!playable) ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(ci.name);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) custom_level_tooltip(i, ci);
     ImGui::SameLine();
-    knob_desc_t *mode_row = row_by_id("custom_level_mode");
+    knob_desc_t *mode_row = knob_registry_find("custom_level_mode");
     if (!mode_row) return;
     int mode = ci.replace_mode;
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.0f);

@@ -121,9 +121,6 @@ int      openpete_osd_anchor(void) { return s_osd_anchor; }
 void     openpete_osd_set_default_timeout_ms(uint32_t ms) { s_osd_timeout_ms = ms; }
 uint32_t openpete_osd_default_timeout_ms(void) { return s_osd_timeout_ms; }
 int    openpete_native_perf_stats_level(void)    { return s_native_showfps; }
-void   openpete_native_set_fps_overlay(int on)   { s_native_showfps = on ? OPENPETE_PERF_FPS
-                                                                         : OPENPETE_PERF_OFF; }
-int    openpete_native_fps_overlay_enabled(void) { return s_native_showfps != OPENPETE_PERF_OFF; }
 void   openpete_native_set_fps_in_record(int on) { (void)on; }
 void   openpete_native_set_vertex_precision(int m) { s_native_vsnap = m ? 1 : 0; }
 int    openpete_native_get_vertex_precision(void)  { return s_native_vsnap; }

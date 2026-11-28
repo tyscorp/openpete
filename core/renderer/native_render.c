@@ -19804,9 +19804,7 @@ void openpete_native_set_perf_stats(int level) {
 }
 int  openpete_native_perf_stats_level(void) { return op_live_get(&s_perf_stats_want); }
 
-void openpete_native_set_fps_overlay(int on) {
-    openpete_native_set_perf_stats(on ? s_perf_stats_last : OPENPETE_PERF_OFF);
-}
+int  openpete_native_perf_stats_last(void) { return s_perf_stats_last; }
 int  openpete_native_fps_overlay_enabled(void) { return openpete_native_perf_stats_level() != OPENPETE_PERF_OFF; }
 int  openpete_native_fps_value(void)
 {

@@ -37,6 +37,16 @@ knob_desc_t* knob_registry(size_t* count) {
     return s_rows;
 }
 
+/** @brief Find a stub row by id, as the registry's lookup does.
+ *
+ * @param id The row id.
+ * @return The row, or NULL. */
+knob_desc_t* knob_registry_find(const char* id) {
+    for (size_t i = 0; id && i < sizeof s_rows / sizeof s_rows[0]; i++)
+        if (!strcmp(s_rows[i].id, id)) return &s_rows[i];
+    return NULL;
+}
+
 /* The member: freecam (sim) and vsync (host) labelled render, bloom
  * (render) labelled host; each changed live before the anchor (flag C) and
  * once more after it. Fields: knob id class value boot - - flags raw;

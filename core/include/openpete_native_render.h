@@ -595,7 +595,7 @@ struct SDL_Window* openpete_native_render_window(void);
  * The level is one of the OPENPETE_PERF_* values in openpete_perf_stats.h,
  * which owns the numbers; the renderer holds the level because it gates the
  * draw and sizes the supersample region. Out-of-range values are clamped. A
- * non-off level is remembered for openpete_native_set_fps_overlay. Drawn only
+ * non-off level is remembered for openpete_native_perf_stats_last. Drawn only
  * on the live vk present, never in screenshots. Driven by --perf-stats and
  * the overlay and menu rows. Renderer state only.
  * @param level An OPENPETE_PERF_* value. */
@@ -605,13 +605,13 @@ void openpete_native_set_perf_stats(int level);
  * @return An OPENPETE_PERF_* value. */
 int  openpete_native_perf_stats_level(void);
 
-/** @brief Turn the performance-stats overlay off, or on at the last non-off level.
+/** @brief Return the last non-off performance-stats level set, OPENPETE_PERF_FPS before any.
  *
- * The two-state view of openpete_native_set_perf_stats used by the O menu
- * row: on restores the last non-off level, so a toggle never demotes a
- * detailed readout to the bare counter.
- * @param on Non-zero for on. */
-void openpete_native_set_fps_overlay(int on);
+ * The settings menu's two-state SHOW FPS row writes it to the perf_stats row
+ * to turn the overlay on, so a toggle never demotes a detailed readout to
+ * the bare counter.
+ * @return An OPENPETE_PERF_* value other than OPENPETE_PERF_OFF. */
+int  openpete_native_perf_stats_last(void);
 
 /** @brief Set whether the FPS overlay is drawn into --record video.
  *

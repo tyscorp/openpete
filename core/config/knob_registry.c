@@ -69,12 +69,12 @@ static int nearest_enum_idx(const float *vals, int n, float v) {
     return best;
 }
 
-/* Rows the O menu moves through the renderer's own setters must read the
- * renderer back, not a registry-side shadow: the menu bypasses set_num, so a
- * shadowed row would still report its boot value and "save edited settings"
- * would skip the pick entirely. Until the native renderer is up (its state
- * settles after the registry stamps boot values, and never at all under
- * --headless) the stored boot value is the live value. Keyed on the DISPLAY
+/* Display rows read the renderer back, not a registry-side shadow: the
+ * renderer's own init resolves several of them (--raster-quantize auto,
+ * --texture-mapping) after the registry stamps boot values. Until the native
+ * renderer is up (and never at all under --headless) the row's stored value
+ * is the live value: the boot value, then each write through the row's
+ * setter (the settings menu and the dev overlay write through it). Keyed on the DISPLAY
  * predicate: these rows are display state, and in psycross mode the native
  * window and its accessors are real even though no native scene is walked. */
 #define KNOB_LIVE_OR_STORED(k) \
@@ -329,10 +329,10 @@ static double texmap_get(const knob_desc_t *k) {
 /** @brief Queue the texture mapping mode from `v`: 1 is affine, any other value perspective.
  *
  * The renderer applies it with a pipeline rebuild at the next present. The row
- * stores nothing, since texmap_get reads the renderer. */
+ * stores the mode, which texmap_get reads until the native renderer is up. */
 static int texmap_set(knob_desc_t *k, double v) {
-    (void)k;
     openpete_native_set_texture_mapping((int)v == 1);
+    k->stored_num = ((int)v == 1);
     return 0;
 }
 
@@ -417,10 +417,10 @@ static double dither_get(const knob_desc_t *k) {
     KNOB_LIVE_OR_STORED(k);
     return openpete_native_get_dither();
 }
-/** @brief Set the renderer's dither flag from `v` (nonzero is on). */
+/** @brief Set the renderer's dither flag from `v` (nonzero is on) and store it in the row. */
 static int dither_set(knob_desc_t *k, double v) {
-    (void)k;
     openpete_native_set_dither(v != 0.0);
+    k->stored_num = (v != 0.0);
     return 0;
 }
 
@@ -3627,6 +3627,14 @@ knob_desc_t *knob_registry(size_t *count) {
     rows_init();
     if (count) *count = g_row_count;
     return g_rows;
+}
+
+knob_desc_t *knob_registry_find(const char *id) {
+    if (!id) return NULL;
+    rows_init();
+    for (size_t i = 0; i < g_row_count; i++)
+        if (!strcmp(g_rows[i].id, id)) return &g_rows[i];
+    return NULL;
 }
 
 /** @brief Return the name a row shares with a row already in the table (its id, flag or env var), or NULL.

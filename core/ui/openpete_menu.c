@@ -1,12 +1,13 @@
 // core/ui/openpete_menu.c - in-game settings menu state + logic.
 // See openpete_menu.h.
 //
-// PURE PRESENTATION: every row maps to a native-renderer / host-pacer setter
-// (openpete_native_set_aspect/ssaa/vsync, openpete_set_render_fps,
-// openpete_no_lod_set). It never writes gameplay-readable state. The one
-// deliberate exception is FREECAM: the debug free camera (the F key) is an
-// opt-in gameplay-state divergence by design (openpete_freecam.h); the row is
-// just a second front-end for the same toggle. This file is state + apply; the
+// Every value row writes through the setter of the knob registry row it names
+// (ROW_SURFACE), the setter the dev overlay's row writes through, so the menu
+// and the overlay change a setting by one path. Those setters are
+// presentation and pacing state, never gameplay-readable RAM, with one
+// deliberate exception: FREECAM's row raises the free camera's engage request
+// (the F key's), an opt-in gameplay-state divergence by design
+// (openpete_freecam.h). This file is state + apply; the
 // panel is drawn by the native renderer and the row glyphs by the text-moby
 // builder, both reading the layout and row strings defined here.
 
@@ -16,10 +17,11 @@
 #include "openpete_log.h"
 #include "openpete_settings_save.h" /* autosave of the persisted rows */
 #include "openpete_osd.h"           /* announce every change the player makes */
-#include "openpete_freecam.h"        /* freecam active/toggle (FREECAM row) */
+#include "openpete_freecam.h"        /* freecam active (FREECAM row re-sync) */
+#include "openpete_knobs.h"          /* the registry rows the value rows write */
 #include "openpete_mods.h"           /* loaded-mod enumeration (MOD rows) */
 #include "openpete_launcher.h"        /* EXIT GAME back to the launcher */
-#include "no_lod.h"         /* openpete_no_lod_set, openpete_fog_mode_set */
+#include "no_lod.h"         /* openpete_no_lod_wanted, openpete_fog_mode_pinned */
 #include "openpete_host_input.h"     /* the published mouse snapshot */
 #include "openpete_host_mouse.h"     /* totals, ownership, probe */
 #include "openpete_devui.h"          /* ADVANCED opens the overlay */
@@ -359,68 +361,94 @@ static void log_state(const char* what) {
                ROW_LABEL[s_cursor], value_str(s_cursor, vb, sizeof vb));
 }
 
-/** @brief Push a row's selected value to its live setter, or perform the row's action.
+/** @brief Write a value through the setter of the knob registry row a menu row names.
  *
- * FREECAM toggles the free camera only when the row disagrees with the live
- * state. EXIT
- * requests a cooperative shutdown once armed twice.
- * ADVANCED closes the menu and opens the dev overlay scrolled to its top,
- * or toasts NOT AVAILABLE without an overlay. DISPLAY, FOG and the mod rows
- * apply nothing here: their adjust step sets the live state directly. A row whose ROW_SURFACE persist flag is set marks its
- * knob for the settings writer, which saves it after the debounce interval,
- * on menu close or at shutdown; DISPLAY is marked too, since the writer
- * reads the window state the request has settled by then.
- * @param row The row index. */
-static void apply_row(int row) {
-    switch (row) {
-    case ROW_ASPECT:   openpete_native_set_aspect(s_aspect[s_aspect_idx].wh); break;
-    case ROW_FOV:      openpete_native_set_fov(fov_val(s_fov_idx));            break;
-    case ROW_FPS:      openpete_set_render_fps(s_fps_vals[s_fps_idx]);         break;
-    case ROW_SHOWFPS:  openpete_native_set_fps_overlay(s_showfps_idx);         break;
-    case ROW_VSYNC:    openpete_native_set_vsync(s_vsync_idx);                 break;
-    case ROW_SSAA:     openpete_native_set_ssaa(s_ssaa_vals[s_ssaa_idx]);      break;
-    case ROW_WOBBLE:   openpete_native_set_vertex_precision(s_wobble_idx);    break;
-    case ROW_PIXEL:    openpete_native_set_raster_quantize(s_pix_vals[s_pixel_idx]); break;
-    /* Queued: the renderer re-bakes its pipelines at a later present
-     * (a one-time device-idle hitch); the value string reads the local
-     * index. */
-    case ROW_TEXMAP:   openpete_native_set_texture_mapping(s_texmap_idx);      break;
-    case ROW_DITHER:   openpete_native_set_dither(s_dither_idx);               break;
-    case ROW_LOD:
-        openpete_no_lod_set(s_lod_idx, -1.0f);
-        break;
-    case ROW_FREECAM:
-        /* The freecam API is a toggle (shared with the F key), not a setter:
-         * flip only when the row disagrees with the live state. The toggle
-         * clears the latched axes, so no stale intent carries over. */
-        if ((s_freecam_idx != 0) != (openpete_freecam_active() ? 1 : 0))
-            openpete_freecam_toggle();
-        break;
-    case ROW_ADVANCED:
-        /* The dev overlay is the full settings UI; this row closes the menu
-         * and opens the overlay at its top. */
-        if (!openpete_devui_available()) {
-            openpete_osd_notify("host", ROW_SURFACE[ROW_ADVANCED].id, 0, "NOT AVAILABLE");
-            break;
-        }
-        if (s_open) openpete_menu_toggle();
-        openpete_devui_open_top();
-        break;
-    case ROW_QUIT:
-        /* Cooperative: the host-fiber loop drains and tears down on its next
-         * iteration, so the memory card flushes like any other exit. A
-         * session picked on the launcher's game page then starts the
-         * launcher again (openpete_launcher_return_request). */
-        if (s_quit_armed >= 2) {
-            OPL_INFO_F("menu", "%s", "exit requested");
-            (void)openpete_launcher_return_request();
-            openpete_request_shutdown();
-        }
-        break;
-
-    default: break;
+ * A row the build compiles out, a restart-only row, or a value the setter
+ * refuses is logged and changes nothing.
+ * @param row The menu row index; its ROW_SURFACE knob names the registry row.
+ * @param v The value in the registry row's vocabulary (an enum row's index).
+ * @return 0 when the setter accepted the value, else -1. */
+static int menu_row_write(int row, double v) {
+    const char* id = ROW_SURFACE[row].knob;
+    knob_desc_t* k = knob_registry_find(id);
+    if (!k || k->mut != KNOB_LIVE || !k->set_num || k->set_num(k, v) != 0) {
+        OPL_WARN_F("menu", "%s: row %s refused %g", ROW_SURFACE[row].id, id ? id : "-", v);
+        return -1;
     }
-    if (row >= 0 && row <= ROW_MODEN && ROW_SURFACE[row].persist)
+    return 0;
+}
+
+/** @brief Perform the ADVANCED row: close the menu and open the dev overlay scrolled to its top.
+ *
+ * Toasts NOT AVAILABLE when the build or the run has no overlay. */
+static void open_advanced(void) {
+    if (!openpete_devui_available()) {
+        openpete_osd_notify("host", ROW_SURFACE[ROW_ADVANCED].id, 0, "NOT AVAILABLE");
+        return;
+    }
+    if (s_open) openpete_menu_toggle();
+    openpete_devui_open_top();   /* host-control: exempt: UI_NAV, the overlay is navigation */
+}
+
+/** @brief Perform the EXIT row once it is armed twice: return to the launcher and request a cooperative shutdown.
+ *
+ * The host-fiber loop drains and tears down on its next iteration, so the
+ * memory card flushes like any other exit. A session picked on the
+ * launcher's game page then starts the launcher again
+ * (openpete_launcher_return_request). The quit row's fire cancels that
+ * return, so this row does not write it. */
+static void exit_game(void) {
+    if (s_quit_armed < 2) return;
+    OPL_INFO_F("menu", "%s", "exit requested");
+    (void)openpete_launcher_return_request();   /* host-control: exempt: the launcher return */
+    openpete_request_shutdown();                /* host-control: exempt: the launcher return */
+}
+
+/** @brief Write a row's selected value through its registry row, or perform the row's action.
+ *
+ * DISPLAY writes the opposite of the live window state, which the fullscreen
+ * row's setter turns into the toggle request Alt+Enter raises; FOG writes the
+ * entry @p step away from the live pin; FREECAM writes the engage request,
+ * which the camera site applies only when it differs from the live state.
+ * The other value rows write the entry their shadow index selects. ADVANCED
+ * and EXIT act (open_advanced, exit_game); the mod rows apply nothing here:
+ * their adjust step sets the live state directly. A row whose ROW_SURFACE
+ * persist flag is set marks its knob for the settings writer, which saves it
+ * after the debounce interval, on menu close or at shutdown; DISPLAY is
+ * marked too, since the writer reads the window state the request has
+ * settled by then.
+ * @param row The row index.
+ * @param step The adjust direction, +1 or -1; FOG reads it. */
+static void apply_row(int row, int step) {
+    double v;
+    switch (row) {
+    case ROW_DISPLAY:  v = openpete_native_fullscreen_active() ? 0.0 : 1.0;   break;
+    case ROW_ASPECT:   v = s_aspect_idx;                                     break;
+    case ROW_FOV:      v = fov_val(s_fov_idx);                               break;
+    case ROW_FPS:      v = s_fps_vals[s_fps_idx];                            break;
+    /* SHOW FPS is the two-state view of the stats level: on restores the
+     * last non-off level, so a toggle never demotes a detailed readout. */
+    case ROW_SHOWFPS:
+        v = s_showfps_idx ? openpete_native_perf_stats_last() : OPENPETE_PERF_OFF;
+        break;
+    case ROW_VSYNC:    v = s_vsync_idx;                                      break;
+    case ROW_SSAA:     v = s_ssaa_idx;    /* the registry ladder is s_ssaa_vals */ break;
+    case ROW_WOBBLE:   v = s_wobble_idx;                                     break;
+    case ROW_PIXEL:    v = s_pix_vals[s_pixel_idx];                          break;
+    /* Queued: the renderer re-bakes its pipelines at a later present (a
+     * one-time device-idle hitch); the value string reads the local index. */
+    case ROW_TEXMAP:   v = s_texmap_idx;                                     break;
+    case ROW_DITHER:   v = s_dither_idx;                                     break;
+    case ROW_LOD:      v = s_lod_idx;                                        break;
+    /* Entry 0 unpins (OPENPETE_FOG_AUTO): the fog form follows LOD again. */
+    case ROW_FOG:      v = wrap_idx(fog_idx_from_live() + step, N_FOG);      break;
+    case ROW_FREECAM:  v = s_freecam_idx;                                    break;
+    case ROW_ADVANCED: open_advanced(); return;
+    case ROW_QUIT:     exit_game();     return;
+    default:           return;
+    }
+    (void)menu_row_write(row, v);
+    if (ROW_SURFACE[row].persist)
         openpete_settings_save_mark(ROW_SURFACE[row].knob);
 }
 
@@ -805,16 +833,14 @@ void openpete_menu_adjust(int dx) {
     const int step = (dx > 0 ? 1 : -1);
     switch (s_cursor) {
     case ROW_DISPLAY:
-        /* Two-state cycle: either direction flips windowed <-> fullscreen via
-         * the same request Alt+Enter / double-click use; the SDL call runs on
-         * the window-owning thread, not here. The value string reads the
-         * resulting live state back (nothing to apply below).
+        /* Two-state cycle: either direction flips windowed <-> fullscreen
+         * (apply_row); the SDL call runs on the window-owning thread, not
+         * here. The value string reads the live state back.
          *
          * The toast notify_row raises below therefore shows the state BEFORE
          * the flip - it is a request, not a change. It self-corrects: the
-         * toggle announces on the same key when it actually runs, a frame or
-         * two later, and repaints this toast with the truth. */
-        openpete_native_request_fullscreen_toggle();
+         * toggle announces on the same key when it actually runs, a present
+         * or two later, and repaints this toast with the truth. */
         break;
     case ROW_ASPECT:   s_aspect_idx = wrap_idx(s_aspect_idx + step, N_ASPECT);   break;
     case ROW_FOV:      s_fov_idx    = wrap_idx(s_fov_idx    + step, N_FOV);       break;
@@ -827,10 +853,7 @@ void openpete_menu_adjust(int dx) {
     case ROW_TEXMAP:   s_texmap_idx = wrap_idx(s_texmap_idx + step, 2);           break;
     case ROW_DITHER:   s_dither_idx = wrap_idx(s_dither_idx + step, 2);           break;
     case ROW_LOD:      s_lod_idx    = wrap_idx(s_lod_idx    + step, 2);           break;
-    case ROW_FOG:
-        /* Entry 0 unpins (OPENPETE_FOG_AUTO): the fog form follows LOD again. */
-        openpete_fog_mode_set(wrap_idx(fog_idx_from_live() + step, N_FOG) - 1);
-        break;
+    case ROW_FOG:      break;   /* apply_row steps from the live pin */
     case ROW_FREECAM:  s_freecam_idx = wrap_idx(s_freecam_idx + step, 2);         break;
     case ROW_MODSEL:
         if (openpete_mods_count() > 0)
@@ -843,7 +866,7 @@ void openpete_menu_adjust(int dx) {
          * reads back - no local shadow index to go stale. */
         const char* id = openpete_mods_id(s_modsel_idx);
         if (id)
-            (void)openpete_mods_set_mod_enabled(
+            (void)openpete_mods_set_mod_enabled(   /* host-control: exempt: the mod set */
                 id, !openpete_mods_is_enabled(id));
         break;
     }
@@ -851,7 +874,7 @@ void openpete_menu_adjust(int dx) {
      * under it and the overlay opens. */
     case ROW_ADVANCED:
         log_state("set");
-        apply_row(ROW_ADVANCED);
+        apply_row(ROW_ADVANCED, step);
         return;
     /* Action rows have no value to cycle - left/right are inert on them.
      * openpete_menu_activate() is the only way in, so a stray Right on the
@@ -859,7 +882,7 @@ void openpete_menu_adjust(int dx) {
     case ROW_QUIT: return;
     default: break;
     }
-    apply_row(s_cursor);
+    apply_row(s_cursor, step);
     log_state("set");
     notify_row(s_cursor);
 }
@@ -868,7 +891,7 @@ void openpete_menu_activate(void) {
     if (!s_open) return;
     if (!openpete_menu_row_centered(s_cursor)) return;   /* value rows: no-op */
     if (s_cursor == ROW_QUIT && s_quit_armed < 2) s_quit_armed++;   /* first press arms, second fires */
-    apply_row(s_cursor);
+    apply_row(s_cursor, +1);
     log_state("activate");
     /* EXIT raises no toast: arming already changes the row's own label to
      * REALLY EXIT?. */

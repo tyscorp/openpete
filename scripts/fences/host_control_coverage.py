@@ -32,7 +32,14 @@ one that bypasses the registry row that owns it, in four legs:
           drawer: it edits the row it is handed) or by a function-level
           `// host-control: exempt: <reason>` line.
   menu    every settings-menu entry of the baselines names a knob the same
-          baseline holds, or is one of MENU_EXEMPT.
+          baseline holds, or is one of MENU_EXEMPT; and core/ui/
+          openpete_menu.c changes no setting directly: a call of a function
+          a registry row setter calls and no getter calls (core/config/
+          knob_registry.c), or of an openpete_ function named *_set*,
+          *_toggle* or *_request* outside the menu's own api and the
+          settings writer, is refused unless its line carries `host-control:
+          exempt: <reason>`. The menu writes a setting through the row
+          (menu_row_write); a tree with no such write is VACUOUS.
 
 Scope of the scans: C and C++ under core/ and games/, the decomp checkouts
 (games/<g>/<g>/), generated/ and third_party/ excluded. A leg with no
@@ -83,6 +90,15 @@ MENU_EXEMPT = {
     "menu.modsel": "mod set",
     "menu.moden": "mod set",
 }
+
+MENU_C = os.path.join("core", "ui", "openpete_menu.c")
+MENU_ROW_WRITE = re.compile(r"\bmenu_row_write\s*\(")
+MUTATOR = re.compile(r"\b(openpete_(?!menu_|settings_save_)(?:\w*_)?(?:set|toggle|request)(?:_\w*)?)\s*\(")
+# A setter-only callee that reads (a state test, a count, a parse helper) is no write.
+READ_NAME = re.compile(r"(?:_active|_count|_parse|_pack|_enabled)$|_get_|_is_")
+SETTER_DEF = re.compile(r"^static\s+int\s+(\w+)\s*\(\s*knob_desc_t\s*\*\s*\w+\s*,", re.M)
+GETTER_DEF = re.compile(r"^static\s+(?:double|void)\s+(\w+)\s*\(\s*const\s+knob_desc_t\s*\*", re.M)
+CALL = re.compile(r"\b(openpete_\w+)\s*\(")
 
 ROW = re.compile(
     r"X\(\s*([A-Z0-9_]+)\s*,\s*\"([a-z0-9_]+)\"\s*,\s*KM_(?:DIGITAL|AXIS)\s*,"
@@ -321,6 +337,58 @@ def leg_devui(root, surf, problems):
     return n_calls
 
 
+def function_bodies(text, defn):
+    """Yield the body of every function whose definition line matches defn."""
+    for m in defn.finditer(text):
+        start = text.find("{", m.end())
+        if start < 0:
+            continue
+        depth, i = 0, start
+        while i < len(text):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        yield text[start:i]
+
+
+def setter_writes(root):
+    """Return the functions a registry row setter calls and no row getter calls."""
+    path = os.path.join(root, REGISTRY_C)
+    if not os.path.isfile(path):
+        return set()
+    text = strip_comments(read(path))
+    sets = {c for b in function_bodies(text, SETTER_DEF) for c in CALL.findall(b)}
+    gets = {c for b in function_bodies(text, GETTER_DEF) for c in CALL.findall(b)}
+    return {c for c in sets - gets if not READ_NAME.search(c)}
+
+
+def leg_menu_calls(root, problems):
+    """Refuse a settings-menu call that changes a setting outside its registry row; return the row writes seen."""
+    path = os.path.join(root, MENU_C)
+    if not os.path.isfile(path):
+        return 0
+    writes = setter_writes(root)
+    raw = read(path)
+    raw_lines = raw.split("\n")
+    row_writes = 0
+    for n, line in enumerate(strip_comments(raw).split("\n"), 1):
+        if not line.lstrip().startswith("static"):
+            row_writes += len(MENU_ROW_WRITE.findall(line))
+        if line_marker(raw_lines[n - 1]) == "exempt:":
+            continue
+        names = {m.group(1) for m in MUTATOR.finditer(line)}
+        names |= {c for c in CALL.findall(line) if c in writes}
+        for fn in sorted(names):
+            problems.append(f"menu: {MENU_C}:{n}: {fn} changes a setting outside its registry "
+                            "row; write the row (menu_row_write) or mark the line "
+                            "`host-control: exempt: <reason>`")
+    return row_writes
+
+
 def leg_menu(surf, problems):
     """Check every settings-menu entry names a knob or is exempt; return the entry count."""
     n = 0
@@ -353,8 +421,9 @@ def check(root):
     reads = leg_direct(root, rows, problems)
     widgets = leg_devui(root, surf, problems)
     menu = leg_menu(surf, problems)
+    menu_writes = leg_menu_calls(root, problems)
     counts = {"host actions": len(rows), "host-action reads": reads,
-              "devui widgets": widgets, "menu rows": menu}
+              "devui widgets": widgets, "menu rows": menu, "menu row writes": menu_writes}
     vacuous = [k for k, v in counts.items() if v == 0]
     for p in problems:
         print("host_control_coverage: " + p)

@@ -7,8 +7,9 @@ scratch root, checks the copy passes, then plants one bypass and checks the
 leg that owns it refuses: a direct key read of a row-driving action, a
 default-key scancode test, an unmarked dev overlay widget, a widget marker
 naming no row, a keymap row with a wrong op, a registry key hint naming no
-action and a menu entry with no knob.
-A root with no source reads is VACUOUS.
+action, a menu entry with no knob, and a settings-menu call that changes a
+setting outside its row (by name, and as a row setter's callee).
+A root with no source reads, and a menu with no row write, is VACUOUS.
 
 Run: python3 scripts/fences/tests/test_host_control_coverage.py
 (rumble-guard: no-launch, wslenv-guard: no-launch)
@@ -29,8 +30,10 @@ sys.path.insert(0, FENCES)
 
 import host_control_coverage as g  # noqa: E402
 
-COPIED = [g.KEYMAP_H, g.DEVUI, g.REGISTRY_C, os.path.join("core", "runtime", "host_control.c"),
+COPIED = [g.KEYMAP_H, g.DEVUI, g.REGISTRY_C, g.MENU_C,
+          os.path.join("core", "runtime", "host_control.c"),
           os.path.join("core", "runtime", "host_hotkeys.c")]
+MENU_PUBLIC = "/* --- public -------------------------------------------------------------- */\n"
 
 
 class HostControlCoverageTest(unittest.TestCase):
@@ -160,6 +163,37 @@ class HostControlCoverageTest(unittest.TestCase):
         rc, out = self.run_fence()
         self.assertEqual(rc, 66, out)
         self.assertIn("menu: menu.fov names no knob", out)
+
+    def test_menu_direct_toggle_refused(self):
+        self.edit(g.MENU_C, MENU_PUBLIC,
+                  "static void planted(void) { openpete_freecam_toggle(); }\n" + MENU_PUBLIC)
+        rc, out = self.run_fence()
+        self.assertEqual(rc, 66, out)
+        self.assertIn("openpete_freecam_toggle changes a setting outside its registry row", out)
+
+    def test_menu_setter_callee_refused(self):
+        self.edit(g.MENU_C, MENU_PUBLIC,
+                  "static void planted(void) { openpete_turbo_hold(1); }\n" + MENU_PUBLIC)
+        rc, out = self.run_fence()
+        self.assertEqual(rc, 66, out)
+        self.assertIn("openpete_turbo_hold changes a setting", out)
+
+    def test_menu_exempt_marker_passes(self):
+        self.edit(g.MENU_C, MENU_PUBLIC,
+                  "static void planted(void) { openpete_freecam_toggle(); }"
+                  "  /* host-control: exempt: test */\n" + MENU_PUBLIC)
+        rc, out = self.run_fence()
+        self.assertEqual(rc, 0, out)
+
+    def test_menu_without_row_write_is_vacuous(self):
+        path = os.path.join(self.root, g.MENU_C)
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text.replace("menu_row_write(", "menu_row_wrote("))
+        rc, out = self.run_fence()
+        self.assertEqual(rc, 65, out)
+        self.assertIn("zero menu row writes", out)
 
     def test_no_reads_is_vacuous(self):
         os.remove(os.path.join(self.root, "core", "runtime", "host_hotkeys.c"))

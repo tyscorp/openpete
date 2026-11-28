@@ -242,6 +242,14 @@ typedef enum {
  * @return The first row. */
 knob_desc_t *knob_registry(size_t *count);
 
+/** @brief Find the registry row with an id, hidden or not.
+ *
+ * A row's address changes when openpete_knob_add inserts a row before it,
+ * so a caller looks a row up at each use rather than keeping the pointer.
+ * @param id The row id; NULL finds nothing.
+ * @return The row, or NULL when no row has the id (compiled out). */
+knob_desc_t *knob_registry_find(const char *id);
+
 /** @brief Stamp every row's boot source and boot value.
  *
  * The source comes from the config resolver (openpete_config_knob_layer).

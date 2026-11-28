@@ -201,17 +201,6 @@ static void bk_sample(void)
     }
 }
 
-/** @brief Find a registry row by id.
- * @return The row, or NULL. */
-static knob_desc_t* bk_find(const char* id)
-{
-    size_t n = 0;
-    knob_desc_t* ks = knob_registry(&n);
-    for (size_t i = 0; i < n; i++)
-        if (!strcmp(ks[i].id, id)) return &ks[i];
-    return NULL;
-}
-
 /** @brief Parse a value word for a numeric row: an enum row's value name, a bool word, else a number.
  * @param k The row.
  * @param v The word.
@@ -236,7 +225,7 @@ static void bk_sched_run(void)
         bk_sched_t* s = &s_bk.sched[i];
         if (s->done || (long)key < s->key) continue;
         s->done = 1;
-        knob_desc_t* k = bk_find(s->id);
+        knob_desc_t* k = knob_registry_find(s->id);
         double v = 0.0;
         int rc = -1;
         if (k && k->type == KNOB_STRING && k->set_str) rc = k->set_str(k, s->value);
