@@ -4,6 +4,7 @@
 // the host hotkeys (toggles, the fill-tag inspector, the debug cameras).
 
 #include "host_hotkeys.h"
+#include "host_control.h"
 #include "run_internal.h"
 #include "eager.h"
 #include "host_loop_internal.h"
@@ -53,7 +54,7 @@ static SDL_AtomicInt s_turbo_row;
 void openpete_turbo_hold(int on) { SDL_SetAtomicInt(&s_turbo_row, on ? 1 : 0); }
 int  openpete_turbo_held(void)
 {
-    return openpete_key_down(OPK_TURBO) || SDL_GetAtomicInt(&s_turbo_row) != 0;
+    return hc_held(OPK_TURBO, HC_GATE_NONE) || SDL_GetAtomicInt(&s_turbo_row) != 0;
 }
 
 /* Scripted pause for windowed harnesses, OPENPETE_PAUSE_AT_VBL=N[,M[,K]]:
@@ -197,14 +198,14 @@ void host_pause_step(bool *paused, bool *step_one)
     }
     pause_at_vbl_drive(*paused, *step_one);
     static op_time_t step_held_since;
-    const bool step_edge = openpete_key_pressed(OPK_FRAME_STEP);
+    const bool step_edge = hc_edge(OPK_FRAME_STEP, HC_GATE_MENU);
     if (step_edge) step_held_since = op_now();
-    const bool step_repeat = !step_edge && openpete_key_down(OPK_FRAME_STEP) &&
+    const bool step_repeat = !step_edge && hc_held(OPK_FRAME_STEP, HC_GATE_MENU) &&
                              op_now() - step_held_since >= STEP_REPEAT_DELAY_NS;
     const bool step_k = step_edge || step_repeat ||
                         SDL_SetAtomicInt(&s_step_req, 0) != 0;
     const int pause_req = SDL_SetAtomicInt(&s_pause_req, -1);
-    if (openpete_key_pressed(OPK_PAUSE) ||
+    if (hc_edge(OPK_PAUSE, HC_GATE_MENU) ||
         (pause_req >= 0 && (pause_req != 0) != *paused)) {
         *paused = !*paused;
         /* Enter: mute. Exit: restore the live mute baseline (boot --mute,
@@ -374,14 +375,14 @@ void host_hotkeys_toggles(bool split)
      * offscreen, and the device belongs to the present thread while
      * eager is engaged, so it runs beside the --screenshot-on-frame
      * dumps later this iteration, under the same handoff. */
-    if (openpete_key_pressed(OPK_SCREENSHOT))
+    if (hc_edge(OPK_SCREENSHOT, HC_GATE_MENU))
         openpete_screenshot_request();
 
     /* Live on/off A/B for interpolation itself. Off = intermediate
      * renders present the lagged frame unchanged (a clean "is
      * frame-gen doing anything perceptible?" test). Bound to I by
      * default; the toast states the new mode. */
-    if (openpete_key_pressed(OPK_INTERP_TOGGLE)) {
+    if (hc_edge(OPK_INTERP_TOGGLE, HC_GATE_MENU)) {
         openpete_interp_toggle_set(!openpete_interp_toggle_on());
         openpete_osd_notify("host", "hotkey.interp", 0, "INTERPOLATION: %s",
                             openpete_interp_toggle_on() ? "ON" : "OFF");
@@ -394,7 +395,7 @@ void host_hotkeys_toggles(bool split)
      * new state. Native-renderer display policy; inert under
      * PsyCross. The toggle flips the wanted mode, which the next latch
      * applies; the menu re-syncs its LOD row from it when next opened. */
-    if (openpete_key_pressed(OPK_LOD_TOGGLE)) {
+    if (hc_edge(OPK_LOD_TOGGLE, HC_GATE_MENU)) {
         const int on = !openpete_no_lod_wanted();
         openpete_no_lod_set(on, -1.0f);
         /* Same key the O menu's LOD row uses, so a player who toggles
@@ -429,21 +430,21 @@ void host_hotkeys_fillpick(void)
      * verdict" record against the picked face and re-render with it
      * immediately; undo steps back. The verdict keys are gated on
      * engaged so their bindings stay free while it is off. */
-    if (openpete_key_pressed(OPK_FILLPICK)) openpete_fillpick_toggle();
+    if (hc_edge(OPK_FILLPICK, HC_GATE_MENU)) openpete_fillpick_toggle();
     if (!openpete_fillpick_active()) return;
-    if (openpete_key_pressed(OPK_FILLPICK_PREVIEW))
+    if (hc_edge(OPK_FILLPICK_PREVIEW, HC_GATE_MENU))
         openpete_fillpick_set_preview(!openpete_fillpick_preview());
-    if (openpete_key_pressed(OPK_FILLPICK_FILL))
+    if (hc_edge(OPK_FILLPICK_FILL, HC_GATE_MENU))
         openpete_fillpick_mark(OPENPETE_FILLPICK_FILL);
-    if (openpete_key_pressed(OPK_FILLPICK_NOFILL))
+    if (hc_edge(OPK_FILLPICK_NOFILL, HC_GATE_MENU))
         openpete_fillpick_mark(OPENPETE_FILLPICK_NOFILL);
-    if (openpete_key_pressed(OPK_FILLPICK_NONE))
+    if (hc_edge(OPK_FILLPICK_NONE, HC_GATE_MENU))
         openpete_fillpick_mark(OPENPETE_FILLPICK_NONE);
-    if (openpete_key_pressed(OPK_FILLPICK_UNDO))
+    if (hc_edge(OPK_FILLPICK_UNDO, HC_GATE_MENU))
         openpete_fillpick_undo();
 }
 
-/** @brief Latch the engaged debug camera's fly and look axes, the mouse-look counts and the speed steps from this poll's bindings. */
+/** @brief Latch the engaged debug camera's fly and look axes and the mouse-look counts from this poll's bindings. */
 static void camera_axes_latch(void)
 {
     /* Digital fly/look keys and the analog stick axes are separate
@@ -487,16 +488,6 @@ static void camera_axes_latch(void)
     openpete_freecam_add_look_counts(
         openpete_key_delta(OPK_LOOK_AXIS_X),
         openpete_key_delta(OPK_LOOK_AXIS_Y));
-
-    /* Speed step: one step per key or button edge plus one per
-     * wheel notch counted into the action this poll, so several
-     * notches in one iteration step several times. */
-    for (int n = openpete_key_edge(OPK_SPEED_DOWN)
-               + openpete_key_pulses(OPK_SPEED_DOWN); n > 0; n--)
-        openpete_freecam_adjust_speed(-1);
-    for (int n = openpete_key_edge(OPK_SPEED_UP)
-               + openpete_key_pulses(OPK_SPEED_UP); n > 0; n--)
-        openpete_freecam_adjust_speed(+1);
 }
 
 /** @brief Apply the free camera's and the camera lock's pending row requests, in that order, then the speed step request.
@@ -535,7 +526,7 @@ void host_hotkeys_camera(void)
      * axes so movement continues while held, consumed once per game
      * tick in game_on_frame_pre. Keyboard and pad sum (then clamp), so
      * either or both drive it. */
-    if (openpete_key_pressed(OPK_FREECAM)) {
+    if (hc_edge(OPK_FREECAM, HC_GATE_MENU)) {
         openpete_freecam_toggle();
         openpete_osd_notify("host", "menu.freecam", 0, "FREECAM: %s",
                             openpete_freecam_active() ? "ON" : "OFF");
@@ -545,7 +536,7 @@ void host_hotkeys_camera(void)
      * PRESENTED view while the sim (cutscenes included) continues
      * untouched. Shares the freecam's fly axes and speed step, so the
      * two are mutually exclusive: engaging one disengages the other. */
-    if (openpete_key_pressed(OPK_CAMLOCK)) {
+    if (hc_edge(OPK_CAMLOCK, HC_GATE_MENU)) {
         if (!openpete_camlock_active() && openpete_freecam_active())
             openpete_freecam_toggle();
         openpete_camlock_toggle();
@@ -564,11 +555,20 @@ void host_hotkeys_camera(void)
      * request is dropped if the camera isn't engaged. Edge-tracked out
      * here rather than under the engaged branch so a teleport key
      * already held when the camera engages doesn't count as a press. */
-    if (openpete_key_pressed(OPK_TELEPORT))
+    if (hc_edge(OPK_TELEPORT, HC_GATE_MENU))
         openpete_freecam_request_teleport();
 
-    if (openpete_freecam_active() || openpete_camlock_active())
-        camera_axes_latch();
+    if (!openpete_freecam_active() && !openpete_camlock_active()) return;
+    /* The fly and look axes stay neutral while the settings menu is open
+     * (menu_open_input holds them there). */
+    if (!openpete_menu_is_open()) camera_axes_latch();
+    /* Speed step: one step per key or button edge plus one per wheel notch
+     * counted into the action this poll, so several notches in one
+     * iteration step several times. */
+    for (int n = hc_count(OPK_SPEED_DOWN, HC_GATE_MENU); n > 0; n--)
+        openpete_freecam_adjust_speed(-1);
+    for (int n = hc_count(OPK_SPEED_UP, HC_GATE_MENU); n > 0; n--)
+        openpete_freecam_adjust_speed(+1);
 }
 
 #endif /* OPENPETE_HAS_PSYCROSS */

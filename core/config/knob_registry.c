@@ -28,6 +28,7 @@
 #include "openpete_host_input.h"
 #include "openpete_host_mouse.h"
 #include "openpete_interp.h"
+#include "openpete_keymap.h"
 #include "openpete_bugreport.h"
 #include "openpete_launcher.h"
 #include "openpete_mods.h"
@@ -1130,13 +1131,8 @@ static int camlock_set(knob_desc_t *k, double v) {
 static int screenshot_fire(knob_desc_t *k, double v) { (void)k; (void)v; openpete_screenshot_request(); return 0; }
 /** @brief Raise the bug-report press, as the bug_report key does. */
 static int bugreport_fire(knob_desc_t *k, double v) { (void)k; (void)v; openpete_bugreport_request(); return 0; }
-/** @brief End the process as the quit key does: cancel a pending return to the launcher, then request the shutdown. */
-static int quit_fire(knob_desc_t *k, double v) {
-    (void)k; (void)v;
-    openpete_launcher_return_cancel();
-    openpete_request_shutdown();
-    return 0;
-}
+/** @brief End the process as the quit key does (openpete_quit). */
+static int quit_fire(knob_desc_t *k, double v) { (void)k; (void)v; openpete_quit(); return 0; }
 /** @brief 1 while the freecam is engaged, so the teleport button is enabled, else 0. */
 static double teleport_ready(const knob_desc_t *k) { (void)k; return openpete_freecam_active() ? 1.0 : 0.0; }
 /** @brief Request the player moved to the freecam, as the teleport key does; refused while the freecam is disengaged. */
@@ -1272,8 +1268,7 @@ static const knob_desc_t g_builtin[] = {
       .help_arg = "0|1", .help_order = 110,
       .help_text = "launch in borderless-desktop fullscreen (default {def} = windowed;\n"
           "on|off also accepted). Alt+Enter, a double-click and the\n"
-          "settings menu's DISPLAY row toggle it live.",
-      .key_action = "fullscreen" },
+          "settings menu's DISPLAY row toggle it live." },
 
     { "aspect", "Aspect ratio", "Display", "--aspect", NULL,
       "Hor+ render aspect; auto follows the window shape. Picking a fixed "
@@ -1610,8 +1605,7 @@ static const knob_desc_t g_builtin[] = {
       .help_arg = "MODE", .help_order = 240,
       .help_text = "sector level-of-detail: {def} (default = authentic PSX LOD band) |\n"
           "extended (draw every visible sector at high-poly, out to the cull\n"
-          "distance and beyond). Native renderer only. (--no-lod = extended.)",
-      .key_action = "lod_toggle" },
+          "distance and beyond). Native renderer only. (--no-lod = extended.)" },
 
     { "fog", "Fog", "Display", "--fog", NULL,
       "How distance fog is drawn: original = the game's per-corner fade and "
@@ -1779,8 +1773,7 @@ static const knob_desc_t g_builtin[] = {
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       interp_get, interp_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
-      .def_str = "on",
-      .key_action = "interp_toggle" },
+      .def_str = "on" },
 
     { "pause", "Pause sim", "Pacing", NULL, NULL,
       "Pause the game's ticks while presents continue. Audio mutes and "
@@ -1788,22 +1781,20 @@ static const knob_desc_t g_builtin[] = {
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       pause_get, pause_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .replay = KNOB_REPLAY_SIM, .effect = KNOB_EFFECT_PACE,
-      .def_str = "off",
-      .key_action = "pause" },
+      .def_str = "off" },
 
     { "frame_step", "Step tick", "Pacing", NULL, NULL,
       "Advance the paused game by one tick.",
       KNOB_ACTION, KNOB_LIVE, NULL, 0, 0, 0,
       step_ready, step_fire, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .effect = KNOB_EFFECT_PACE,
-      .action_label = "Step tick",
-      .key_action = "frame_step" },
+      .action_label = "Step tick" },
 
     { .id = "turbo", .label = "Turbo", .section = "Pacing",
       .help = "Run unpaced (fast-forward) while checked or while the turbo "
               "key is held. Changes only how fast ticks run.",
       .type = KNOB_BOOL, .mut = KNOB_LIVE, .get_num = turbo_get, .set_num = turbo_set,
-      .def_str = "off", .key_action = "turbo",
+      .def_str = "off",
       .replay = KNOB_REPLAY_HOST, .effect = KNOB_EFFECT_PACE, .flags = KNOB_FLAG_HOLD },
 
     { "runahead", "Runahead", "Pacing", "--runahead", NULL,
@@ -1842,7 +1833,7 @@ static const knob_desc_t g_builtin[] = {
               "Needs a rewind window.",
       .type = KNOB_INT, .mut = KNOB_LIVE, .num_min = 0, .num_max = OPENPETE_REWIND_HOLD_MAX,
       .get_num = rewindhold_get, .set_num = rewindhold_set,
-      .def_str = "0", .key_action = "rewind",
+      .def_str = "0",
       .replay = KNOB_REPLAY_SIM, .effect = KNOB_EFFECT_GAMEPLAY, .flags = KNOB_FLAG_HOLD },
 
     /* -------- Audio -------- */
@@ -2346,8 +2337,7 @@ static const knob_desc_t g_builtin[] = {
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       freecam_get, freecam_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .replay = KNOB_REPLAY_SIM, .effect = KNOB_EFFECT_GAMEPLAY,
-      .def_str = "off",
-      .key_action = "freecam" },
+      .def_str = "off" },
 
     { .id = "teleport", .label = "Teleport player", .section = "Gameplay",
       .help = "Drop the player at the freecam's position and hand the camera "
@@ -2355,7 +2345,7 @@ static const knob_desc_t g_builtin[] = {
               "is engaged.",
       .type = KNOB_ACTION, .mut = KNOB_LIVE,
       .get_num = teleport_ready, .set_num = teleport_fire,
-      .action_label = "Teleport", .key_action = "teleport" },
+      .action_label = "Teleport" },
 
     { .id = "freecam_speed", .label = "Freecam speed", .section = "Gameplay",
       .help = "The freecam's and the camera lock's fly and turn speed step, "
@@ -2363,7 +2353,7 @@ static const knob_desc_t g_builtin[] = {
       .type = KNOB_INT, .mut = KNOB_LIVE, .num_min = 0,
       .num_max = OPENPETE_FREECAM_SPEED_STEPS - 1,
       .get_num = fcspeed_get, .set_num = fcspeed_set,
-      .def_str = "2", .key_action = "speed_up",
+      .def_str = "2",
       .replay = KNOB_REPLAY_SIM, .effect = KNOB_EFFECT_GAMEPLAY },
 
     { "state_slot", "Savestate", "Gameplay", NULL, NULL,
@@ -2372,22 +2362,19 @@ static const knob_desc_t g_builtin[] = {
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_state_slot_names), 0, 0,
       state_slot_get, state_slot_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .replay = KNOB_REPLAY_HOST, .effect = KNOB_EFFECT_GAMEPLAY,
-      .def_str = "Slot 0",
-      .key_action = "savestate_cycle" },
+      .def_str = "Slot 0" },
 
     { "state_save", "Save state", "Gameplay", NULL, NULL,
       "Save the game to the selected slot.",
       KNOB_ACTION, KNOB_LIVE, NULL, 0, 0, 0,
       NULL, state_save_fire, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
-      .action_label = "Save",
-      .key_action = "savestate_save" },
+      .action_label = "Save" },
 
     { "state_load", "Load state", "Gameplay", NULL, NULL,
       "Load the game from the selected slot; disabled while the slot is empty.",
       KNOB_ACTION, KNOB_LIVE, NULL, 0, 0, 0,
       state_load_ready, state_load_fire, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
-      .action_label = "Load",
-      .key_action = "savestate_load" },
+      .action_label = "Load" },
 
     /* Both pose flags set their env spelling from the parser, so the env
      * getter shows either spelling. One-shot at boot. */
@@ -2429,27 +2416,26 @@ static const knob_desc_t g_builtin[] = {
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       camlock_get, camlock_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .replay = KNOB_REPLAY_SIM, .effect = KNOB_EFFECT_GAMEPLAY,
-      .def_str = "off",
-      .key_action = "camlock" },
+      .def_str = "off" },
 
     { .id = "screenshot", .label = "Screenshot", .section = "Gameplay",
       .help = "Save a PNG of the next presented picture, as the screenshot "
               "key does.",
       .type = KNOB_ACTION, .mut = KNOB_LIVE, .set_num = screenshot_fire,
-      .action_label = "Save PNG", .key_action = "screenshot",
+      .action_label = "Save PNG",
       .effect = KNOB_EFFECT_PRESENTATION },
 
     { .id = "bug_report", .label = "Bug report", .section = "Gameplay",
       .help = "Write a bug report zip to send, as the bug report key does.",
       .type = KNOB_ACTION, .mut = KNOB_LIVE, .set_num = bugreport_fire,
-      .action_label = "Write", .key_action = "bug_report",
+      .action_label = "Write",
       .flags = KNOB_FLAG_NO_MOD },
 
     { .id = "quit", .label = "Quit", .section = "Gameplay",
       .help = "End the game process, as the quit key does; a pending return "
               "to the launcher is cancelled.",
       .type = KNOB_ACTION, .mut = KNOB_LIVE, .set_num = quit_fire,
-      .action_label = "Quit", .key_action = "quit" },
+      .action_label = "Quit" },
 
     /* The custom-level warp: a mod's [[level]] rows, drawn per level in the
      * Mods list. The registry binds the target row's values at each
@@ -3224,8 +3210,7 @@ static const knob_desc_t g_builtin_debug[] = {
       "tests/freecam/fill-tags.verdicts; verdicts land in a session file.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       fillpick_get, fillpick_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
-      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
-      .key_action = "fillpick" },
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION },
 
     { "fillpick_preview", "Fill-tag preview", "Debug", NULL, "OPENPETE_FILLPICK_PREVIEW",
       "With the inspector engaged, draw every LP face - not just the tagged "
@@ -3233,28 +3218,27 @@ static const knob_desc_t g_builtin_debug[] = {
       "face that should be filling a hole is found before it is tagged.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       fillpick_prev_get, fillpick_prev_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
-      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
-      .key_action = "fillpick_preview" },
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION },
 
     { .id = "fillpick_fill", .label = "Fill-tag FILL", .section = "Debug",
       .help = "Mark the face under the inspector's crosshair FILL.",
       .type = KNOB_ACTION, .mut = KNOB_LIVE, .get_num = fpmark_ready, .set_num = fpfill_fire,
-      .action_label = "FILL", .key_action = "fillpick_fill",
+      .action_label = "FILL",
       .effect = KNOB_EFFECT_PRESENTATION },
     { .id = "fillpick_nofill", .label = "Fill-tag NOFILL", .section = "Debug",
       .help = "Mark the face under the inspector's crosshair NOFILL.",
       .type = KNOB_ACTION, .mut = KNOB_LIVE, .get_num = fpmark_ready, .set_num = fpnofill_fire,
-      .action_label = "NOFILL", .key_action = "fillpick_nofill",
+      .action_label = "NOFILL",
       .effect = KNOB_EFFECT_PRESENTATION },
     { .id = "fillpick_none", .label = "Fill-tag clear", .section = "Debug",
       .help = "Clear the session verdict of the face under the inspector's crosshair.",
       .type = KNOB_ACTION, .mut = KNOB_LIVE, .get_num = fpmark_ready, .set_num = fpnone_fire,
-      .action_label = "clear", .key_action = "fillpick_none",
+      .action_label = "clear",
       .effect = KNOB_EFFECT_PRESENTATION },
     { .id = "fillpick_undo", .label = "Fill-tag undo", .section = "Debug",
       .help = "Undo the inspector's newest session verdict.",
       .type = KNOB_ACTION, .mut = KNOB_LIVE, .get_num = fpundo_ready, .set_num = fpundo_fire,
-      .action_label = "undo", .key_action = "fillpick_undo",
+      .action_label = "undo",
       .effect = KNOB_EFFECT_PRESENTATION },
 
     ENVROW_LATCHED("ACTOR_OWN_KEY", "Debug", "1",
@@ -3634,6 +3618,9 @@ static void rows_init(void) {
         g_rows[i].debug_block = 1;
 #endif
     g_row_count = KNOB_BUILTIN_COUNT;
+    for (size_t i = 0; i < g_row_count; i++)
+        if (!g_rows[i].key_action)
+            g_rows[i].key_action = openpete_keymap_row_key_action(g_rows[i].id);
 }
 
 knob_desc_t *knob_registry(size_t *count) {
@@ -3655,9 +3642,17 @@ static const char *knob_name_clash(const knob_desc_t *row) {
     return NULL;
 }
 
+int knob_is_env_row(const knob_desc_t *k) {
+    return k && k->env && !k->cli && k->type == KNOB_STRING;
+}
+
 int knob_needs_replay_class(const knob_desc_t *k) {
     if (!k || k->mut != KNOB_LIVE || k->type == KNOB_ACTION) return 0;
-    return !(k->env && !k->cli && k->type == KNOB_STRING);
+    return !knob_is_env_row(k);
+}
+
+int knob_on_mod_surface(const knob_desc_t *k) {
+    return k && k->mut == KNOB_LIVE && !knob_is_env_row(k) && !(k->flags & KNOB_FLAG_NO_MOD);
 }
 
 int openpete_knob_add(const knob_desc_t *row) {
@@ -3695,6 +3690,8 @@ int openpete_knob_add(const knob_desc_t *row) {
     memmove(&g_rows[at + 1], &g_rows[at],
             (g_row_count - at) * sizeof g_rows[0]);
     g_rows[at] = *row;
+    if (!g_rows[at].key_action)
+        g_rows[at].key_action = openpete_keymap_row_key_action(row->id);
     g_row_count++;
     return 0;
 }

@@ -1161,6 +1161,11 @@ int  openpete_run(const openpete_options_t* opts);
  * unrecoverable device loss. */
 void openpete_request_shutdown(void);
 
+/** @brief End the process as the quit key does: withdraw a pending return to the launcher, then request the shutdown.
+ *
+ * The quit row's fire and the quit key's event site both call it. */
+void openpete_quit(void);
+
 /** @brief Report whether the run is to stop: a shutdown request, or an expired --max-runtime-seconds deadline.
  *
  * Read from any thread. The host loop quits on either at its next

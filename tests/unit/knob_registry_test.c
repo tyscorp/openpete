@@ -173,6 +173,7 @@ void   openpete_screenshot_request(void)       { }
 void   openpete_bugreport_request(void)        { }
 void   openpete_request_shutdown(void)         { }
 void   openpete_launcher_return_cancel(void)   { }
+void   openpete_quit(void)                     { }
 void   openpete_freecam_request_teleport(void) { }
 void   openpete_freecam_request_active(bool on) { (void)on; }
 int    openpete_freecam_pending_active(void)   { return -1; }

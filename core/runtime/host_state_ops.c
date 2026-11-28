@@ -3,6 +3,7 @@
 // the rewind driver.
 
 #include "host_state_ops.h"
+#include "host_control.h"
 #include "run_internal.h"
 #include "host_input_tick.h"
 #include "runahead.h"
@@ -287,14 +288,15 @@ int state_ops_drain(void) OP_REQUIRES(sim) {
 void state_ops_collect(const openpete_options_t* opts) OP_REQUIRES(sim) {
     static bool sched_saved = false, sched_loaded = false;
     s_bug_opts = opts;
-    if (openpete_bugreport_due()) state_op_push(STATE_OP_BUG_REPORT, 0, NULL);
+    if (openpete_bugreport_due(hc_edge(OPK_BUG_REPORT, HC_GATE_MENU)))
+        state_op_push(STATE_OP_BUG_REPORT, 0, NULL);
     const unsigned slot = openpete_state_active_slot();
     const int req = SDL_SetAtomicInt(&s_state_slot_req, 0);
     /* The save and load keys default to the number row. The slot is the one
      * the dev overlay shares. */
-    if (openpete_key_pressed(OPK_STATE_SAVE) || (req & STATE_REQ_SAVE))
+    if (hc_edge(OPK_STATE_SAVE, HC_GATE_MENU) || (req & STATE_REQ_SAVE))
         state_op_push(STATE_OP_SAVE_SLOT, slot, NULL);
-    if (openpete_key_pressed(OPK_STATE_LOAD) || (req & STATE_REQ_LOAD))
+    if (hc_edge(OPK_STATE_LOAD, HC_GATE_MENU) || (req & STATE_REQ_LOAD))
         state_op_push(STATE_OP_LOAD_SLOT, slot, NULL);
     const int key = (int)openpete_feed_key_now();
     if (!sched_saved && opts->state_save_on_frame >= 0 && key >= opts->state_save_on_frame) {
@@ -308,7 +310,7 @@ void state_ops_collect(const openpete_options_t* opts) OP_REQUIRES(sim) {
         else
             state_op_push(STATE_OP_LOAD_FILE, 0, opts->state_load_input);
     }
-    if (openpete_key_pressed(OPK_STATE_CYCLE))
+    if (hc_edge(OPK_STATE_CYCLE, HC_GATE_MENU))
         openpete_state_set_active_slot((slot + 1u) % OPENPETE_STATE_NUM_SLOTS);
     static bool announced_once = false;
     if (SDL_SetAtomicInt(&s_state_slot_announce, 0)) {
@@ -587,7 +589,7 @@ static bool rewind_mods_allow(void) {
  * @return true when held. */
 static bool rewind_key_held(const openpete_options_t* opts, int live, bool paused) {
     static int held = 0, armed = 0;
-    bool k = openpete_key_down(OPK_REWIND);
+    bool k = hc_held(OPK_REWIND, HC_GATE_MENU);
     if (opts->rewind_hold_frame >= 0 && !armed &&
         (int)openpete_feed_key_now() >= opts->rewind_hold_frame &&
         openpete_rewind_hold_phase_ready(openpete_frame))
@@ -613,7 +615,7 @@ int openpete_rewind_hold_request(int ticks) {
 
 int openpete_rewind_hold_value(void) {
     const int row = SDL_GetAtomicInt(&s_rewind_hold_row);
-    return openpete_key_down(OPK_REWIND) ? OPENPETE_REWIND_HOLD_MAX : row;
+    return hc_held(OPK_REWIND, HC_GATE_NONE) ? OPENPETE_REWIND_HOLD_MAX : row;
 }
 
 /** @brief Count one seek off the rewind_hold row's remaining ticks, unless a new request replaced the count meanwhile.
@@ -673,7 +675,7 @@ bool rewind_step(const openpete_options_t* opts, bool paused, bool bk2_active) O
     if (!openpete_rewind_enabled()) {
         SDL_SetAtomicInt(&s_rewind_hold_row, 0);
         static bool hinted = false;
-        if (!hinted && openpete_key_down(OPK_REWIND)) {
+        if (!hinted && hc_held(OPK_REWIND, HC_GATE_MENU)) {
             hinted = true;
             OPL_WARN_F("rewind", "the rewind key was pressed but rewind is disabled - launch with "
                        "--rewind 30 to enable a 30 s window");

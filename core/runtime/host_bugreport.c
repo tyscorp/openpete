@@ -146,10 +146,10 @@ static void bundle_reap(int wait) OP_REQUIRES(sim)
     br_job_free(j);
 }
 
-int openpete_bugreport_due(void) OP_REQUIRES(sim)
+int openpete_bugreport_due(int key_edge) OP_REQUIRES(sim)
 {
     bundle_reap(0);
-    int due = openpete_key_pressed(OPK_BUG_REPORT) != 0;
+    int due = key_edge != 0;
     if (SDL_SetAtomicInt(&s_bp.requested, 0)) due = 1;
     s_bp.harness_press = 0;
     if (!due && s_bp.at_key >= 0 && (long)openpete_feed_key_now() >= s_bp.at_key) {

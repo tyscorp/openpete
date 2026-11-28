@@ -68,10 +68,11 @@ void openpete_bugreport_request(void);
 /** @brief Report whether a press is due this iteration: the key edge, a request or the harness feed key; and post the toast of a finished bundle.
  *
  * Called from the state-op collector on the sim thread once per quiescent
- * iteration. A due press while a bundle is in flight is refused with a
- * toast and returns 0.
+ * iteration, which reads the key with the savestate keys. A due press
+ * while a bundle is in flight is refused with a toast and returns 0.
+ * @param key_edge Whether the bug_report key was pressed this iteration.
  * @return 1 when the caller queues the press op. */
-int openpete_bugreport_due(void) OP_REQUIRES(sim);
+int openpete_bugreport_due(int key_edge) OP_REQUIRES(sim);
 
 /** @brief Take the press at a final yield: copy the snapshot, rings and reports, raise the screenshot request and start the worker.
  *

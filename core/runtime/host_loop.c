@@ -26,7 +26,6 @@
 #include "openpete_interp_objs.h"
 #include "openpete_keymap.h"
 #include "openpete_log.h"
-#include "openpete_menu.h"
 #include "openpete_mods.h"
 #include "openpete_native_render.h"
 #include "openpete_pace_log.h"
@@ -340,12 +339,13 @@ void host_quiescent_ops(host_session_t* S, host_iter_t* it) OP_REQUIRES(sim)
      * stale buttons from the saved RAM and feels like input has stopped
      * registering until the next iter.
      *
-     * Skipped while the settings menu is open - it owns input. The
-     * keymap latch keeps advancing underneath, so a key held across the
-     * close is already latched and cannot misfire on the first iteration
-     * after it, and a press made while the menu was up is swallowed
-     * rather than replayed into the game. */
-    if (openpete_menu_is_open()) return;
+     * Runs with the settings menu open too, so the periodic state work and
+     * the row requests apply while it is up; each site's key read
+     * (host_control.h) is masked under the menu instead, except turbo's.
+     * The keymap latch keeps advancing underneath, so a key held across
+     * the close is already latched and cannot misfire on the first
+     * iteration after it, and a press made while the menu was up is
+     * swallowed rather than replayed into the game. */
     it->rewound = state_ops_quiescent(S->opts, S->paused, S->bk2.active);
 
     /* Any op above may have re-anchored openpete_frame. */

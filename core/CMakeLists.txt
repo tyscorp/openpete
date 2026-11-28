@@ -101,6 +101,7 @@ add_library(openpete_core STATIC
     runtime/host_loop.c
     runtime/host_present.c
     runtime/host_hotkeys.c
+    runtime/host_control.c
     runtime/eager.c
     runtime/host_session.c
     runtime/host_bugreport.c
@@ -882,6 +883,15 @@ if(NOT CMAKE_HOST_WIN32)
         # see the consumers.
         COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/keymap_flags.py ${CMAKE_SOURCE_DIR}
         COMMENT "launcher fences: silence the pad, make env knobs cross into WSL, lock host input, private Xvfb display, sandbox the run, keymap flags match consumers"
+        VERBATIM)
+
+    # Host controls reach the game through the knob registry: every host
+    # action names its row and op, no site reads a row-driving action outside
+    # hc_edge/hc_held/hc_count, every dev overlay widget names its row or an
+    # exemption, and every settings-menu row names a knob. Refuses the build.
+    add_custom_target(openpete_host_control_coverage ALL
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/host_control_coverage.py tree ${CMAKE_SOURCE_DIR}
+        COMMENT "host-control fence: every host control goes through its registry row"
         VERBATIM)
 
     # Cognitive-complexity ratchet. The fence acts in a git pre-commit hook,

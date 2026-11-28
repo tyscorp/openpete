@@ -31,6 +31,7 @@ void host_ui_poll(void);
  * tick. Pausing mutes the audio and silences the motors; resuming restores
  * the live mute baseline. Publishes the paused state for
  * openpete_sim_paused. Drives the OPENPETE_PAUSE_AT_VBL schedule first.
+ * The keys read nothing while the settings menu is open; the requests apply.
  * @param paused The host loop's paused flag, toggled here.
  * @param step_one The host loop's one-tick flag, raised here while paused. */
 void host_pause_step(bool *paused, bool *step_one);
@@ -68,12 +69,13 @@ void step_after_vbl(bool stepping, bool *step_one);
 
 /** @brief Apply the single-action hotkeys: screenshot request, interpolation toggle, LOD toggle and the fullscreen gestures.
  *
- * Each arm reads its own key edge and writes its own subsystem.
+ * Each arm reads its own key edge and writes its own subsystem. While the
+ * settings menu is open no key reads and no fullscreen gesture toggles.
  * @param split Whether the thread split is active: the fullscreen toggle
  *        then goes to the window-owning thread as a request. */
 void host_hotkeys_toggles(bool split);
 
-/** @brief Apply the fill-tag inspector keys: the engage toggle, then while engaged the preview toggle, the three verdict marks and undo. */
+/** @brief Apply the fill-tag inspector keys: the engage toggle, then while engaged the preview toggle, the three verdict marks and undo; no key reads while the settings menu is open. */
 void host_hotkeys_fillpick(void);
 
 /** @brief Apply the debug camera rows' requests and keys: the freecam and camera-lock toggles with their exclusivity, the relative-mouse request, the teleport request, then while a camera is engaged its fly and look axes and speed steps.
@@ -82,5 +84,7 @@ void host_hotkeys_fillpick(void);
  * first, so a row write and a key press in one iteration apply in that
  * order. The order is load-bearing: the exclusivity test reads both
  * toggles' results, and the capture request and the axes latch read the
- * resulting engagement. */
+ * resulting engagement. While the settings menu is open the requests and
+ * the capture request still apply, the keys read nothing and the axes are
+ * not latched. */
 void host_hotkeys_camera(void);

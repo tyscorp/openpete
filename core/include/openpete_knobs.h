@@ -204,7 +204,12 @@ typedef struct knob_desc {
 
     /* The [keys.host] action that changes this row's setting ("pause"):
      * the overlay's tooltip shows its resolved binding and --help its
-     * built-in one, as a Key field. NULL for a setting no action changes. */
+     * built-in one, as a Key field. NULL for a setting no action changes.
+     * Written by the registry when the row enters the table, from the row
+     * column of OPENPETE_KEYMAP_HOST_ACTIONS
+     * (openpete_keymap_row_key_action). A table entry sets it only on a row
+     * no action drives whose setting a key's use depends on (the rewind
+     * window, the overlay's open-at-boot); the registry keeps that value. */
     const char *key_action;
 
     /* A value of the `cli` flag other than def_str that the parser accepts,
@@ -386,6 +391,20 @@ int openpete_knob_add(const knob_desc_t *row);
  * @param k The row.
  * @return 1 when the row needs a declared knob_replay_t, else 0. */
 int knob_needs_replay_class(const knob_desc_t *k);
+
+/** @brief Report whether a row has the OPENPETE_* variable row shape: an env spelling, no flag and a string value.
+ *
+ * The shape, not the table block the row sits in, marks a raw environment
+ * variable: release-block rows have it too.
+ * @param k The row.
+ * @return 1 for a variable row, else 0. */
+int knob_is_env_row(const knob_desc_t *k);
+
+/** @brief Report whether a row is on the mod surface: live, not a variable row (knob_is_env_row) and not flagged KNOB_FLAG_NO_MOD.
+ *
+ * @param k The row.
+ * @return 1 when a mod may read, write or fire the row, else 0. */
+int knob_on_mod_surface(const knob_desc_t *k);
 
 /** @brief Record the game's default window size for the --window row's "(default)" text.
  *

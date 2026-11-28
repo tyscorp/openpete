@@ -131,7 +131,33 @@ typedef enum {
 
 /* ---- the action registry -------------------------------------------- */
 
-/* X(sym, id, kind, ctx, flags, default_binding, purpose)
+/* What a host action does to the knob registry row it drives. A row's
+ * value is reached through the row (TOGGLE flips a bool or a two-entry
+ * enum, FIRE fires an action, HOLD holds a HOLD row while the action is
+ * held, CYCLE_UP/CYCLE_DOWN step an int or enum row by one), or the
+ * action is in an exempt class that drives no row: UI_NAV opens, closes
+ * or navigates an overlay, FREECAM_INPUT is the engaged debug camera's
+ * continuous fly and look input. */
+typedef enum {
+    KM_OP_TOGGLE = 0,
+    KM_OP_FIRE,
+    KM_OP_HOLD,
+    KM_OP_CYCLE_UP,
+    KM_OP_CYCLE_DOWN,
+    KM_OP_UI_NAV,
+    KM_OP_FREECAM_INPUT,
+    KM_OP_COUNT
+} km_op_t;
+
+/* Host rows: X(sym, id, kind, ctx, flags, row, op, default_binding, purpose)
+ * Pad rows:  X(sym, id, kind, ctx, flags, default_binding, purpose)
+ *
+ * `row` is the knob registry id of the row the action drives and `op` how
+ * (km_op_t); an exempt op carries a NULL row. The registry derives each
+ * row's key_action from these two columns, and every consumer site reads
+ * a row-driving action through hc_edge, hc_held or hc_count
+ * (core/runtime/host_control.h); scripts/fences/host_control_coverage.py
+ * refuses a site that reads one directly.
  *
  * `default_binding` is spelled in the TOML vocabulary, not as
  * SDL_SCANCODE_*, so --keys-report prints defaults and overrides in one
@@ -143,135 +169,135 @@ typedef enum {
   /* Guide is no PSX input, so the settings menu takes it whole. The dev
    * overlay's pad source is a hold of Back: every other button is a PSX
    * input, and a tap of Back still reaches the game as select. */             \
-  X(MENU,      "menu",      KM_DIGITAL, KM_CTX_ALWAYS,   KM_REQUIRED,          \
+  X(MENU, "menu", KM_DIGITAL, KM_CTX_ALWAYS, KM_REQUIRED, NULL, KM_OP_UI_NAV,  \
         "Escape,hold:pad:start", "open/close the settings menu")                    \
-  X(DEVUI,     "devui",     KM_DIGITAL, KM_CTX_ALWAYS,   KM_LEVEL,             \
+  X(DEVUI, "devui", KM_DIGITAL, KM_CTX_ALWAYS, KM_LEVEL, NULL, KM_OP_UI_NAV,   \
         "M,hold:pad:back", "open/close the dev config overlay (closes on release)") \
   /* Dev overlay pad navigation, read while the overlay is open and fed to
    * imgui as its gamepad keys. Pad sources only: the keyboard drives the
    * overlay through imgui's own keyboard navigation. */                       \
-  X(DEVUI_UP,    "devui_up",    KM_DIGITAL, KM_CTX_DEVUI, KM_LEVEL,            \
+  X(DEVUI_UP, "devui_up", KM_DIGITAL, KM_CTX_DEVUI, KM_LEVEL, NULL, KM_OP_UI_NAV, \
         "pad:dpup,pad:-lefty",      "dev overlay: move up")                    \
-  X(DEVUI_DOWN,  "devui_down",  KM_DIGITAL, KM_CTX_DEVUI, KM_LEVEL,            \
+  X(DEVUI_DOWN, "devui_down", KM_DIGITAL, KM_CTX_DEVUI, KM_LEVEL, NULL, KM_OP_UI_NAV, \
         "pad:dpdown,pad:lefty",     "dev overlay: move down")                  \
-  X(DEVUI_LEFT,  "devui_left",  KM_DIGITAL, KM_CTX_DEVUI, KM_LEVEL,            \
+  X(DEVUI_LEFT, "devui_left", KM_DIGITAL, KM_CTX_DEVUI, KM_LEVEL, NULL, KM_OP_UI_NAV, \
         "pad:dpleft,pad:-leftx",    "dev overlay: move left / decrease")       \
-  X(DEVUI_RIGHT, "devui_right", KM_DIGITAL, KM_CTX_DEVUI, KM_LEVEL,            \
+  X(DEVUI_RIGHT, "devui_right", KM_DIGITAL, KM_CTX_DEVUI, KM_LEVEL, NULL, KM_OP_UI_NAV, \
         "pad:dpright,pad:leftx",    "dev overlay: move right / increase")      \
-  X(DEVUI_ACTIVATE,"devui_activate", KM_DIGITAL, KM_CTX_DEVUI, KM_LEVEL,       \
+  X(DEVUI_ACTIVATE, "devui_activate", KM_DIGITAL, KM_CTX_DEVUI, KM_LEVEL, NULL, KM_OP_UI_NAV, \
         "pad:south",      "dev overlay: activate or open the focused item")    \
-  X(DEVUI_CANCEL,"devui_cancel", KM_DIGITAL, KM_CTX_DEVUI, KM_LEVEL,           \
+  X(DEVUI_CANCEL, "devui_cancel", KM_DIGITAL, KM_CTX_DEVUI, KM_LEVEL, NULL, KM_OP_UI_NAV, \
         "pad:east",       "dev overlay: cancel, leave a field or popup")       \
-  X(DEVUI_MENU,  "devui_menu",  KM_DIGITAL, KM_CTX_DEVUI, KM_LEVEL,            \
+  X(DEVUI_MENU, "devui_menu", KM_DIGITAL, KM_CTX_DEVUI, KM_LEVEL, NULL, KM_OP_UI_NAV, \
         "pad:west",       "dev overlay: tweak with the d-pad; hold to switch windows") \
-  X(DEVUI_SLOWER,"devui_slower", KM_DIGITAL, KM_CTX_DEVUI, KM_LEVEL,           \
+  X(DEVUI_SLOWER, "devui_slower", KM_DIGITAL, KM_CTX_DEVUI, KM_LEVEL, NULL, KM_OP_UI_NAV, \
         "pad:leftshoulder", "dev overlay: slower tweak; previous window")      \
-  X(DEVUI_FASTER,"devui_faster", KM_DIGITAL, KM_CTX_DEVUI, KM_LEVEL,           \
+  X(DEVUI_FASTER, "devui_faster", KM_DIGITAL, KM_CTX_DEVUI, KM_LEVEL, NULL, KM_OP_UI_NAV, \
         "pad:rightshoulder", "dev overlay: faster tweak; next window")         \
   /* The d-pad AND the left stick drive menu nav, and cross doubles as
    * "increase" - the analog fallbacks matter because the settings menu is
    * reachable on a pad with no keyboard attached. */                          \
-  X(MENU_UP,   "menu_up",   KM_DIGITAL, KM_CTX_MENU,     KM_REQUIRED,          \
+  X(MENU_UP, "menu_up", KM_DIGITAL, KM_CTX_MENU, KM_REQUIRED, NULL, KM_OP_UI_NAV, \
         "Up,pad:dpup,pad:-lefty",    "settings menu: previous row")            \
-  X(MENU_DOWN, "menu_down", KM_DIGITAL, KM_CTX_MENU,     KM_REQUIRED,          \
+  X(MENU_DOWN, "menu_down", KM_DIGITAL, KM_CTX_MENU, KM_REQUIRED, NULL, KM_OP_UI_NAV, \
         "Down,pad:dpdown,pad:lefty", "settings menu: next row")                \
-  X(MENU_LEFT, "menu_left", KM_DIGITAL, KM_CTX_MENU,     KM_REQUIRED,          \
+  X(MENU_LEFT, "menu_left", KM_DIGITAL, KM_CTX_MENU, KM_REQUIRED, NULL, KM_OP_UI_NAV, \
         "Left,pad:dpleft,pad:-leftx", "settings menu: decrease value")         \
-  X(MENU_RIGHT,"menu_right",KM_DIGITAL, KM_CTX_MENU,     KM_REQUIRED,          \
+  X(MENU_RIGHT, "menu_right", KM_DIGITAL, KM_CTX_MENU, KM_REQUIRED, NULL, KM_OP_UI_NAV, \
         "Right,pad:dpright,pad:leftx,pad:south",                               \
         "settings menu: increase value")                                       \
-  X(MENU_CLOSE,"menu_close",KM_DIGITAL, KM_CTX_MENU,     KM_LEVEL,                    \
+  X(MENU_CLOSE, "menu_close", KM_DIGITAL, KM_CTX_MENU, KM_LEVEL, NULL, KM_OP_UI_NAV, \
         "pad:start,pad:east", "settings menu: close (on release)")             \
   /* Activates ACTION rows (EXIT GAME), which ignore left/right entirely -
    * cycling a value must never be able to fire a button. Cross doubles as
    * "increase value" on the ordinary rows; the two never contend, because a
    * row is either a value or an action, never both. */                        \
-  X(MENU_SELECT,"menu_select",KM_DIGITAL, KM_CTX_MENU,   0,                    \
+  X(MENU_SELECT, "menu_select", KM_DIGITAL, KM_CTX_MENU, 0, NULL, KM_OP_UI_NAV, \
         "Return,pad:south",   "settings menu: activate the selected action")   \
   /* --- capture ------------------------------------------------------ */     \
-  X(SCREENSHOT,"screenshot",KM_DIGITAL, KM_CTX_ALWAYS,   0,                    \
+  X(SCREENSHOT, "screenshot", KM_DIGITAL, KM_CTX_ALWAYS, 0, "screenshot", KM_OP_FIRE, \
         "F12",            "save a PNG of the current frame")                   \
-  X(BUG_REPORT,"bug_report",KM_DIGITAL, KM_CTX_ALWAYS,   0,                    \
+  X(BUG_REPORT, "bug_report", KM_DIGITAL, KM_CTX_ALWAYS, 0, "bug_report", KM_OP_FIRE, \
         "F9",             "write a bug report zip to send")                    \
   /* --- savestates / rewind / pacing --------------------------------- */     \
-  X(STATE_SAVE, "savestate_save",  KM_DIGITAL, KM_CTX_GAMEPLAY, 0,             \
+  X(STATE_SAVE, "savestate_save", KM_DIGITAL, KM_CTX_GAMEPLAY, 0, "state_save", KM_OP_FIRE, \
         "1",              "quick-save to the active slot")                     \
-  X(STATE_LOAD, "savestate_load",  KM_DIGITAL, KM_CTX_GAMEPLAY, 0,             \
+  X(STATE_LOAD, "savestate_load", KM_DIGITAL, KM_CTX_GAMEPLAY, 0, "state_load", KM_OP_FIRE, \
         "2",              "quick-load from the active slot")                   \
-  X(STATE_CYCLE,"savestate_cycle", KM_DIGITAL, KM_CTX_GAMEPLAY, 0,             \
+  X(STATE_CYCLE, "savestate_cycle", KM_DIGITAL, KM_CTX_GAMEPLAY, 0, "state_slot", KM_OP_CYCLE_UP, \
         "3",              "cycle the active savestate slot")                   \
-  X(REWIND,     "rewind",          KM_DIGITAL, KM_CTX_GAMEPLAY, KM_LEVEL,             \
+  X(REWIND, "rewind", KM_DIGITAL, KM_CTX_GAMEPLAY, KM_LEVEL, "rewind_hold", KM_OP_HOLD, \
         "Backspace",      "hold to rewind (needs --rewind)")                   \
-  X(PAUSE,      "pause",           KM_DIGITAL, KM_CTX_ALWAYS,   0,             \
+  X(PAUSE, "pause", KM_DIGITAL, KM_CTX_ALWAYS, 0, "pause", KM_OP_TOGGLE,       \
         "F7",             "pause / resume the sim")                            \
-  X(FRAME_STEP, "frame_step",      KM_DIGITAL, KM_CTX_ALWAYS,   KM_LEVEL,             \
+  X(FRAME_STEP, "frame_step", KM_DIGITAL, KM_CTX_ALWAYS, KM_LEVEL, "frame_step", KM_OP_FIRE, \
         "F8",             "advance one tick while paused")                     \
-  X(TURBO,      "turbo",           KM_DIGITAL, KM_CTX_ALWAYS,   KM_LEVEL,             \
+  X(TURBO, "turbo", KM_DIGITAL, KM_CTX_ALWAYS, KM_LEVEL, "turbo", KM_OP_HOLD,  \
         "Tab",            "hold to run unlocked (fast-forward)")               \
-  X(FULLSCREEN, "fullscreen",      KM_DIGITAL, KM_CTX_ALWAYS,   0,             \
+  X(FULLSCREEN, "fullscreen", KM_DIGITAL, KM_CTX_ALWAYS, 0, "fullscreen", KM_OP_TOGGLE, \
         "none",           "toggle fullscreen (Alt+Enter always works too)")    \
   /* Unbound by default and not KM_REQUIRED: the window close button and
    * the OS still quit, so no binding leaves quitting reachable. */            \
-  X(QUIT,       "quit",            KM_DIGITAL, KM_CTX_ALWAYS,   0,             \
+  X(QUIT, "quit", KM_DIGITAL, KM_CTX_ALWAYS, 0, "quit", KM_OP_FIRE,            \
         "none",           "quit the game")                                     \
   /* --- camera -------------------------------------------------------- */    \
-  X(FREECAM,    "freecam",   KM_DIGITAL, KM_CTX_ALWAYS,  0,                    \
+  X(FREECAM, "freecam", KM_DIGITAL, KM_CTX_ALWAYS, 0, "freecam", KM_OP_TOGGLE, \
         "F",              "engage/disengage the debug free camera")            \
-  X(CAMLOCK,    "camlock",   KM_DIGITAL, KM_CTX_ALWAYS,  KM_DEV,               \
+  X(CAMLOCK, "camlock", KM_DIGITAL, KM_CTX_ALWAYS, KM_DEV, "camlock", KM_OP_TOGGLE, \
         "G",              "lock the presented view while the sim runs")        \
-  X(TELEPORT,   "teleport",  KM_DIGITAL, KM_CTX_ALWAYS,  0,                    \
+  X(TELEPORT, "teleport", KM_DIGITAL, KM_CTX_ALWAYS, 0, "teleport", KM_OP_FIRE, \
         "T",              "drop Spyro at the free camera")                     \
-  X(FLY_FORWARD,"fly_forward", KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL,                  \
+  X(FLY_FORWARD, "fly_forward", KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL, NULL, KM_OP_FREECAM_INPUT, \
         "W",              "free camera: move forward")                         \
-  X(FLY_BACK,   "fly_back",    KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL,                  \
+  X(FLY_BACK, "fly_back", KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL, NULL, KM_OP_FREECAM_INPUT, \
         "S",              "free camera: move back")                            \
-  X(FLY_LEFT,   "fly_left",    KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL,                  \
+  X(FLY_LEFT, "fly_left", KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL, NULL, KM_OP_FREECAM_INPUT, \
         "A",              "free camera: strafe left")                          \
-  X(FLY_RIGHT,  "fly_right",   KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL,                  \
+  X(FLY_RIGHT, "fly_right", KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL, NULL, KM_OP_FREECAM_INPUT, \
         "D",              "free camera: strafe right")                         \
-  X(FLY_UP,     "fly_up",      KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL,                  \
+  X(FLY_UP, "fly_up", KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL, NULL, KM_OP_FREECAM_INPUT, \
         "Space,pad:rightshoulder", "free camera: rise")                        \
-  X(FLY_DOWN,   "fly_down",    KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL,                  \
+  X(FLY_DOWN, "fly_down", KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL, NULL, KM_OP_FREECAM_INPUT, \
         "Left Shift,pad:leftshoulder", "free camera: descend")                 \
-  X(LOOK_UP,    "look_up",     KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL,                  \
+  X(LOOK_UP, "look_up", KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL, NULL, KM_OP_FREECAM_INPUT, \
         "Up",             "free camera: pitch up")                             \
-  X(LOOK_DOWN,  "look_down",   KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL,                  \
+  X(LOOK_DOWN, "look_down", KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL, NULL, KM_OP_FREECAM_INPUT, \
         "Down",           "free camera: pitch down")                           \
-  X(LOOK_LEFT,  "look_left",   KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL,                  \
+  X(LOOK_LEFT, "look_left", KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL, NULL, KM_OP_FREECAM_INPUT, \
         "Left",           "free camera: yaw left")                             \
-  X(LOOK_RIGHT, "look_right",  KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL,                  \
+  X(LOOK_RIGHT, "look_right", KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL, NULL, KM_OP_FREECAM_INPUT, \
         "Right",          "free camera: yaw right")                            \
-  X(SPEED_UP,   "speed_up",    KM_DIGITAL, KM_CTX_FREECAM, 0,                  \
+  X(SPEED_UP, "speed_up", KM_DIGITAL, KM_CTX_FREECAM, 0, "freecam_speed", KM_OP_CYCLE_UP, \
         "],pad:righttrigger", "free camera: faster")                           \
-  X(SPEED_DOWN, "speed_down",  KM_DIGITAL, KM_CTX_FREECAM, 0,                  \
+  X(SPEED_DOWN, "speed_down", KM_DIGITAL, KM_CTX_FREECAM, 0, "freecam_speed", KM_OP_CYCLE_DOWN, \
         "[,pad:lefttrigger",  "free camera: slower")                           \
-  X(FLY_AXIS_X, "fly_axis_x",  KM_AXIS,    KM_CTX_FREECAM, 0,                  \
+  X(FLY_AXIS_X, "fly_axis_x", KM_AXIS, KM_CTX_FREECAM, 0, NULL, KM_OP_FREECAM_INPUT, \
         "pad:leftx",      "free camera: strafe axis")                          \
-  X(FLY_AXIS_Y, "fly_axis_y",  KM_AXIS,    KM_CTX_FREECAM, 0,                  \
+  X(FLY_AXIS_Y, "fly_axis_y", KM_AXIS, KM_CTX_FREECAM, 0, NULL, KM_OP_FREECAM_INPUT, \
         "pad:-lefty",     "free camera: forward axis")                         \
   /* The mouse rides the look axes as a displacement source alongside the
    * stick; "mouse:y" in place of "mouse:-y" inverts, "pad:rightx" alone
    * disables mouse look. */                                                   \
-  X(LOOK_AXIS_X,"look_axis_x", KM_AXIS,    KM_CTX_FREECAM, KM_DELTA,           \
+  X(LOOK_AXIS_X, "look_axis_x", KM_AXIS, KM_CTX_FREECAM, KM_DELTA, NULL, KM_OP_FREECAM_INPUT, \
         "pad:rightx,mouse:x",   "free camera: yaw axis")                       \
-  X(LOOK_AXIS_Y,"look_axis_y", KM_AXIS,    KM_CTX_FREECAM, KM_DELTA,           \
+  X(LOOK_AXIS_Y, "look_axis_y", KM_AXIS, KM_CTX_FREECAM, KM_DELTA, NULL, KM_OP_FREECAM_INPUT, \
         "pad:-righty,mouse:-y", "free camera: pitch axis")                     \
-  X(INTERP_TOGGLE, "interp_toggle", KM_DIGITAL, KM_CTX_ALWAYS, 0,              \
+  X(INTERP_TOGGLE, "interp_toggle", KM_DIGITAL, KM_CTX_ALWAYS, 0, "interp", KM_OP_TOGGLE, \
         "I",              "toggle frame interpolation")                        \
-  X(LOD_TOGGLE,    "lod_toggle",    KM_DIGITAL, KM_CTX_ALWAYS, 0,              \
+  X(LOD_TOGGLE, "lod_toggle", KM_DIGITAL, KM_CTX_ALWAYS, 0, "lod", KM_OP_TOGGLE, \
         "L",              "toggle sector LOD original/extended")               \
   /* --- development instruments (KM_DEV: unbound unless configured) --- */    \
-  X(FILLPICK,      "fillpick",      KM_DIGITAL, KM_CTX_ALWAYS, KM_DEV,         \
+  X(FILLPICK, "fillpick", KM_DIGITAL, KM_CTX_ALWAYS, KM_DEV, "fillpick", KM_OP_TOGGLE, \
         "P",              "toggle the LP fill-tag inspector")                  \
-  X(FILLPICK_PREVIEW,"fillpick_preview", KM_DIGITAL, KM_CTX_FILLPICK, KM_DEV,  \
+  X(FILLPICK_PREVIEW, "fillpick_preview", KM_DIGITAL, KM_CTX_FILLPICK, KM_DEV, "fillpick_preview", KM_OP_TOGGLE, \
         "H",              "fill-tag inspector: toggle preview")                \
-  X(FILLPICK_FILL,   "fillpick_fill",    KM_DIGITAL, KM_CTX_FILLPICK, KM_DEV,  \
+  X(FILLPICK_FILL, "fillpick_fill", KM_DIGITAL, KM_CTX_FILLPICK, KM_DEV, "fillpick_fill", KM_OP_FIRE, \
         "Y",              "fill-tag inspector: mark FILL")                     \
-  X(FILLPICK_NOFILL, "fillpick_nofill",  KM_DIGITAL, KM_CTX_FILLPICK, KM_DEV,  \
+  X(FILLPICK_NOFILL, "fillpick_nofill", KM_DIGITAL, KM_CTX_FILLPICK, KM_DEV, "fillpick_nofill", KM_OP_FIRE, \
         "N",              "fill-tag inspector: mark NOFILL")                   \
-  X(FILLPICK_NONE,   "fillpick_none",    KM_DIGITAL, KM_CTX_FILLPICK, KM_DEV,  \
+  X(FILLPICK_NONE, "fillpick_none", KM_DIGITAL, KM_CTX_FILLPICK, KM_DEV, "fillpick_none", KM_OP_FIRE, \
         "B",              "fill-tag inspector: clear the verdict")             \
-  X(FILLPICK_UNDO,   "fillpick_undo",    KM_DIGITAL, KM_CTX_FILLPICK, KM_DEV,  \
+  X(FILLPICK_UNDO, "fillpick_undo", KM_DIGITAL, KM_CTX_FILLPICK, KM_DEV, "fillpick_undo", KM_OP_FIRE, \
         "U",              "fill-tag inspector: undo")
 
 /* The PSX pad. Defaults reproduce PsyCross's PsyX_Sys_InitialiseInput
@@ -331,7 +357,7 @@ typedef enum {
 
 /* Action ids. HOST first, then one pad block per player - the enum and the
  * registry are generated from the same lists so they cannot drift. */
-#define KM_ENUM_HOST(sym, id, k, c, f, d, p)  OPK_##sym,
+#define KM_ENUM_HOST(sym, id, k, c, f, r, o, d, p)  OPK_##sym,
 #define KM_ENUM_PAD(sym, id, k, c, f, d, p)   OPK_PAD_##sym,
 #define KM_ENUM_PAD2(sym, id, k, c, f, d, p)  OPK_PAD2_##sym,
 #define KM_ENUM_PAD3(sym, id, k, c, f, d, p)  OPK_PAD3_##sym,
@@ -386,6 +412,27 @@ typedef const char* (*openpete_keymap_pad_label_fn)(int kind, int code, int inve
  * NULL makes a pad source print its config spelling ("pad:south").
  * @param fn the lookup. */
 void openpete_keymap_set_pad_label(openpete_keymap_pad_label_fn fn);
+
+/** @brief Return the knob registry row a host action drives.
+ *
+ * @param a the action.
+ * @return the row id, or NULL for an exempt host action, a pad action and
+ *         an out-of-range action. */
+const char* openpete_keymap_action_row(openpete_action_t a);
+
+/** @brief Return what a host action does to the row it drives.
+ *
+ * @param a the action.
+ * @return the km_op_t, or -1 for a pad action and an out-of-range action. */
+int openpete_keymap_action_op(openpete_action_t a);
+
+/** @brief Return the config id of the first host action that drives a knob registry row.
+ *
+ * The registry's key_action of the row, derived from the row column of
+ * OPENPETE_KEYMAP_HOST_ACTIONS.
+ * @param row_id the row id ("pause").
+ * @return the action id ("pause"), or NULL when no host action drives the row. */
+const char* openpete_keymap_row_key_action(const char* row_id);
 
 /** @brief Return the host action a config id names.
  *

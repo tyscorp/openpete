@@ -58,6 +58,7 @@
 #include "openpete_ident_audit.h"
 #include "openpete_run_capture.h"
 #include "openpete_menu.h"
+#include "host_control.h"
 #include "openpete_devui.h"
 #include "openpete_freecam.h"
 #include "openpete_keymap.h"  /* [keys] - every host hotkey below */
@@ -196,6 +197,13 @@ static atomic_int g_shutdown_requested = 0;
 
 /* Sets g_shutdown_requested; documented at the declaration. */
 void openpete_request_shutdown(void) { g_shutdown_requested = 1; }
+
+/* Documented at the declaration in openpete.h. */
+void openpete_quit(void)
+{
+    openpete_launcher_return_cancel();
+    openpete_request_shutdown();
+}
 
 /* Documented at the declaration in run_internal.h. */
 bool run_shutdown_flagged(void) { return g_shutdown_requested != 0; }
@@ -601,9 +609,10 @@ static bool openpete_handle_event(SDL_Event* ev) {
             return false;
         }
 
-        if (openpete_keymap_key_binds(OPK_QUIT, ev->key.scancode)) {
-            g_shutdown_requested = 1;
-            openpete_launcher_return_cancel();   /* the quit key ends the process */
+        /* The quit key reads on the event, with no menu gate, so it quits
+         * with the settings menu open; the quit row's fire shares the body. */
+        if (openpete_keymap_key_binds(OPK_QUIT, ev->key.scancode)) {   // host-control: direct quit
+            openpete_quit();
             return false;
         }
         /* Escape with quit unbound or rebound elsewhere: swallow it anyway
@@ -2423,10 +2432,14 @@ void rumble_census_report(void) {
 /* Documented at the declaration in run_internal.h. */
 bool host_fullscreen_poll(bool split, bool prev_alt_enter)
 {
-    const bool alt_enter = openpete_keymap_scancode_down(SDL_SCANCODE_RETURN) &&
-                           (openpete_host_input_modstate() & SDL_KMOD_ALT) != 0;
+    /* While the settings menu is open no gesture toggles and the Alt+Enter
+     * latch holds; a raise waits for the menu to close. */
+    if (openpete_menu_is_open()) return prev_alt_enter;
+    const bool alt_enter =
+        openpete_keymap_scancode_down(SDL_SCANCODE_RETURN) &&   // host-control: direct Alt+Enter
+        (openpete_host_input_modstate() & SDL_KMOD_ALT) != 0;
     const bool own_edge = (alt_enter && !prev_alt_enter) ||
-                          openpete_key_pressed(OPK_FULLSCREEN);
+                          hc_edge(OPK_FULLSCREEN, HC_GATE_MENU);
     if (split) {
         if (own_edge) SDL_SetAtomicInt(&g_native_fs_toggle_request, 1);
     } else if (SDL_SetAtomicInt(&g_native_fs_toggle_request, 0) || own_edge) {

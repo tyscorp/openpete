@@ -532,6 +532,7 @@ static void draw_note_prompt(void)
     ImGui::TextUnformatted("What went wrong? Enter to save, Esc to skip.");
     if (s_focus) { ImGui::SetKeyboardFocusHere(); s_focus = false; }
     ImGui::SetNextItemWidth(-FLT_MIN);
+    // host-control: exempt: the tester note text
     const bool enter = ImGui::InputText("##note", s_note_text, sizeof s_note_text,
                                         ImGuiInputTextFlags_EnterReturnsTrue);
     const int pad = SDL_SetAtomicInt(&s_note_pad, 0);
@@ -887,7 +888,7 @@ static void note_pad_poll(void)
     if (!note_active()) { s_armed = OPK_ACTION_COUNT; return; }
     if (openpete_key_pressed(OPK_DEVUI_ACTIVATE)) s_armed = OPK_DEVUI_ACTIVATE;
     else if (openpete_key_pressed(OPK_DEVUI_CANCEL)) s_armed = OPK_DEVUI_CANCEL;
-    if (s_armed == OPK_ACTION_COUNT || openpete_key_down(s_armed)) return;
+    if (s_armed == OPK_ACTION_COUNT || openpete_key_down(s_armed)) return;   // host-control: exempt: devui_activate/devui_cancel nav
     SDL_SetAtomicInt(&s_note_pad, s_armed == OPK_DEVUI_ACTIVATE ? 1 : 2);
     s_armed = OPK_ACTION_COUNT;
 }
@@ -977,6 +978,7 @@ static bool row_edited(const knob_desc_t *k)
  * setter with the boot value. The copy items appear when the knob has a CLI
  * spelling or an environment variable name, and put "<flag> <value>" or
  * "<var>=<value>" on the clipboard. */
+// host-control: drawer
 static void row_context_menu(knob_desc_t *k)
 {
     if (!ImGui::BeginPopupContextItem("##ctx")) return;
@@ -1115,6 +1117,7 @@ static int slider_arrow_dir(void)
  * @param mx The range's high end.
  * @param fmt The value's display format.
  * @return true when the value changed. */
+// host-control: exempt: slider helper, the calling drawer writes the row
 static bool slider_float_stepped(const char *label, float *v, float mn, float mx, const char *fmt)
 {
     bool changed = ImGui::SliderFloat(label, v, mn, mx, fmt);
@@ -1135,6 +1138,7 @@ static bool slider_float_stepped(const char *label, float *v, float mn, float mx
  * @param mn The range's low end.
  * @param mx The range's high end.
  * @return true when the value changed. */
+// host-control: exempt: slider helper, the calling drawer writes the row
 static bool slider_int_stepped(const char *label, int *v, int mn, int mx)
 {
     bool changed = ImGui::SliderInt(label, v, mn, mx);
@@ -1177,6 +1181,7 @@ static bool row_write(knob_desc_t *k, double v)
  * @param id The action row's id.
  * @param caption The button caption.
  * @return true when the row fired. */
+// host-control: drawer
 static bool row_button(const char *id, const char *caption)
 {
     knob_desc_t *k = row_by_id(id);
@@ -1191,6 +1196,7 @@ static bool row_button(const char *id, const char *caption)
  *
  * @param id The bool row's id.
  * @param caption The checkbox caption. */
+// host-control: drawer
 static void row_checkbox(const char *id, const char *caption)
 {
     knob_desc_t *k = row_by_id(id);
@@ -1209,6 +1215,7 @@ static void row_checkbox(const char *id, const char *caption)
  * the mode is a checkbox, the slider starts at num_min, and the slider is
  * drawn only while the mode is off.
  * @param k The knob. */
+// host-control: drawer
 static void knob_row_float(knob_desc_t *k)
 {
     double live = k->get_num ? k->get_num(k) : k->stored_num;
@@ -1240,6 +1247,7 @@ static double knob_num(const knob_desc_t *k)
 }
 
 /** @brief Draw a bool knob as a checkbox applied through its setter on each click. */
+// host-control: drawer
 static void knob_widget_bool(knob_desc_t *k)
 {
     bool b = knob_num(k) != 0.0;
@@ -1255,6 +1263,7 @@ static void knob_widget_bool(knob_desc_t *k)
  * clears its history), so the edit lives in the shadow until release, and
  * the committed value is clamped to the knob's range when the range is
  * non-empty. */
+// host-control: drawer
 static void knob_widget_int(knob_desc_t *k)
 {
     int v = (int)((s_edit_row == k) ? s_edit_val : knob_num(k));
@@ -1272,6 +1281,7 @@ static void knob_widget_int(knob_desc_t *k)
 }
 
 /** @brief Draw an enum knob as a combo box applied through its setter on each pick. */
+// host-control: drawer
 static void knob_widget_enum(knob_desc_t *k)
 {
     int idx = (int)knob_num(k);
@@ -1285,6 +1295,7 @@ static void knob_widget_enum(knob_desc_t *k)
 /** @brief Draw an action knob as a button that fires its setter with 1.0; its status text is the button's tooltip.
  *
  * get_num, when present, gates the button: 0 draws it disabled. */
+// host-control: drawer
 static void knob_widget_action(knob_desc_t *k)
 {
     const bool ready = !k->get_num || k->get_num(k) != 0.0;
@@ -1302,6 +1313,7 @@ static void knob_widget_action(knob_desc_t *k)
  * imgui keeps its own edit state while the field is active and writes back
  * into the buffer each frame, so a per-frame buffer seeded from the live
  * value is safe. */
+// host-control: drawer
 static void knob_widget_string(knob_desc_t *k)
 {
     char buf[KNOB_STR_MAX];
@@ -1488,6 +1500,7 @@ static void draw_save_button(float w)
             ids[edited++] = ks[i].id;
 
     if (edited == 0) ImGui::BeginDisabled();
+    // host-control: exempt: writes openpete.toml
     if (ImGui::Button("Save settings", ImVec2(w, 0.0f)))
         openpete_settings_save_request(ids, edited);
     if (edited == 0) ImGui::EndDisabled();
@@ -1549,6 +1562,7 @@ static void mui_text_disabled(const char *fmt, ...)
 }
 
 /** @brief Draw a button and report whether it was clicked (1) or not (0). */
+// host-control: exempt: mod UI helper, the mod's own state
 static int mui_button(const char *label)
 {
     return ImGui::Button(label) ? 1 : 0;
@@ -1557,6 +1571,7 @@ static int mui_button(const char *label)
 /** @brief Draw a checkbox over an int and report 1 when the click changed it.
  *
  * A NULL v draws an unchecked box and stores nothing. */
+// host-control: exempt: mod UI helper, the mod's own state
 static int mui_checkbox(const char *label, int *v)
 {
     bool b = v && *v != 0;
@@ -1582,6 +1597,7 @@ static int mui_slider_float(const char *label, float *v, float mn, float mx)
 /** @brief Draw a combo box over the item strings and report 1 when the selection changed.
  *
  * A NULL idx or items draws nothing. */
+// host-control: exempt: mod UI helper, the mod's own state
 static int mui_combo(const char *label, int *idx, const char *const *items,
                      int count)
 {
@@ -1591,6 +1607,7 @@ static int mui_combo(const char *label, int *idx, const char *const *items,
 /** @brief Draw a text field editing buf of cap bytes in place and report 1 when the text changed.
  *
  * A NULL buf or a non-positive cap draws nothing. */
+// host-control: exempt: mod UI helper, the mod's own state
 static int mui_input_text(const char *label, char *buf, int cap)
 {
     if (!buf || cap <= 0) return 0;
@@ -1778,6 +1795,7 @@ static void cfg_seed(mod_cfg_edit_state *st, int mod_index, int rows)
  * a plain input), or a combo (string with an item list) or text field. Apply
  * hands every row to openpete_mods_cfg_apply; Revert reseeds from the
  * current values. Nothing reaches the mod before Apply. */
+// host-control: exempt: a mod's config values, applied by the mod
 static void draw_mod_config_rows(int mod_index,
                                  const openpete_mods_menu_info_t *mi)
 {
@@ -2014,6 +2032,7 @@ static void draw_mods_folder_button(float right)
     ImGui::SameLine(right - w);
     const char *dir = openpete_mods_root_dir();
     if (!dir) ImGui::BeginDisabled();
+    // host-control: exempt: opens the mods folder
     if (ImGui::Button(cap)) (void)openpete_mods_open_folder(nullptr);
     if (!dir) ImGui::EndDisabled();
     if (dir && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
@@ -2038,6 +2057,7 @@ static void draw_mod_row(int i, const openpete_mods_menu_info_t &mi)
         mi.enabled && openpete_mods_registry_owner_busy(mi.id) != 0;
     bool on = mi.enabled != 0;
     if (busy) ImGui::BeginDisabled();
+    // host-control: exempt: the enabled mod set
     if (ImGui::Checkbox("##en", &on)) {
         if (openpete_mods_set_mod_enabled(mi.id, on ? 1 : 0) == 0)
             OPL_INFO_F("devui", "mod %s -> %s", mi.id,
@@ -2084,6 +2104,7 @@ static void draw_refused_mod_rows(const ImGuiTextFilter &filter)
         ImGui::PushID("refused");
         bool off = false;
         ImGui::BeginDisabled();
+        // host-control: exempt: read-only state of a refused mod
         ImGui::Checkbox("##en", &off);
         ImGui::EndDisabled();
         ImGui::SameLine();
@@ -2577,6 +2598,7 @@ static bool lay_span_shows(const lay_ctx &c, const lay_row *rows, size_t from,
  * Clicking another button applies its value through the knob's setter.
  * @param k The knob.
  * @param r The layout row: its seg captions and values, or the enum's. */
+// host-control: drawer
 static void seg_widget(knob_desc_t *k, const lay_row &r)
 {
     const int n = r.seg ? r.seg_n : k->enum_count;
@@ -2638,6 +2660,7 @@ static void inline_widget(knob_desc_t *const *ks, int n)
  * reverse; Textured clears both.
  * @param notex The untextured-view knob.
  * @param wire The wireframe-view knob. */
+// host-control: drawer
 static void drawmode_widget(knob_desc_t *notex, knob_desc_t *wire)
 {
     static const char *const k_modes[] = { "Textured", "Untextured", "Wireframe" };
@@ -2676,6 +2699,7 @@ static int *last_on_slot(const knob_desc_t *k, int seed)
  * @param k The knob.
  * @param caption The checkbox caption; "" for none.
  * @param fallback The value turning it on uses before any was on. */
+// host-control: drawer
 static void onoff_int_widget(knob_desc_t *k, const char *caption, int fallback)
 {
     int *last = last_on_slot(k, k->boot_num > 0.0 ? (int)k->boot_num : fallback);
@@ -2703,6 +2727,7 @@ static void onoff_int_widget(knob_desc_t *k, const char *caption, int fallback)
  *
  * Turning it on restores the last depth that was on, 1 before any. At most
  * three depths are offered. */
+// host-control: drawer
 static void depth_widget(knob_desc_t *k)
 {
     static const char *const k_depths[] = { "1", "2", "3" };
@@ -2731,6 +2756,7 @@ static void depth_widget(knob_desc_t *k)
 /** @brief Draw an int knob whose -1 leaves a value alone as an Override box, with a slider over 0..num_max beside it only while on.
  *
  * Turning it on restores the last overriding value, num_max before any. */
+// host-control: drawer
 static void override_widget(knob_desc_t *k)
 {
     const int live = (int)knob_num(k);
@@ -2801,6 +2827,7 @@ static void tokens_apply(knob_desc_t *k, uint32_t m)
  *
  * A knob with no vocabulary bound, or one wider than 32 tokens, falls back to
  * its text field. */
+// host-control: drawer
 static void tokens_widget(knob_desc_t *k)
 {
     if (!k->enum_values || k->enum_count <= 0 || k->enum_count > 32) {
@@ -2841,6 +2868,7 @@ static void tokens_widget(knob_desc_t *k)
  * @param ks ks[0] is the enum knob holding the selected entry; ks[1..n-1]
  *           are the action knobs the buttons fire, left to right.
  * @param n Number of knobs in @p ks, 2 or 3. */
+// host-control: drawer
 static void pick_widget(knob_desc_t *const *ks, int n)
 {
     knob_desc_t *lvl = ks[0];
@@ -3043,6 +3071,7 @@ static void draw_search(ImGuiTextFilter &f, const char *hint)
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
                         ImVec2(pad.x * 2.0f + icon, pad.y));
     ImGui::SetNextItemWidth(search_w);
+    // host-control: exempt: the overlay's search filter
     if (ImGui::InputTextWithHint("##search", hint, f.InputBuf,
                                  IM_COUNTOF(f.InputBuf)))
         f.Build();
@@ -3084,7 +3113,7 @@ static const char *reset_layer_word(const char *origin)
  * @return true when the binding page shows the row. */
 static bool controls_row_listed(openpete_action_t a, const openpete_keymap_action_info_t &info)
 {
-    if (a >= OPK_FILLPICK && a <= OPK_FILLPICK_UNDO) return false;
+    if (a >= OPK_FILLPICK && a <= OPK_FILLPICK_UNDO) return false;   // host-control: exempt: binding page listing
 #ifdef OPENPETE_HIDE_DEBUG_FLAGS
     if (info.flags & KM_DEV) return false;
 #endif
@@ -3093,6 +3122,7 @@ static bool controls_row_listed(openpete_action_t a, const openpete_keymap_actio
 }
 
 /** @brief Draw a button per bound source (click: replace it) with a remove button beside each, all on one line. */
+// host-control: exempt: key bindings
 static void draw_source_buttons(openpete_action_t a, const km_source_t *src, int n)
 {
     for (int i = 0; i < n; i++) {
@@ -3132,6 +3162,7 @@ static void reset_tooltip(openpete_action_t a)
  *
  * Every button posts a request to the binding page's queue
  * (openpete_rebind.h); the host loop applies it. */
+// host-control: exempt: key bindings
 static void draw_binding_row(openpete_action_t a, const openpete_keymap_action_info_t &info)
 {
     km_source_t src[KM_MAX_SOURCES];

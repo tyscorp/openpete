@@ -160,6 +160,7 @@ static void emit_knob(FILE* f, int* first, const knob_desc_t* k, const char* gam
             (k->flags & KNOB_FLAG_HOLD) ? "true" : "false",
             (k->flags & KNOB_FLAG_CONTENT_TOKENS) ? "true" : "false",
             (k->flags & KNOB_FLAG_NO_MOD) ? "true" : "false");
+    fprintf(f, ", \"mod_surface\": %s", knob_on_mod_surface(k) ? "true" : "false");
     if (k->num_min != 0.0f || k->num_max != 0.0f)
         fprintf(f, ", \"range\": [%g, %g]", (double)k->num_min, (double)k->num_max);
     json_kv(f, "section", k->section);
@@ -227,23 +228,34 @@ static void emit_menu(FILE* f, int* first) {
     }
 }
 
-/* One key action: its id, flags and source default binding. */
+/* One key action: its id, flags and source default binding; a host action
+ * also the registry row it drives and the op (op -1 for a pad action). */
 typedef struct {
     const char* id;
     unsigned    flags;
     int         axis;
     const char* suggested;
+    const char* row;
+    int         op;
 } surface_key_t;
 
-#define SURFACE_KEY_ROW(sym, id, kind, ctx, flags, def, purpose) \
-    { id, (flags), (kind) == KM_AXIS, def },
+#define SURFACE_HOST_KEY_ROW(sym, id, kind, ctx, flags, row, op, def, purpose) \
+    { id, (flags), (kind) == KM_AXIS, def, row, op },
+#define SURFACE_PAD_KEY_ROW(sym, id, kind, ctx, flags, def, purpose) \
+    { id, (flags), (kind) == KM_AXIS, def, NULL, -1 },
 static const surface_key_t k_host_keys[] = {
-    OPENPETE_KEYMAP_HOST_ACTIONS(SURFACE_KEY_ROW)
+    OPENPETE_KEYMAP_HOST_ACTIONS(SURFACE_HOST_KEY_ROW)
 };
 static const surface_key_t k_pad_keys[] = {
-    OPENPETE_KEYMAP_PAD_ACTIONS(SURFACE_KEY_ROW)
+    OPENPETE_KEYMAP_PAD_ACTIONS(SURFACE_PAD_KEY_ROW)
 };
-#undef SURFACE_KEY_ROW
+#undef SURFACE_HOST_KEY_ROW
+#undef SURFACE_PAD_KEY_ROW
+
+/* km_op_t names, as the surface dump spells them. */
+static const char* const k_key_op_names[KM_OP_COUNT] = {
+    "toggle", "fire", "hold", "cycle+", "cycle-", "ui_nav", "freecam_input"
+};
 
 /** @brief Write one key entry; `def` is the shipped-build binding: none for a KM_DEV row and for the second to fourth pads.
  *
@@ -264,6 +276,10 @@ static void emit_key(FILE* f, int* first, const char* domain,
             (k->flags & KM_DEVBUILD) ? "true" : "false");
     json_kv(f, "def", (unbound || (k->flags & KM_DEV)) ? "none" : k->suggested);
     json_kv(f, "suggested", unbound ? "none" : k->suggested);
+    if (k->op >= 0 && k->op < KM_OP_COUNT) {
+        json_kv(f, "row", k->row);
+        json_kv(f, "op", k_key_op_names[k->op]);
+    }
     fputc('}', f);
 }
 

@@ -29,10 +29,12 @@ typedef struct {
     unsigned      flags;
     const char*   def;
     const char*   purpose;
+    const char*   row;   /* host: the knob registry row driven; NULL when exempt */
+    signed char   op;    /* host: km_op_t; pad: -1 */
 } km_action_def_t;
 
-#define KM_ROW_HOST(sym, id, k, c, f, d, p) { id, KM_DOM_HOST, k, c, f, d, p },
-#define KM_ROW_PAD(sym, id, k, c, f, d, p)  { id, KM_DOM_PAD,  k, c, f, d, p },
+#define KM_ROW_HOST(sym, id, k, c, f, r, o, d, p) { id, KM_DOM_HOST, k, c, f, d, p, r, o },
+#define KM_ROW_PAD(sym, id, k, c, f, d, p)  { id, KM_DOM_PAD,  k, c, f, d, p, NULL, -1 },
 /* Players 2-4 default to UNBOUND and carry no flags: giving them P1's
  * defaults would make every row collide with its P1 twin, and KM_REQUIRED on
  * a surface nobody has configured would warn on every stock boot. Their
@@ -40,9 +42,9 @@ typedef struct {
  * player has working buttons with nothing bound here; these rows exist to
  * re-map that player: keymap_decode_slot (host_input.c) resolves each bound
  * row for the slot and leaves an unbound row's bit to the shared merge. */
-#define KM_ROW_PAD2(sym, id, k, c, f, d, p) { id, KM_DOM_PAD2, k, c, 0u, "none", p },
-#define KM_ROW_PAD3(sym, id, k, c, f, d, p) { id, KM_DOM_PAD3, k, c, 0u, "none", p },
-#define KM_ROW_PAD4(sym, id, k, c, f, d, p) { id, KM_DOM_PAD4, k, c, 0u, "none", p },
+#define KM_ROW_PAD2(sym, id, k, c, f, d, p) { id, KM_DOM_PAD2, k, c, 0u, "none", p, NULL, -1 },
+#define KM_ROW_PAD3(sym, id, k, c, f, d, p) { id, KM_DOM_PAD3, k, c, 0u, "none", p, NULL, -1 },
+#define KM_ROW_PAD4(sym, id, k, c, f, d, p) { id, KM_DOM_PAD4, k, c, 0u, "none", p, NULL, -1 },
 
 static const km_action_def_t g_actions[] = {
     OPENPETE_KEYMAP_HOST_ACTIONS(KM_ROW_HOST)
@@ -1801,6 +1803,23 @@ static void km_format_binding(const km_binding_t* b, char* out, size_t cap) {
 
 int openpete_keymap_host_action(const char* id) {
     return id ? km_find("host", id) : -1;
+}
+
+const char* openpete_keymap_action_row(openpete_action_t a) {
+    if ((int)a < 0 || a >= OPK_ACTION_COUNT) return NULL;
+    return g_actions[a].row;
+}
+
+int openpete_keymap_action_op(openpete_action_t a) {
+    if ((int)a < 0 || a >= OPK_ACTION_COUNT) return -1;
+    return g_actions[a].op;
+}
+
+const char* openpete_keymap_row_key_action(const char* row_id) {
+    if (!row_id) return NULL;
+    for (int a = 0; a < OPK_ACTION_COUNT; a++)
+        if (g_actions[a].row && !strcmp(g_actions[a].row, row_id)) return g_actions[a].id;
+    return NULL;
 }
 
 /** @brief Write one source in the spelling a player reads, for openpete_keymap_action_label.

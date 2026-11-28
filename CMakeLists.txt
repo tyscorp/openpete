@@ -1041,6 +1041,11 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         LABELS "fence"
         ENVIRONMENT "OPENPETE_THREAD_ROLES_DB=${CMAKE_BINARY_DIR}/compile_commands.json"
         SKIP_RETURN_CODE 64)
+    # The host-control fence's own tests: a planted bypass per leg refuses,
+    # a copy of the tree passes, a root with no reads is VACUOUS.
+    add_test(NAME host_control_coverage_selftest
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_host_control_coverage.py)
+    set_tests_properties(host_control_coverage_selftest PROPERTIES LABELS "fence")
     # The per-worker cache-line fence's own tests.
     add_test(NAME worker_line_guard_selftest
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_worker_line_guard.py)

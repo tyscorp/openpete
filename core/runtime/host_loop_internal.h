@@ -169,14 +169,15 @@ void host_session_display_reports(void) OP_REQUIRES(sim);
  *        rest of vbl. */
 void host_tick(host_session_t* S, host_iter_t* it) OP_REQUIRES(sim);
 
-/** @brief Run the quiescent ops of an iteration while the settings menu is shut: the state half (savestate queue, stress, rewind, handoff), the input restamp, pause and step, then the host hotkeys.
+/** @brief Run the quiescent ops of an iteration: the state half (savestate queue, stress, rewind, handoff), the input restamp, pause and step, then the host hotkeys.
  *
  * The game fiber is yielded, so a savestate op can snapshot or restore
  * without racing the recompiled code, and it runs before the input latch so
  * a load that overwrites the pad buffer is followed by a fresh write of
- * current input. While the settings menu is open nothing here runs: the
- * menu owns input, and the keymap latch keeps advancing underneath, so a
- * press made under the menu is swallowed rather than replayed.
+ * current input. While the settings menu is open every op runs and each
+ * site's key read is masked (host_control.h, HC_GATE_MENU), turbo's
+ * excepted; the keymap latch keeps advancing underneath, so a press made
+ * under the menu is swallowed rather than replayed.
  * @param S The session: the options, the pause flags, the bk2 session and the split.
  * @param it The iteration: sets rewound. */
 void host_quiescent_ops(host_session_t* S, host_iter_t* it) OP_REQUIRES(sim);
