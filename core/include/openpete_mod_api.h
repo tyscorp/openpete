@@ -575,6 +575,77 @@ typedef struct openpete_mod_material_key {
 typedef int (*openpete_mod_refine_fn)(const openpete_mod_material_key_t* key,
                                       void* out, uint32_t cap);
 
+/** @name Buses
+ * Named synchronous message buses between mods (openpete_mod_api::bus_attach).
+ * @{ */
+/**
+ * @brief A mod as a bus sees it: the sender of a message, a member, or a key's owner.
+ *
+ * `id` points to a string interned for the life of the process; it is host
+ * memory and never belongs in guest memory or the arena. `key` is the mod
+ * key (openpete_mod_key_of), which is the same in every process and build
+ * and is safe to store in the arena. The caller sets `struct_size` to the
+ * `sizeof` it was compiled with; the engine refuses a smaller size than
+ * this struct's api-13 size and writes at most the caller's size.
+ * @since api 13
+ */
+typedef struct openpete_mod_bus_sender {
+    uint32_t    struct_size; /**< `sizeof` at the caller's compile time. */
+    const char* id;          /**< Manifest id, interned for the process; host memory. */
+    uint32_t    key;         /**< Mod key; 0 is never a mod's key. */
+} openpete_mod_bus_sender_t;
+
+/**
+ * @brief A bus handler (openpete_mod_api::bus_attach).
+ *
+ * Runs on the sim thread inside the sender's `bus_call` or `bus_call_to`.
+ * The engine saves the sender's caller-saved integer registers, `hi`,
+ * `lo`, `sp` and both GTE banks around the call and lowers `sp` by a
+ * 64-byte reserve first, so @p cpu may be passed to `api->call` (a fifth
+ * argument goes at `sp + 16`) without changing what the sender's code
+ * relies on. `api->base` is refused inside a handler.
+ * @param self The handler owner's own handle.
+ * @param cpu The sender's CPU state.
+ * @param from The sender, filled by the engine.
+ * @param msg_addr The message's guest address, as the sender passed it.
+ * @param size The message's length in bytes.
+ * @param user The pointer given to `bus_attach`.
+ * @return #OP_BUS_PASS to let the walk continue, a positive value to end
+ *         it; a negative value is treated as #OP_BUS_PASS and logged once.
+ * @since api 13
+ */
+typedef int (*openpete_mod_bus_fn)(openpete_mod_t* self, CPUState* cpu,
+                                   const openpete_mod_bus_sender_t* from,
+                                   uint32_t msg_addr, uint32_t size,
+                                   void* user);
+
+/** @brief Handler result that continues the walk; `bus_call` result when every handler passed. @since api 13 */
+#define OP_BUS_PASS    0
+/** @brief `bus_call` and `bus_call_to` result: no enabled handler is attached, or the directed key is not one. @since api 13 */
+#define OP_BUS_NONE  (-3)
+/** @brief `bus_call` and `bus_call_to` result: the nesting limit (8) or the frame stack is full; no handler ran. @since api 13 */
+#define OP_BUS_DEPTH (-4)
+
+/**
+ * @brief Return the mod key of a manifest id: the 32-bit FNV-1a hash of its bytes without the terminating NUL.
+ *
+ * Offset basis 2166136261, prime 16777619. `api->mod_key(self)` returns
+ * this value of the mod's own id, so a mod computes a peer's key from the
+ * peer's id. Key 0 is never a mod's key.
+ * @param id The manifest id.
+ * @return The key.
+ * @since api 13
+ */
+static inline uint32_t openpete_mod_key_of(const char* id) {
+    uint32_t h = 2166136261u;
+    for (; *id; ++id) {
+        h ^= (uint8_t)*id;
+        h *= 16777619u;
+    }
+    return h;
+}
+/** @} */
+
 /** @brief The api version this header describes. */
 #define OPENPETE_MOD_API_VERSION 13u
 
@@ -1637,6 +1708,111 @@ typedef struct openpete_mod_api {
      */
     int (*antipiracy_scan)(openpete_mod_t* self, uint32_t key,
                            openpete_mod_scan_t* out);
+    /** @} */
+
+    /** @name Buses
+     * A bus is a name of the form `<name>/<major>` (a non-empty name, a
+     * '/', and a decimal major of 1 or more), created by its first
+     * `bus_attach`. Handlers walk in the mod entry sequence, newest entry
+     * first: a mod's handlers go to the front at each of its entries
+     * (boot, first enable, hot reload). A mod whose manifest declares
+     * `sim_mutative = false` is refused `bus_attach`, `bus_call` and
+     * `bus_call_to`; a keyless mod (its key is 0, collides with another
+     * discovered mod's, or its id is 64 bytes or longer) is refused every
+     * bus entry and `mod_key`, and refused at load with an `api` pin of 13
+     * or more.
+     * @{ */
+    /**
+     * @brief Attach the calling mod's handler to a bus.
+     *
+     * One handler per mod per bus: a second attach replaces the handler and
+     * @p user in place and keeps the walk position. Another major of the
+     * same name is another bus. Legal only in the entry point (boot or hot
+     * reload); a hot reload strips the handlers and the new entry attaches
+     * them again.
+     * @param bus The bus name.
+     * @param fn The handler; NULL returns -1.
+     * @param user Passed to every call of @p fn.
+     * @return 0, or -1 for a malformed name, a NULL argument, a call outside
+     *         the entry point, or a refused mod (one log line per mod).
+     * @since api 13
+     */
+    int (*bus_attach)(openpete_mod_t* self, const char* bus,
+                      openpete_mod_bus_fn fn, void* user);
+    /**
+     * @brief Run the enabled handlers of a bus in walk order, the caller's own included.
+     *
+     * Legal on the sim thread from an override (or a bus handler reached
+     * from one) and from a toggle hook; refused from the entry point,
+     * present hooks, UI sections, refine callbacks, shutdown hooks,
+     * save-record callbacks and threads a mod starts, whatever `CPUState`
+     * the caller holds. The engine never writes the message.
+     * @param cpu The caller's CPU state.
+     * @param bus The bus name.
+     * @param msg_addr Guest address of the message; `[msg_addr, msg_addr +
+     *        size)` must be one contiguous host view (an arena block is).
+     * @param size Message length; 0 is allowed.
+     * @return The first positive handler result, which ends the walk;
+     *         #OP_BUS_PASS when every handler passed; #OP_BUS_NONE with no
+     *         enabled handler attached (a misspelt name included);
+     *         #OP_BUS_DEPTH at 8 nested bus calls or a full frame stack;
+     *         -1 when refused or for an invalid range.
+     * @since api 13
+     */
+    int (*bus_call)(openpete_mod_t* self, CPUState* cpu, const char* bus,
+                    uint32_t msg_addr, uint32_t size);
+    /**
+     * @brief Run one mod's handler on a bus and return its result.
+     *
+     * Contexts, range check and refusals as `bus_call`. The caller's own
+     * key runs the caller's own handler.
+     * @param mod_key The target's key.
+     * @return The handler's result (a negative one as #OP_BUS_PASS);
+     *         #OP_BUS_NONE when @p mod_key is not attached and enabled on
+     *         @p bus (unloaded, disabled, another major, never attached);
+     *         #OP_BUS_DEPTH and -1 as `bus_call`.
+     * @since api 13
+     */
+    int (*bus_call_to)(openpete_mod_t* self, CPUState* cpu, const char* bus,
+                       uint32_t mod_key, uint32_t msg_addr, uint32_t size);
+    /**
+     * @brief List the attached, enabled mods of a bus in walk order.
+     *
+     * Legal from any thread. Reads an immutable membership snapshot the
+     * engine republishes at entries, toggles and reloads. Membership is not
+     * participation: a protocol elects a leader from its own gather walk.
+     * @param bus The bus name.
+     * @param out Records to fill; `out[0].struct_size` sets the record size
+     *        and the stride. NULL with @p cap 0 counts.
+     * @param cap Records @p out holds.
+     * @return The member count (records written: at most @p cap), or -1 for
+     *         a malformed name, a `struct_size` below this api's record, or
+     *         a refused mod.
+     * @since api 13
+     */
+    int (*bus_members)(openpete_mod_t* self, const char* bus,
+                       openpete_mod_bus_sender_t* out, int cap);
+    /**
+     * @brief Return the calling mod's own key, openpete_mod_key_of of its id.
+     *
+     * Legal from any context and thread.
+     * @return The key, or 0 for a keyless mod.
+     * @since api 13
+     */
+    uint32_t (*mod_key)(openpete_mod_t* self);
+    /**
+     * @brief Fill the sender record of the mod a key names.
+     *
+     * Covers every mod the loader discovered, enabled or not and on a bus
+     * or not. Legal from any thread.
+     * @param key The key.
+     * @param out Record to fill; the caller sets `struct_size`.
+     * @return 0, or -1 for an unknown key or a `struct_size` below this
+     *         api's record.
+     * @since api 13
+     */
+    int (*mod_info)(openpete_mod_t* self, uint32_t key,
+                    openpete_mod_bus_sender_t* out);
     /** @} */
 } openpete_mod_api_t;
 

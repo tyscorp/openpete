@@ -933,6 +933,7 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
                   ((const openpete_state_header_t*)img)->registry_bytes, sizeof card);
     free(img);
     if (op_atomic_file_commit(&af) != 0) return -1;
+    openpete_mods_bus_note_state("save");
     OPL_INFO_F("savestate", "saved %s (frame=%u) cards held %u/%u flags 0x%02X/0x%02X",
                path, frame, card.held[0], card.held[1], card.flag[0], card.flag[1]);
     return 0;
@@ -1416,6 +1417,7 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
     openpete_guest_discontinuity_notify();
 
     if (out_frame) *out_frame = hdr.frame;
+    openpete_mods_bus_note_state("load");
     OPL_INFO_F("savestate", "loaded %s (frame=%u) cards held %u/%u flags 0x%02X/0x%02X "
                "-> 0x%02X/0x%02X", path, hdr.frame, card.held[0], card.held[1],
                live_flag[0], live_flag[1], card.flag[0], card.flag[1]);

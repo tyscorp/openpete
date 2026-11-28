@@ -1014,6 +1014,47 @@ typedef struct {
  *         dispatch. */
 int openpete_mods_crash_attribution(openpete_mods_attribution_t* out);
 
+/* The state a frame's bracket restores when the frame is left: the frame,
+ * the ImGui guard's hook owner before entry, and the entry time. Filled by
+ * openpete_mods_frame_enter_bus (and the override runner), consumed by
+ * openpete_mods_frame_leave. */
+struct mod_frame;
+typedef struct {
+    struct mod_frame* f;
+    const char*       owner_save;
+    int64_t           t0;
+} openpete_mods_bracket_t;
+
+/** @brief Push a bus frame and open the bracket every frame of mod code runs in.
+ *
+ * The bracket the override runner uses: the ImGui hook owner and a
+ * guest-guard stretch for @p owner, and self-time accounting at leave.
+ * @param b receives the state openpete_mods_frame_leave restores.
+ * @param owner the handler owner's mod id.
+ * @param bus the bus name the frame names to crash attribution.
+ * @return 0, or -1 when the frame stack is full (nothing is pushed). */
+int openpete_mods_frame_enter_bus(openpete_mods_bracket_t* b, const char* owner,
+                                  const char* bus);
+/** @brief Close a bracket and pop its frame, the top one, charging the owner's self time.
+ * @param b the bracket the enter filled. */
+void openpete_mods_frame_leave(const openpete_mods_bracket_t* b);
+/** @brief Count the frames of one kind that belong to the calling thread's open site, indices [site depth, frame depth).
+ * @param kind the frame kind.
+ * @return the count. */
+int openpete_mods_site_frames(openpete_mods_frame_kind kind);
+/** @brief Count the frames of one kind on the calling thread's whole frame stack, the frames of a parked game fiber included.
+ * @param kind the frame kind.
+ * @return the count. */
+int openpete_mods_frames_of_kind(openpete_mods_frame_kind kind);
+/** @brief Return the number of frames on the calling thread's frame stack.
+ * @return the depth. */
+int openpete_mods_frame_depth(void);
+/** @brief Count a runahead rollback applied while a bus frame is live on the sim thread. */
+void openpete_mods_bus_note_rollback(void);
+/** @brief Log the number of bus frames live on the sim thread at a state file save or load.
+ * @param what "save" or "load". */
+void openpete_mods_bus_note_state(const char* what);
+
 /* The dispatch context of the calling thread: which kind of mod callback
  * the thread is running. A thread-local value that each coarse site (a
  * site that runs mod code once per tick, per present or less) saves, sets

@@ -42,6 +42,7 @@
 #include "openpete_mods.h"
 #include "openpete_modsave.h"
 #include "mod_vec.h"
+#include "mod_bus.h"          /* bus table, snapshot, key table */
 #include "openpete_osd.h"
 #include "../host/texture_pack.h"   /* texpack_fog_shift */
 #include "openpete_input_log.h"
@@ -399,6 +400,13 @@ struct openpete_mod {
      * by the mod's own threads, hence atomic. */
     _Atomic int api_closed;
     _Atomic int api_refuse_logged; /* the first refusal has been logged */
+    uint32_t bus_key;   /* openpete_mod_key_of(id); 0 when keyless (key 0,
+                         * a collision with another discovered mod, or an
+                         * id of MOD_ID_MAX bytes or more). Set at discovery,
+                         * immutable after: a reload cannot change the id */
+    int      id_long;   /* the manifest id did not fit id[] (it was cut) */
+    _Atomic uint32_t retired; /* strips of this mod's registrations; a bus
+                         * snapshot row records it (mod_bus.c) */
     uint64_t imgui_calls;  /* ImGui calls the last body made */
     int      imgui_engaged;/* the first non-zero count has been logged */
     void* dl;
@@ -609,7 +617,9 @@ static int mod_check_abi(void* dl, const char* id, const char* path) {
  * latches, stops the rumble slots it drove, removes its chain links,
  * present hooks, registry rows, postfx passes, materials and shaders (postfx
  * before shaders, which retires the pipelines), and clears its UI body and
- * toggle hook, and records a STRIP override-order event. Runs before a
+ * toggle hook, removes its bus handlers, increments its retirement count
+ * and publishes the bus membership snapshot, and records a STRIP
+ * override-order event. Runs before a
  * reload re-enters the mod, and after a failed entry: an entry that
  * registered and then returned nonzero must not leave its registrations
  * live under an id the loader has declared disabled. */
@@ -638,7 +648,17 @@ static void mod_strip_registrations(struct openpete_mod* mod) {
     mod->toggle_fn = NULL;
     mod->shutdown_fn = NULL;
     openpete_modsave_remove_owner(mod->id);
+    openpete_mods_bus_remove_owner(mod);
+    atomic_fetch_add(&mod->retired, 1u);
+    openpete_mods_bus_publish();
 }
+
+/* Reads the bus table and the walker make of a mod (mod_bus.h). */
+int mod_owner_enabled(const openpete_mod_t* m) { return atomic_load(&m->enabled) != 0; }
+uint32_t mod_owner_retired(const openpete_mod_t* m) { return atomic_load(&m->retired); }
+uint32_t mod_owner_key(const openpete_mod_t* m) { return m->bus_key; }
+int mod_owner_sim_neutral(const openpete_mod_t* m) { return m->sim_mutative == 0; }
+const char* mod_owner_tag(const openpete_mod_t* m) { return m->log_tag; }
 
 /** @brief Resolve a mod object's UI section descriptor into its ui_body and ui_always fields.
  *
@@ -959,14 +979,15 @@ static int purity_violation(const char* what) {
 
 /* ---- the api gate: refusal after the exit pass ---------------------------
  * The exit pass (openpete_mods_shutdown) closes each mod when its shutdown
- * hook returns and then closes the whole api. Every entry but the four
- * named below brackets its work in mod_api_enter/mod_api_leave, which counts
- * the call in s_api_inflight; the close stores the flag and then waits
+ * hook returns and then closes the whole api. Every entry but the six
+ * named below brackets its work in mod_api_enter/mod_api_leave, which
+ * counts the call in s_api_inflight; the close stores the flag and then waits
  * for the count to drain, so with sequentially consistent atomics a call
  * either sees the flag and is refused or is counted before the wait reads
  * the count, and no call is inside the engine when teardown starts. base()
- * and call() run guest code, which may park the fiber mid-call, so they
- * test the flags without being counted; nothing runs guest code once the
+ * and call() run guest code, which may park the fiber mid-call, and so do
+ * bus_call() and bus_call_to() through a handler's api->call, so those
+ * four test the flags without being counted; nothing runs guest code once the
  * loop has ended. guest() and guest_addr() translate addresses into
  * memory that outlives teardown and are uncounted for their per-access
  * cost. */
@@ -1017,6 +1038,11 @@ static void mod_api_leave(void) {
 
 int openpete_mods_api_closed(void) {
     return atomic_load(&s_api_closed);
+}
+
+/* The walker's api-closed re-check (mod_bus.h). */
+int mod_owner_closed(const openpete_mod_t* m) {
+    return mod_api_is_closed((openpete_mod_t*)m);
 }
 
 /* ---- native-renderer visual-bypass advisory ------------------------------
@@ -1858,8 +1884,20 @@ static int mod_check_game(struct openpete_mod* mod, void* dl,
     return -1;
 }
 
+/* The identity a hot reload may not change: the manifest id (as id[]
+ * stores it, with whether it was cut) and the api pin. */
+typedef struct {
+    char     id[MOD_ID_MAX];
+    int      id_long;
+    uint32_t api_pin;
+} mod_identity_t;
+
 /* defined later in this file */
-static int parse_manifest(const char* mod_dir, struct openpete_mod* mod);
+static int parse_manifest(const char* mod_dir, struct openpete_mod* mod,
+                          const mod_identity_t* expect);
+static int manifest_identity(const char* mod_dir, mod_identity_t* out);
+static int identity_differs(const mod_identity_t* expect,
+                            const mod_identity_t* now, const char* path);
 static void mod_register_key_defaults(const struct openpete_mod* mod, int enabled);
 static int mod_enter_deferred(struct openpete_mod* mod);
 
@@ -2032,6 +2070,18 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     void* dl = NULL;
     mod_entry_fn entry = mod_reload_open(mod, hot_path, obj_kind, &dl);
     if (!entry) return;
+    /* The id and api pin are fixed for the session: a manifest that
+     * changes either keeps the running object, its shutdown hook unrun. */
+    mod_identity_t ident, now;
+    snprintf(ident.id, sizeof ident.id, "%s", mod->id);
+    ident.id_long = mod->id_long;
+    ident.api_pin = mod->api_pin;
+    if (manifest_identity(mod->dir, &now) != 0) {
+        OPL_ERROR_F("mods", "%s: reload manifest unreadable - keeping the "
+                    "running object", mod->id);
+        return;
+    }
+    if (identity_differs(&ident, &now, mod->dir)) return;
 
     /* A loadable object exists: now retire the running one. From here a
      * failure leaves the mod INERT - the old registrations are gone and
@@ -2047,7 +2097,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     mod->state_decl = mod->ra_decl = 0;
     char dir_copy[MOD_PATH_MAX];
     snprintf(dir_copy, sizeof dir_copy, "%s", mod->dir);
-    if (parse_manifest(dir_copy, mod) != 0) {
+    if (parse_manifest(dir_copy, mod, &ident) != 0) {
         OPL_ERROR_F("mods", "%s: reload manifest parse failed - mod is "
                     "now INERT until the next successful reload", mod->id);
         return;
@@ -2084,6 +2134,9 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     openpete_mods_chain_set_owner_enabled(mod->id, mod->enabled);
     openpete_mods_draw_set_owner_enabled(mod->id, mod->enabled);
     openpete_mods_registry_set_owner_enabled(mod->id, mod->enabled);
+    /* Published here and not after the entry, so a live-disabled mod's
+     * handlers are never listed as enabled. */
+    openpete_mods_bus_publish();
     s_toggle_epoch++;
     OPL_INFO_F("mods", "hot reload: %s live%s", mod->id,
                mod->enabled ? "" : " (still disabled)");
@@ -2633,6 +2686,9 @@ static void toggle_queue_drain(CPUState* cpu, unsigned canonical_tick) {
         if (!on) openpete_host_mouse_request_capture(
                      OPENPETE_MOUSE_CAP_MOD0 + mod->load_index, 0);
         mod->enabled = on;
+        /* Before the hook: a toggle-off hook's send reaches the membership
+         * without its own handler. */
+        openpete_mods_bus_publish();
         s_toggle_epoch++;
         OPL_INFO_F("mods", "live toggle: %s %s (tick %u)",
                    id, on ? "ENABLED" : "DISABLED", canonical_tick);
@@ -2644,6 +2700,7 @@ static void toggle_queue_drain(CPUState* cpu, unsigned canonical_tick) {
 
 void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
     s_current_tick = canonical_tick;
+    openpete_mods_bus_note_boundary(canonical_tick);
     openpete_mods_game_state_sample(cpu, canonical_tick);
     for (size_t i = 0; i < mod_fvec_count(&s_toggle_sched); i++) {
         const toggle_sched_t* t =
@@ -2673,6 +2730,7 @@ void openpete_mods_shutdown(void (*progress)(void)) {
     static int s_ran;
     if (s_ran) return;
     s_ran = 1;
+    openpete_mods_bus_report();
     int hooks = 0;
     for (int i = mod_count() - 1; i >= 0; i--) {
         struct openpete_mod* mod = mod_at(i);
@@ -3435,7 +3493,8 @@ static int api_material_set_selector(openpete_mod_t* self, int material,
  * log, ui_status and notify are variadic and gate inside their bodies;
  * guest_alloc and config_str write an out parameter on refusal and are
  * written out below; guest, guest_addr and draw_text take no mod; base,
- * call, guest and guest_addr are not counted (see mod_api_enter). */
+ * call, bus_call, bus_call_to, guest and guest_addr are not counted (see
+ * mod_api_enter). */
 #define MOD_API_GATED_ENTRIES(X) \
     X(int, override_addr, api_override_addr, -1, (openpete_mod_t* self, uint32_t addr, openpete_mod_override_fn fn), (self, addr, fn)) \
     X(int, override_name, api_override_name, -1, (openpete_mod_t* self, const char* name, openpete_mod_override_fn fn), (self, name, fn)) \
@@ -3477,7 +3536,11 @@ static int api_material_set_selector(openpete_mod_t* self, int material,
     X(int, moby_classes, api_moby_classes, -1, (openpete_mod_t* self, uint16_t* out, int cap), (self, out, cap)) \
     X(int, register_shutdown_hook, api_register_shutdown_hook, -1, (openpete_mod_t* self, openpete_mod_shutdown_fn fn), (self, fn)) \
     X(int, save_register, openpete_modsave_register, -1, (openpete_mod_t* self, uint32_t schema, openpete_mod_save_write_fn write, openpete_mod_save_read_fn read), (self, schema, write, read)) \
-    X(int, antipiracy_scan, api_antipiracy_scan, -1, (openpete_mod_t* self, uint32_t key, openpete_mod_scan_t* out), (self, key, out))
+    X(int, antipiracy_scan, api_antipiracy_scan, -1, (openpete_mod_t* self, uint32_t key, openpete_mod_scan_t* out), (self, key, out)) \
+    X(int, bus_attach, openpete_mods_bus_attach, -1, (openpete_mod_t* self, const char* bus, openpete_mod_bus_fn fn, void* user), (self, bus, fn, user)) \
+    X(int, bus_members, openpete_mods_bus_members, -1, (openpete_mod_t* self, const char* bus, openpete_mod_bus_sender_t* out, int cap), (self, bus, out, cap)) \
+    X(uint32_t, mod_key, openpete_mods_bus_mod_key, 0, (openpete_mod_t* self), (self)) \
+    X(int, mod_info, openpete_mods_bus_mod_info, -1, (openpete_mod_t* self, uint32_t key, openpete_mod_bus_sender_t* out), (self, key, out))
 
 /* One gate_<member> per MOD_API_GATED_ENTRIES row. */
 #define MOD_API_GATED(ret, name, impl, refused, params, args)             \
@@ -3582,6 +3645,35 @@ static void gate_call(CPUState* cpu, uint32_t addr) {
     api_call_addr(cpu, addr);
 }
 
+/** @brief Gate bus_call: uncounted, since a handler's api->call may park the fiber; refused once the caller's api is closed.
+ *
+ * @param self The calling mod.
+ * @param cpu Guest CPU.
+ * @param bus Bus name.
+ * @param msg_addr Message address.
+ * @param size Message length.
+ * @return The walk's result, or -1 when closed. */
+static int gate_bus_call(openpete_mod_t* self, CPUState* cpu, const char* bus,
+                         uint32_t msg_addr, uint32_t size) {
+    if (mod_api_is_closed(self)) { mod_api_refused(self, "bus_call"); return -1; }
+    return openpete_mods_bus_call(self, cpu, bus, msg_addr, size);
+}
+
+/** @brief Gate bus_call_to: uncounted like gate_bus_call, refused once the caller's api is closed.
+ *
+ * @param self The calling mod.
+ * @param cpu Guest CPU.
+ * @param bus Bus name.
+ * @param mod_key The target's key.
+ * @param msg_addr Message address.
+ * @param size Message length.
+ * @return The handler's result, or -1 when closed. */
+static int gate_bus_call_to(openpete_mod_t* self, CPUState* cpu, const char* bus,
+                            uint32_t mod_key, uint32_t msg_addr, uint32_t size) {
+    if (mod_api_is_closed(self)) { mod_api_refused(self, "bus_call_to"); return -1; }
+    return openpete_mods_bus_call_to(self, cpu, bus, mod_key, msg_addr, size);
+}
+
 /* Every entry routes through a gate, so a refusal after the exit pass
  * holds for each one. */
 #define MOD_API_ROW(ret, name, impl, refused, params, args) .name = gate_##name,
@@ -3597,6 +3689,8 @@ static const openpete_mod_api_t s_api = {
     .notify        = api_notify,
     .config_str    = gate_config_str,
     .draw_text     = gate_draw_text,
+    .bus_call      = gate_bus_call,
+    .bus_call_to   = gate_bus_call_to,
     MOD_API_GATED_ENTRIES(MOD_API_ROW)
 };
 #undef MOD_API_ROW
@@ -3674,6 +3768,113 @@ static int mod_id_valid(const char* id) {
     return !mod_id_reserved_stem(id);
 }
 
+/** @brief Fill an identity from a manifest id string and api datum, as parse_mod_header stores them.
+ *
+ * @param out The identity.
+ * @param id The manifest id.
+ * @param api The [mod] api datum. */
+static void identity_of(mod_identity_t* out, const char* id, toml_datum_t api) {
+    snprintf(out->id, sizeof out->id, "%s", id);
+    out->id_long = strlen(id) >= sizeof out->id;
+    out->api_pin = (api.ok && api.u.i > 0) ? (uint32_t)api.u.i : 0u;
+}
+
+/** @brief Report, with an error line, a manifest identity that differs from a running mod's.
+ *
+ * The id names the mod's key, its interned id and every registration's
+ * owner, and the api pin decides a keyless mod's load verdict, so neither
+ * may change within a session.
+ * @param expect The running mod's identity.
+ * @param now The manifest's identity.
+ * @param path Manifest path for the log line.
+ * @return 1 when it differs, else 0. */
+static int identity_differs(const mod_identity_t* expect,
+                            const mod_identity_t* now, const char* path) {
+    if (strcmp(now->id, expect->id) != 0 || now->id_long != expect->id_long) {
+        OPL_ERROR_F("mods", "%s: reload refused - the manifest id changed from "
+                    "\"%s\" to \"%s\"; a mod's id is fixed for the session, "
+                    "restart to apply it", path, expect->id, now->id);
+        return 1;
+    }
+    if (now->api_pin != expect->api_pin) {
+        OPL_ERROR_F("mods", "%s: reload refused - the manifest api pin changed "
+                    "from %u to %u; restart to apply it", path,
+                    expect->api_pin, now->api_pin);
+        return 1;
+    }
+    return 0;
+}
+
+/** @brief Read only a manifest's identity ([mod] id and api) for a hot reload's pre-check.
+ *
+ * @param mod_dir Mod directory.
+ * @param out The identity.
+ * @return 0, or -1 when mod.toml does not open or parse or has no id. */
+static int manifest_identity(const char* mod_dir, mod_identity_t* out) {
+    char path[MOD_PATH_MAX + 16];
+    snprintf(path, sizeof path, "%s/mod.toml", mod_dir);
+    FILE* fp = fopen(path, "r");
+    if (!fp) return -1;
+    char errbuf[256];
+    toml_table_t* root = toml_parse_file(fp, errbuf, sizeof errbuf);
+    fclose(fp);
+    if (!root) return -1;
+    int rc = -1;
+    toml_table_t* t = toml_table_in(root, "mod");
+    toml_datum_t id = t ? toml_string_in(t, "id") : (toml_datum_t){0};
+    if (id.ok) {
+        identity_of(out, id.u.s, toml_int_in(t, "api"));
+        free(id.u.s);
+        rc = 0;
+    }
+    toml_free(root);
+    return rc;
+}
+
+/** @brief Refuse a hot reload's manifest header whose identity differs from the running mod's, freeing the id and version strings.
+ *
+ * @param expect The running mod's identity, or NULL (not a reload).
+ * @param id The [mod] id datum.
+ * @param ver The [mod] version datum.
+ * @param api The [mod] api datum.
+ * @param path Manifest path for the log line.
+ * @return 1 when refused (both strings freed), else 0. */
+static int header_identity_refused(const mod_identity_t* expect, toml_datum_t id,
+                                   toml_datum_t ver, toml_datum_t api,
+                                   const char* path) {
+    if (!expect || !id.ok || !ver.ok) return 0;
+    mod_identity_t now;
+    identity_of(&now, id.u.s, api);
+    if (!identity_differs(expect, &now, path)) return 0;
+    free(id.u.s);
+    free(ver.u.s);
+    return 1;
+}
+
+/** @brief Read a two-valued [mod] declaration (state, runahead) into its one-letter code.
+ *
+ * An absent key leaves @p out unchanged; an unknown value logs an error
+ * naming the two accepted values and leaves it unchanged, since a wrong
+ * claim corrupts timelines and must not parse quietly.
+ * @param t The [mod] table.
+ * @param key The key.
+ * @param a The first accepted value.
+ * @param ca Its code.
+ * @param b The second accepted value.
+ * @param cb Its code.
+ * @param id Mod id for the log line.
+ * @param out The declaration field. */
+static void parse_decl(toml_table_t* t, const char* key, const char* a, char ca,
+                       const char* b, char cb, const char* id, char* out) {
+    toml_datum_t d = toml_string_in(t, key);
+    if (!d.ok) return;
+    if (strcmp(d.u.s, a) == 0) *out = ca;
+    else if (strcmp(d.u.s, b) == 0) *out = cb;
+    else OPL_ERROR_F("mods", "%s: unknown %s = \"%s\" (want \"%s\" or \"%s\") - ignored",
+                     id, key, d.u.s, a, b);
+    free(d.u.s);
+}
+
 /** @brief Parse the [mod] table: identity, the api floor, and the declarations that gate savestate, rewind and runahead.
  *
  * id and version are required; name defaults to the id; dir and log_tag
@@ -3686,17 +3887,24 @@ static int mod_id_valid(const char* id) {
  * absent. state ("none" or "rebuildable") and runahead ("pure" or
  * "host-fx") set state_decl and ra_decl; an unknown value logs an error
  * and leaves the declaration unset.
+ * id_long records an id of MOD_ID_MAX bytes or more, which id[] cuts.
+ * With @p expect (a hot reload), an id or api pin other than the running
+ * mod's is refused before anything is written.
  * @param t The [mod] table.
  * @param mod The mod being parsed.
  * @param mod_dir The mod directory.
  * @param path Manifest path for log lines.
+ * @param expect The identity a hot reload keeps, or NULL.
  * @return 0, or -1 when id or version is missing, the id cannot be a
- *         file name (mod_id_valid), or the api is newer than the engine's. */
+ *         file name (mod_id_valid), the api is newer than the engine's, or
+ *         the identity differs from @p expect. */
 static int parse_mod_header(toml_table_t* t, struct openpete_mod* mod,
-                            const char* mod_dir, const char* path) {
+                            const char* mod_dir, const char* path,
+                            const mod_identity_t* expect) {
     toml_datum_t id = toml_string_in(t, "id");
     toml_datum_t ver = toml_string_in(t, "version");
     toml_datum_t api = toml_int_in(t, "api");
+    if (header_identity_refused(expect, id, ver, api, path)) return -1;
     if (!id.ok || !ver.ok || !mod_id_valid(id.u.s)) {
         if (id.ok && ver.ok)
             OPL_ERROR_F("mods", "%s: [mod] id \"%s\" cannot be a file name "
@@ -3722,6 +3930,7 @@ static int parse_mod_header(toml_table_t* t, struct openpete_mod* mod,
         return -1;
     }
     snprintf(mod->id, sizeof mod->id, "%s", id.u.s);
+    mod->id_long = strlen(id.u.s) >= sizeof mod->id;
     snprintf(mod->version, sizeof mod->version, "%s", ver.u.s);
     mod->api_pin = (api.ok && api.u.i > 0) ? (uint32_t)api.u.i : 0u;
     snprintf(mod->dir, sizeof mod->dir, "%s", mod_dir);
@@ -3760,24 +3969,8 @@ static int parse_mod_header(toml_table_t* t, struct openpete_mod* mod,
      * "host-fx" (host side effects the engine suppresses during
      * speculative ticks). Unknown values are an error: a wrong claim
      * here corrupts timelines, so it must not parse quietly. */
-    toml_datum_t st = toml_string_in(t, "state");
-    if (st.ok) {
-        if (strcmp(st.u.s, "none") == 0)             mod->state_decl = 'n';
-        else if (strcmp(st.u.s, "rebuildable") == 0) mod->state_decl = 'r';
-        else OPL_ERROR_F("mods", "%s: unknown state = \"%s\" (want "
-                         "\"none\" or \"rebuildable\") - ignored",
-                         mod->id, st.u.s);
-        free(st.u.s);
-    }
-    toml_datum_t ra = toml_string_in(t, "runahead");
-    if (ra.ok) {
-        if (strcmp(ra.u.s, "pure") == 0)          mod->ra_decl = 'p';
-        else if (strcmp(ra.u.s, "host-fx") == 0)  mod->ra_decl = 'h';
-        else OPL_ERROR_F("mods", "%s: unknown runahead = \"%s\" (want "
-                         "\"pure\" or \"host-fx\") - ignored",
-                         mod->id, ra.u.s);
-        free(ra.u.s);
-    }
+    parse_decl(t, "state", "none", 'n', "rebuildable", 'r', mod->id, &mod->state_decl);
+    parse_decl(t, "runahead", "pure", 'p', "host-fx", 'h', mod->id, &mod->ra_decl);
     return 0;
 }
 
@@ -4349,10 +4542,12 @@ static void mod_rows_census(const struct openpete_mod* mod) {
  * releases them with mod_rows_free.
  * @param mod_dir Mod directory.
  * @param mod Zeroed record to fill.
+ * @param expect The identity a hot reload keeps, or NULL.
  * @return 0 on success, -1 when mod.toml does not open (silently), does
  *         not parse, has no [mod] table, or has an invalid or too-new
- *         header. */
-static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
+ *         header, or one whose identity differs from @p expect. */
+static int parse_manifest(const char* mod_dir, struct openpete_mod* mod,
+                          const mod_identity_t* expect) {
     char path[MOD_PATH_MAX];
     snprintf(path, sizeof path, "%s/mod.toml", mod_dir);
     FILE* fp = fopen(path, "r");
@@ -4372,7 +4567,7 @@ static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
         OPL_ERROR_F("mods", "%s: missing [mod] table", path);
         goto out;
     }
-    if (parse_mod_header(t, mod, mod_dir, path) != 0) goto out;
+    if (parse_mod_header(t, mod, mod_dir, path, expect) != 0) goto out;
     parse_deps(t, mod);
     parse_games(t, &mod->games, mod->id);
     parse_bindings(root, mod, path);
@@ -5203,6 +5398,7 @@ static int mod_run_entry(struct openpete_mod* mod) {
     }
     mod_resolve_ui_section(mod, mod->dl);
     mod->entered = 1;
+    openpete_mods_bus_publish(); /* its handlers join the membership */
     if (s_mods_init_ran) openpete_modsave_on_entered();
     return 0;
 }
@@ -6761,6 +6957,73 @@ int openpete_mods_compile_all(const openpete_options_t* opts) {
     return n_failed;
 }
 
+/** @brief Give every discovered row its mod key, mark keyless rows, refuse the pinned ones, and seal the key table.
+ *
+ * Runs once over every row discovery holds, deferred-entry rows included,
+ * so a later first enable never meets a collision. A row is keyless when
+ * its id was cut (MOD_ID_MAX bytes or more: the stored id is not the id a
+ * peer hashes), its key is 0, or its key equals another row's, in which
+ * case both rows are marked and both ids named. A keyless row whose `api`
+ * pin is MOD_API_SCOPED (13) or more is refused here, its rows freed and
+ * the run compacted; one pinned lower or unpinned loads with its bus calls
+ * and mod_key refused. Every keyed row is added to the key table.
+ * @param pending The parsed rows.
+ * @param n The row count.
+ * @return The row count after the refusals. */
+static int mods_assign_keys(mod_fvec* pending, int n) {
+    for (int i = 0; i < n; i++) {
+        struct openpete_mod* m = pend_at(pending, i);
+        m->bus_key = m->id_long ? 0u : openpete_mod_key_of(m->id);
+        if (m->id_long)
+            OPL_WARN_F("mods", "\"%s...\" is keyless: its id is %d bytes or "
+                       "longer", m->id, MOD_ID_MAX);
+        else if (m->bus_key == 0)
+            OPL_WARN_F("mods", "\"%s\" is keyless: its key is 0", m->id);
+    }
+    /* Pairs on the original keys; a row marked by one pair keeps being
+     * compared, so a third row with the same key is named too. */
+    mod_fvec keys;
+    mod_fvec_init(&keys, sizeof(uint32_t), 64, NULL, 0);
+    (void)mod_fvec_resize(&keys, (size_t)n);
+    for (int i = 0; i < n && (size_t)i < mod_fvec_count(&keys); i++)
+        *(uint32_t*)mod_fvec_at(&keys, (size_t)i) = pend_at(pending, i)->bus_key;
+    for (int i = 0; i < n && (size_t)i < mod_fvec_count(&keys); i++)
+        for (int j = i + 1; j < n; j++) {
+            const uint32_t ki = *(uint32_t*)mod_fvec_at(&keys, (size_t)i);
+            if (!ki || ki != *(uint32_t*)mod_fvec_at(&keys, (size_t)j)) continue;
+            OPL_WARN_F("mods", "\"%s\" and \"%s\" are keyless: their ids "
+                       "share the mod key 0x%08X", pend_at(pending, i)->id,
+                       pend_at(pending, j)->id, ki);
+            pend_at(pending, i)->bus_key = 0;
+            pend_at(pending, j)->bus_key = 0;
+        }
+    mod_fvec_free(&keys);
+    int w = 0;
+    for (int i = 0; i < n; i++) {
+        struct openpete_mod* m = pend_at(pending, i);
+        if (!m->bus_key && m->api_pin >= MOD_API_SCOPED) {
+            OPL_ERROR_F("mods", "\"%s\" refused: a keyless mod cannot load "
+                        "with api %u (api %d or later needs a mod key; change "
+                        "the id) - disabled", m->id, m->api_pin, MOD_API_SCOPED);
+            mod_rows_free(m);
+            continue;
+        }
+        if (!m->bus_key)
+            OPL_WARN_F("mods", "\"%s\" loads with api %u; its bus calls and "
+                       "mod_key are refused", m->id, m->api_pin);
+        else
+            (void)openpete_mods_keys_add(m->id, m->bus_key);
+        if (w != i) {
+            *pend_at(pending, w) = *m;
+            mod_rows_disown(m);
+        }
+        w++;
+    }
+    mod_fvec_truncate(pending, (size_t)w);
+    openpete_mods_keys_seal();
+    return w;
+}
+
 void openpete_mods_register_key_defaults(const openpete_options_t* opts) {
     char mods_dir[MOD_PATH_MAX];
     mod_fvec refs;
@@ -6772,7 +7035,7 @@ void openpete_mods_register_key_defaults(const openpete_options_t* opts) {
          * rows before the memset drops the pointers to them. */
         mod_rows_free(&scratch);
         memset(&scratch, 0, sizeof scratch);
-        if (parse_manifest(ref_at(&refs, i)->dir, &scratch) != 0) continue;
+        if (parse_manifest(ref_at(&refs, i)->dir, &scratch, NULL) != 0) continue;
         mod_register_key_defaults(&scratch, ref_at(&refs, i)->boot_on);
     }
     mod_rows_free(&scratch);   /* the last ref's rows */
@@ -6833,7 +7096,7 @@ int openpete_mods_init(const openpete_options_t* opts) {
         struct openpete_mod* mod =
             (struct openpete_mod*)mod_fvec_push(&pending);
         if (!mod) break;
-        if (parse_manifest(ref_at(&refs, i)->dir, mod) != 0) {
+        if (parse_manifest(ref_at(&refs, i)->dir, mod, NULL) != 0) {
             /* A partial parse can already have pushed rows; the slot is
              * about to be reused by the next ref. */
             mod_rows_free(mod);
@@ -6844,6 +7107,7 @@ int openpete_mods_init(const openpete_options_t* opts) {
         mod_register_key_defaults(mod, mod->boot_on);
         n_pending++;
     }
+    n_pending = mods_assign_keys(&pending, n_pending);
 
     /* Phase B: topo-sort by hard deps (see topo_visit above). */
     topo_ctx_t tc;

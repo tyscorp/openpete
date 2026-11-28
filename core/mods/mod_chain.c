@@ -177,7 +177,7 @@ static void owner_state_set(const char* owner_id, int disabled) {
  * crash handler knows whom to name. Sim-thread only; TLS for safety. A
  * game fiber parked inside an override leaves its frames here, on the sim
  * thread, while the host loop runs the tick boundary. */
-typedef struct {
+typedef struct mod_frame {
     openpete_mods_frame_kind kind;
     const char*  owner;    /* owner id, read from the link (or handler)
                             * at push: a link index can go stale */
@@ -197,12 +197,9 @@ static _Thread_local int         s_frame_depth = 0;
 /* The calling thread's open dispatch site (openpete_mods_site_open). */
 static _Thread_local openpete_mods_site_t s_site;
 
-/* The state a frame's bracket restores when the frame is left. */
-typedef struct {
-    mod_frame_t* f;
-    const char*  owner_save; /* the ImGui guard's hook owner before entry */
-    op_time_t    t0;         /* entry time */
-} mod_bracket_t;
+/* The state a frame's bracket restores when the frame is left
+ * (openpete_mods_bracket_t in openpete_mods.h). */
+typedef openpete_mods_bracket_t mod_bracket_t;
 
 /** @brief Push a frame and open the bracket every frame of mod code runs in.
  *
@@ -253,6 +250,33 @@ static void frame_leave(const mod_bracket_t* b) {
     if (s_frame_depth > 0)
         s_frames[s_frame_depth - 1].child_ns += span;
 }
+
+/* The bus walker (mod_bus.c) brackets each handler with these; documented
+ * in openpete_mods.h. */
+int openpete_mods_frame_enter_bus(openpete_mods_bracket_t* b, const char* owner,
+                                  const char* bus) {
+    mod_frame_t* f = frame_enter(b, OPENPETE_MODS_FRAME_BUS, owner);
+    if (!f) return -1;
+    f->bus = bus;
+    return 0;
+}
+
+void openpete_mods_frame_leave(const openpete_mods_bracket_t* b) { frame_leave(b); }
+
+int openpete_mods_site_frames(openpete_mods_frame_kind kind) {
+    int n = 0;
+    for (int i = s_site.depth > 0 ? s_site.depth : 0; i < s_frame_depth; i++)
+        n += s_frames[i].kind == kind;
+    return n;
+}
+
+int openpete_mods_frames_of_kind(openpete_mods_frame_kind kind) {
+    int n = 0;
+    for (int i = 0; i < s_frame_depth; i++) n += s_frames[i].kind == kind;
+    return n;
+}
+
+int openpete_mods_frame_depth(void) { return s_frame_depth; }
 
 /** @brief Move the continuation of every live override frame on a chain whose index is at or above a threshold.
  *

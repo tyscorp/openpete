@@ -30,6 +30,17 @@ static game_mod_desc_t s_game;
 const game_mod_desc_t* openpete_mods_game_desc(void) { return &s_game; }
 void openpete_mods_guard_enter(const char* mod_id) { (void)mod_id; }
 void openpete_mods_guard_leave(void) {}
+/** @brief Stub: open a dispatch site.
+ * @param ctx the site's kind.
+ * @return the enclosing site, always NONE here. */
+openpete_mods_site_t openpete_mods_site_open(openpete_mods_ctx ctx) {
+    (void)ctx;
+    const openpete_mods_site_t none = {OPENPETE_MODS_CTX_NONE, 0, 0};
+    return none;
+}
+/** @brief Stub: close a dispatch site.
+ * @param prev the value the open returned. */
+void openpete_mods_site_close(openpete_mods_site_t prev) { (void)prev; }
 const char* openpete_mods_id(int i) { (void)i; return ""; }
 const char* openpete_mods_id_of(openpete_mod_t* self) { (void)self; return ""; }
 int openpete_mods_is_enabled(const char* id) { (void)id; return 0; }

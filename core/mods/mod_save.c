@@ -1069,9 +1069,11 @@ static void deliver(void) {
         row_hold(w);
         if (committed())
             OPL_INFO_F("modsave", "%s: read %s save %u", g->id, k_status[r.status], r.save_index);
+        const openpete_mods_site_t site = openpete_mods_site_open(OPENPETE_MODS_CTX_SAVE_RECORD);
         openpete_mods_guard_enter(g->id);
         g->read(g->self, &r);
         openpete_mods_guard_leave();
+        openpete_mods_site_close(site);
     }
 }
 
@@ -1235,9 +1237,11 @@ static void add_reg_record(ms_snap_t* sn, ms_reg_t* g, const ms_rec_t* prev, uin
     const openpete_mod_save_id_t sid = { (uint32_t)sizeof sid, index };
     const void* data = NULL;
     uint32_t size = 0;
+    const openpete_mods_site_t site = openpete_mods_site_open(OPENPETE_MODS_CTX_SAVE_RECORD);
     openpete_mods_guard_enter(g->id);
     const int rc = g->write(g->self, &sid, &data, &size);
     openpete_mods_guard_leave();
+    openpete_mods_site_close(site);
     if (rc == 0 && (data || !size)) snap_add(sn, g->id, g->schema, 0u, data, size);
     else if (prev) snap_add(sn, prev->id, prev->schema, prev->gap, prev->data, prev->size);
 }

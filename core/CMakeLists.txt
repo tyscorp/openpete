@@ -213,6 +213,7 @@ add_library(openpete_core STATIC
     # loader (mod.toml manifests via vendored tomlc99, POSIX dlopen), and
     # the mod install's checkpoint, exec and restore path (handoff.c).
     mods/mod_vec.c
+    mods/mod_bus.c
     mods/mod_chain.c
     mods/mod_save.c
     mods/handoff.c

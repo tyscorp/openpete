@@ -1,0 +1,18 @@
+#!/bin/sh
+# The mod compiler of the sanitizer runs (OPENPETE_MOD_CC): clang-19 with
+# -fsanitize=$OPENPETE_MOD_SANITIZE (thread or address), so the fixture mods
+# a ThreadSanitizer or AddressSanitizer game binary loads are instrumented
+# like the binary; their runtime is the binary's.
+#
+# --version prints a line of its own: the loader folds the first line into
+# every mod build key, so an object an uninstrumented compiler built is
+# never reused.
+case "${OPENPETE_MOD_SANITIZE:-}" in
+    thread|address) ;;
+    *) echo "mod-sanitize-cc: OPENPETE_MOD_SANITIZE must be thread or address" >&2; exit 2;;
+esac
+if [ "${1:-}" = --version ]; then
+    echo "openpete mod-sanitize-cc clang-19 -fsanitize=$OPENPETE_MOD_SANITIZE"
+    exit 0
+fi
+exec clang-19 -fsanitize="$OPENPETE_MOD_SANITIZE" -fno-omit-frame-pointer "$@"

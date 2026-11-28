@@ -13,11 +13,12 @@
 # plus the tools/modtest.py run over every [test]-block rung.
 #
 # Usage: tests/harness/check_mods.sh [--game SLUG] [--section NAME]
-#        (repo root; ctest mod_ladder_games, mod_ladder_matrix and
-#        mod_ladder_timeline run one section each)
+#        (repo root; ctest mod_ladder_games, mod_ladder_matrix,
+#        mod_ladder_timeline, mod_ladder_frames and mod_ladder_bus run one
+#        section each)
 # Env:   OPENPETE_BIN / OPENPETE_DISC - forwarded to runs + oracle.
 #
-# Sections (--section; none runs all four in this order):
+# Sections (--section; none runs every one in this order):
 #   games     runs on every game: the mod SDK and object identity rungs
 #             (tests/harness/mods_sdk_rungs.sh), the rungs of the in-tree
 #             mods that load on every game (tests/harness/mods_multigame_rungs.sh:
@@ -42,6 +43,10 @@
 #             (tests/harness/mods_frame_rungs.sh): base() after a reload of
 #             a passed link, base() and crash attribution from a toggle
 #             hook, and reload deferral through both reload callers.
+#   bus       Spyro 1 only: named buses between mods
+#             (tests/harness/mods_bus_rungs.sh): walk order, results,
+#             depth, the saved register set, refusals, crash attribution,
+#             mod keys, reload identity, runahead and savestate order.
 # No section reads a $WORK file another section writes. matrix and
 # timeline use Spyro 1's corpus (its fixtures, level names and golden),
 # so under another --game they run nothing.
@@ -73,8 +78,8 @@ for _a in "$@"; do
     fi
 done
 case "$SECTION" in
-    ""|games|debugflags|matrix|timeline|frames) ;;
-    *) echo "unknown --section '$SECTION' (expected games, debugflags, matrix, timeline or frames)" >&2
+    ""|games|debugflags|matrix|timeline|frames|bus) ;;
+    *) echo "unknown --section '$SECTION' (expected games, debugflags, matrix, timeline, frames or bus)" >&2
        exit 64 ;;
 esac
 # section_on <name>: true when the run includes that section.
@@ -1523,6 +1528,12 @@ if [ "$PG_GAME" = "spyro-1" ] && section_on frames; then
 # shellcheck source=tests/harness/mods_frame_rungs.sh
 source tests/harness/mods_frame_rungs.sh
 fi # section frames
+
+# ══ section bus: named buses between mods ══════════════════════════════
+if [ "$PG_GAME" = "spyro-1" ] && section_on bus; then
+# shellcheck source=tests/harness/mods_bus_rungs.sh
+source tests/harness/mods_bus_rungs.sh
+fi # section bus
 
 # ══ section games (part 2): shaders (Spyro 1), materials, table census ═
 # The shader rungs sample Spyro 1 frames (a title-screen VBL, level 10's

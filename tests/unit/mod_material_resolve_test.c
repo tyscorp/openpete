@@ -39,6 +39,7 @@
  * Exit 0 when every check holds, 1 otherwise. */
 #include "mod_material_resolve.h"
 #include "openpete_native_render.h"
+#include "openpete_mods.h" /* openpete_mods_site_t */
 
 #include <stdio.h>
 #include <string.h>
@@ -75,6 +76,19 @@ void openpete_mods_guard_enter(const char* mod_id) {
 }
 /** @brief Stub: leave the guarded stretch. */
 void openpete_mods_guard_leave(void) { s_guard_depth--; }
+static openpete_mods_site_t s_site_now;   /* the open dispatch site */
+static openpete_mods_ctx    s_refine_ctx; /* the site a refine callback ran in */
+/** @brief Stub: open a dispatch site, recording its kind.
+ * @param ctx the site's kind.
+ * @return the enclosing site. */
+openpete_mods_site_t openpete_mods_site_open(openpete_mods_ctx ctx) {
+    const openpete_mods_site_t prev = s_site_now;
+    s_site_now.ctx = ctx;
+    return prev;
+}
+/** @brief Stub: restore the enclosing site.
+ * @param prev the value the open returned. */
+void openpete_mods_site_close(openpete_mods_site_t prev) { s_site_now = prev; }
 /** @brief Stub: the mod toggle epoch, constant here. */
 unsigned openpete_mods_toggle_epoch(void) { return 0; }
 /** @brief Stub: record the batcher tag-split arm state. */
@@ -219,6 +233,7 @@ static int rf_accept(const openpete_mod_material_key_t* k, void* out, uint32_t c
 static int rf_decline(const openpete_mod_material_key_t* k, void* out, uint32_t cap) {
     (void)k; (void)out; (void)cap;
     s_calls++;
+    s_refine_ctx = s_site_now.ctx;
     return -1;
 }
 /** @brief Refine: claim only class 7 mobys (the channel-wide refine that accepts its own instances). */
@@ -251,6 +266,9 @@ static void case_f1(void) {
     CHECK(mod_mat_census_get(ma, MOD_MAT_CENSUS_EXTRACT_WINS) == 1, "census landing");
     CHECK(s_guard_max == 1 && s_guard_depth == 0 && s_guard_owner && strcmp(s_guard_owner, "fx-b") == 0,
           "guard balance");
+    CHECK(s_refine_ctx == OPENPETE_MODS_CTX_REFINE && s_site_now.ctx == OPENPETE_MODS_CTX_NONE,
+          "refine ran in a refine site (ctx %d), closed after (ctx %d)", (int)s_refine_ctx,
+          (int)s_site_now.ctx);
     mod_mat_census_force(0);
     OUTCOME("class 5, B declines: the walk lands on A (DECL|%d), resolve A, refine calls 1, 1 fall-through", ma);
 

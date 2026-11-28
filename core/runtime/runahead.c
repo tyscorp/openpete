@@ -79,9 +79,11 @@ int ra_snapshot_rollback(const openpete_state_mem_t* snap, CPUState* cpu,
                                 unsigned* frame) OP_REQUIRES(sim) {
     const op_time_t t0 = op_now();
     const int rc = openpete_state_mem_load(snap, cpu, frame, 1);
-    if (rc == 0)
+    if (rc == 0) {
         openpete_mods_runahead_snapshot_note(
             (uint64_t)(s_ra_save_ns + (op_now() - t0)) / 1000u);
+        openpete_mods_bus_note_rollback();
+    }
     return rc;
 }
 void ra_card_settle(int rc) {

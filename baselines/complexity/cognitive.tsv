@@ -35,7 +35,7 @@ core/mods/mod_loader.c	mods_discover	44	0
 core/mods/mod_loader.c	openpete_mods_init	64	0	
 core/mods/mod_loader.c	parse_config_row	27	0	
 core/mods/mod_loader.c	parse_levels	31	0	
-core/mods/mod_loader.c	parse_mod_header	35	0	
+core/mods/mod_loader.c	parse_mod_header	26	0	
 core/mods/mod_registry.c	custom_tick	34	0	
 core/psx/cdrom_mmio.c	openpete_cdrom_mmio_open	49	0	
 core/psx/exe_loader.cpp	openpete_psx_resolve_disc_bin	29	0	

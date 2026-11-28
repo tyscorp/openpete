@@ -1,0 +1,43 @@
+# bus-ident - CI fixture: a hot reload whose manifest changes the mod's
+# identity. On GamestateDraw call touch_at it rewrites its own mod.toml
+# (the id when touch_ident is 1, the api pin 13 to 12 when 2) and
+# config.toml, so the hot-reload poll (OPENPETE_MOD_HOT_RELOAD=1) reloads
+# it once the rung has toggled it off (its GamestateDraw link encloses the
+# fiber's park, which defers a reload while it runs). The engine refuses the reload with the running object kept: no
+# second entry line, no shutdown line before exit, and the override still
+# counting. tests/harness/mods_bus_rungs.sh reads its lines. It uses no bus
+# entry, so it loads on an engine without them. Never enable it to play.
+
+[mod]
+id      = "bus-ident"
+name    = "Bus Ident"
+version = "0.1.0"
+game    = ["spyro-1"]
+api     = 13
+
+[[config]]
+key = "touch_ident"
+type = "int"
+default = 0
+min = 0
+max = 2
+label = "Identity edit"
+help = "1 rewrites the manifest id, 2 the api pin, on call touch_at; 0 never."
+
+[[config]]
+key = "touch_at"
+type = "int"
+default = 0
+min = 0
+max = 1000000
+label = "Edit call"
+help = "GamestateDraw call number of the edit."
+
+[[config]]
+key = "gen"
+type = "int"
+default = 0
+min = 0
+max = 1000000
+label = "Generation"
+help = "Logged at entry; the edit writes 1."

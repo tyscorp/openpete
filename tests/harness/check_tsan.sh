@@ -25,15 +25,28 @@
 # tests/harness/tsan/llvm-symbolizer, which points the child's fd 2 at
 # OUT/<game>.symbolizer.err before it execs the real one.
 #
-# Reports go to OUT/<game>[-windowed].tsan.<pid>; suppressions are
+# --mods (Spyro 1): a headless attract-demo run with three copies of the
+# bus-member fixture, built -fsanitize=thread through
+# tests/harness/mod-sanitize-cc: m1 sends tick/1 on every GamestateDraw
+# call, m2's reader thread polls bus_members and mod_info until shutdown,
+# and m3 is toggled off, hot reloaded through a config Apply and toggled on,
+# and m1 toggled off and on, so the membership snapshot is published while
+# the reader reads it. Engagement: the reader's poll count and the records
+# it matched, m3's reload, and the walker's handler-run count.
+# OPENPETE_TSAN_MODS_PLANT=1 also sets m2's plant_race, a write of one plain
+# global from the reader thread and the sim thread: the run must then FAIL
+# with a report in bus_member.c (the mode's positive control).
+#
+# Reports go to OUT/<game>[-windowed|-mods].tsan.<pid>; suppressions are
 # tests/harness/tsan/suppressions.txt (library-internal races only, each
 # read); tests/harness/tsan/summarize.py sorts them by module.
 #
 # Usage:
-#   tests/harness/check_tsan.sh [--game SLUG] [--windowed] [--build-dir=DIR] [--out DIR]
+#   tests/harness/check_tsan.sh [--game SLUG] [--windowed | --mods] [--build-dir=DIR] [--out DIR]
 #   tests/harness/check_tsan.sh --build-only [--build-dir=DIR]
 # --build-only configures DIR when it has no build.ninja and builds the
-# openpete target under nice 10 with OPENPETE_TSAN_JOBS jobs (default: the
+# openpete target and the mod SDK it stages (openpete_sdk_stage, which
+# the --mods fixtures compile against) under nice 10 with OPENPETE_TSAN_JOBS jobs (default: the
 # CPU count); a run never builds.
 # Exit 0 PASS: no report, the run exited 0 inside its time limit, and every
 # engagement counter above zero with no identity mismatch. 1 FAIL: a TSan
@@ -55,6 +68,7 @@ source scripts/lib/game.sh
 BUILD_DIR=build/linux-tsan-clang
 OUT=""
 WINDOWED=0
+MODS=0
 BUILD_ONLY=0
 prev=""
 for a in "$@"; do
@@ -62,6 +76,7 @@ for a in "$@"; do
         --build-dir=*) BUILD_DIR="${a#*=}";;
         --out=*)       OUT="${a#*=}";;
         --windowed)    WINDOWED=1;;
+        --mods)        MODS=1;;
         --build-only)  BUILD_ONLY=1;;
     esac
     [[ "$prev" == --out ]] && OUT="$a"
@@ -69,6 +84,7 @@ for a in "$@"; do
 done
 TAG=tsan
 [[ "$WINDOWED" == 1 ]] && TAG=tsan-windowed
+[[ "$MODS" == 1 ]] && TAG=tsan-mods
 
 if [[ "$BUILD_ONLY" == 1 ]]; then
     for c in clang-19 clang++-19 ninja; do
@@ -85,7 +101,7 @@ if [[ "$BUILD_ONLY" == 1 ]]; then
             -DCMAKE_MODULE_LINKER_FLAGS=-fsanitize=thread ||
             { echo "$TAG: FAIL (configure of $BUILD_DIR)"; exit 1; }
     fi
-    nice -n 10 cmake --build "$BUILD_DIR" -j"${OPENPETE_TSAN_JOBS:-$(nproc)}" --target openpete ||
+    nice -n 10 cmake --build "$BUILD_DIR" -j"${OPENPETE_TSAN_JOBS:-$(nproc)}" --target openpete openpete_sdk_stage ||
         { echo "$TAG: FAIL (build of $BUILD_DIR)"; exit 1; }
     echo "$TAG: built $BUILD_DIR/openpete"
     exit 0
@@ -108,6 +124,7 @@ if [[ "$WINDOWED" == 1 ]]; then
     op_xvfb_prefix "$TAG" 1280x960
 fi
 
+if [[ "$MODS" == 1 && "$GAME" != spyro-1 ]]; then echo "$TAG: SKIP (the bus fixtures are Spyro 1's)"; exit 64; fi
 case "$GAME" in
     spyro-1) ROW=(--skip-to-level stone_hill --freecam-pose topdown);;
     spyro-2) ROW=(--skip-to-level skelos_badlands --freecam-pose "pos=(116034, 2704, 95746) yaw=1112 pitch=541");;
@@ -123,6 +140,7 @@ mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 STEM="$OUT/$GAME"
 [[ "$WINDOWED" == 1 ]] && STEM="$OUT/$GAME-windowed"
+[[ "$MODS" == 1 ]] && STEM="$OUT/$GAME-mods"
 LOG="$STEM.log"
 PACE="$STEM.pace"
 rm -f "$LOG" "$PACE" "$STEM.symbolizer.err" "$STEM".tsan.* "${STEM}__"*.png
@@ -133,7 +151,29 @@ ENV=(OPENPETE_MOBY_PUSH_FANOUT_MIN=1 OPENPETE_MOBY_SIMPLE_FANOUT_MIN=1 OPENPETE_
      "TSAN_OPTIONS=log_path=$STEM.tsan suppressions=$ROOT/tests/harness/tsan/suppressions.txt external_symbolizer_path=$ROOT/tests/harness/tsan/llvm-symbolizer history_size=4 second_deadlock_stack=1 halt_on_error=0 report_signal_unsafe=0")
 
 rc=0
-if [[ "$WINDOWED" == 0 ]]; then
+if [[ "$MODS" == 1 ]]; then
+    MD="$STEM.modsdir"
+    rm -rf "${MD:?}"
+    mkdir -p "$MD"
+    : > "$MD/enabled.txt"
+    for id in m1 m2 m3; do
+        cp -r mods/bus-member "$MD/$id"
+        rm -rf "${MD:?}/$id/.build" "${MD:?}/$id/data"
+        sed -i "s/^id *= *\"bus-member\"/id      = \"$id\"/" "$MD/$id/mod.toml"
+        echo "$id" >> "$MD/enabled.txt"
+    done
+    echo 'every_tick = true' > "$MD/m1/config.toml"
+    printf 'reader = true\n' > "$MD/m2/config.toml"
+    [[ "${OPENPETE_TSAN_MODS_PLANT:-0}" == 1 ]] && echo 'plant_race = true' >> "$MD/m2/config.toml"
+    # m3's GamestateDraw link encloses the fiber's park, which defers its
+    # reload: it is toggled off around the Apply.
+    PG_CAPTURE_ENV=("${ENV[@]}" "OPENPETE_MOD_CC=$ROOT/tests/harness/mod-sanitize-cc" OPENPETE_MOD_SANITIZE=thread
+                    OPENPETE_MODS_TOGGLE='100:m3:0,300:m3:1,400:m1:0,500:m1:1'
+                    OPENPETE_MODS_CFG_APPLY='200:m3:gen=1')
+    PG_CAPTURE_TIMEOUT=$RUN_TIMEOUT
+    pg_capture "$LOG" "" -- --mods-dir "$MD" --no-card --mute 1 --frame-limit 1200
+    rc=$?
+elif [[ "$WINDOWED" == 0 ]]; then
     PG_CAPTURE_ENV=("${ENV[@]}" OPENPETE_INTERMEDIATE_ALPHA=0.5
                     OPENPETE_INTERMEDIATE_PRE_ALPHA=0.06,0.12,0.18,0.25,0.31,0.37,0.43,0.56,0.62,0.68,0.75,0.81,0.87,0.93,0.97)
     PG_CAPTURE_TIMEOUT=$RUN_TIMEOUT
@@ -174,7 +214,15 @@ fi
 fail=0 vac=0
 # field LINE NAME: the integer after NAME= in LINE, empty when absent.
 field() { sed -n "s/.*[ |]$2=\([0-9]*\).*/\1/p" <<<"$1" | head -n 1; }
-if [[ "$WINDOWED" == 0 ]]; then
+if [[ "$MODS" == 1 ]]; then
+    reader="$(grep -o 'bus-member m2: reader polls=[0-9]* listed=[0-9]*' "$LOG" | tail -1)"
+    runs="$(grep -o 'bus: buses=[0-9]* handler runs=[0-9]*' "$LOG" | tail -1 | sed 's/.*runs=//')"
+    reloads=$(grep -c 'hot reload: m3 live' "$LOG")
+    toggles=$(grep -c 'live toggle: m[13] ' "$LOG")
+    echo "$TAG: $GAME ${reader:-no reader line} handler_runs=${runs:-0} m3_reloads=$reloads toggles=$toggles"
+    polls="$(field "$reader" polls)" listed="$(field "$reader" listed)"
+    (( ${polls:-0} > 0 && ${listed:-0} > 0 && ${runs:-0} > 0 && reloads > 0 && toggles == 4 )) || vac=1
+elif [[ "$WINDOWED" == 0 ]]; then
     push="$(grep -m1 '^\[push-fanout-check final\]' "$LOG")"
     pose="$(grep -m1 '^\[pose-cache\]' "$LOG")"
     [[ -n "$push" && -n "$pose" ]] || { echo "$TAG: FAIL (no push-fanout or pose-cache total in $LOG)"; exit 1; }

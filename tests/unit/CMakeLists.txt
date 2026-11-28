@@ -805,6 +805,31 @@ set_target_properties(mod_chain_test PROPERTIES C_STANDARD 11)
 add_test(NAME mod_chain_test COMMAND mod_chain_test)
 set_tests_properties(mod_chain_test PROPERTIES LABELS "mods")
 
+# mod_bus_test - the bus walker, membership snapshot and key table
+# (core/mods/mod_bus.c) over the override frame stack (core/mods/mod_chain.c):
+# walk order across a re-entry, results, the depth cap and a full frame
+# stack, the saved register set and sp reserve, base() refused in a handler,
+# the context and owner refusals, members disabled, retired or entered while
+# a walk is in progress, record sizes, and a reader thread polling
+# bus_members and mod_info across publishes. Includes both modules whole;
+# host services are stubs.
+add_executable(mod_bus_test
+    mod_bus_test.c
+    ${CMAKE_SOURCE_DIR}/core/mods/mod_vec.c
+    ${CMAKE_SOURCE_DIR}/core/diag/log.c)
+target_include_directories(mod_bus_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/core/include/psxrt
+    ${CMAKE_SOURCE_DIR}/core/mods)
+target_include_directories(mod_bus_test SYSTEM PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/SDL/include)
+target_compile_definitions(mod_bus_test PRIVATE OPENPETE_ENGINE_BUILD)
+find_package(Threads REQUIRED)
+target_link_libraries(mod_bus_test PRIVATE Threads::Threads)
+set_target_properties(mod_bus_test PROPERTIES C_STANDARD 11)
+add_test(NAME mod_bus_test COMMAND mod_bus_test)
+set_tests_properties(mod_bus_test PROPERTIES LABELS "mods")
+
 # mod_save_block_test - the mod-save key's block a savestate carries
 # (core/mods/mod_save.c): a block with a legacy length, key, key slot or
 # save index out of range is refused at parse, and a well-formed block

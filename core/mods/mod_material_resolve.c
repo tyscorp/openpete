@@ -25,6 +25,7 @@
  * public entry points that take it) is in mod_shader.c. */
 
 #include "mod_material_resolve.h"
+#include "openpete_mods.h"   /* refine dispatch site */
 #include "openpete_log.h"
 #include "mod_vec.h"
 #include "openpete_native_render.h"   /* set_tag_split arming (material selectors) */
@@ -1518,9 +1519,11 @@ static int moby_ask(int w, int cls, uint32_t vaddr, unsigned char* buf) {
     key.channel           = OP_CHAN_MOBY;
     key.u.moby.vaddr      = vaddr;
     key.u.moby.moby_class = cls;
+    const openpete_mods_site_t site = openpete_mods_site_open(OPENPETE_MODS_CTX_REFINE);
     openpete_mods_guard_enter(m->owner);
     const int rc = m->per_instance(&key, buf, OPENPETE_MATERIAL_UNIFORMS_MAX);
     openpete_mods_guard_leave();
+    openpete_mods_site_close(site);
     cen_bump(w, MOD_MAT_CENSUS_REFINE_CALLS);
     refine_observe(m, rc < 0);
     if (rc < 0) { cen_bump(w, MOD_MAT_CENSUS_DECLINES); return MOBY_ASK_DECLINE; }
@@ -1760,9 +1763,11 @@ int mod_mat_terrain_refine_slot(int w) {
     key.u.terrain.texture = untex ? -1 : m->sel.texture;
     key.u.terrain.flags   = untex ? OP_SEL_UNTEXTURED : m->sel.flags;
     unsigned char buf[OPENPETE_MATERIAL_UNIFORMS_MAX];
+    const openpete_mods_site_t site = openpete_mods_site_open(OPENPETE_MODS_CTX_REFINE);
     openpete_mods_guard_enter(m->owner);
     int rc = m->per_instance(&key, buf, sizeof buf);
     openpete_mods_guard_leave();
+    openpete_mods_site_close(site);
     cen_bump(w, MOD_MAT_CENSUS_REFINE_CALLS);
     if (rc < 0) cen_bump(w, MOD_MAT_CENSUS_DECLINES);
     refine_observe(m, rc < 0);

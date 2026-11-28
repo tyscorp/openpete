@@ -338,6 +338,17 @@ unsigned openpete_mods_toggle_epoch(void) { return 0; }
 void openpete_mods_guard_enter(const char *mod_id) { (void)mod_id; }
 /** @brief Close no guarded stretch. */
 void openpete_mods_guard_leave(void) {}
+/** @brief Open no dispatch site.
+ * @param ctx the site's kind.
+ * @return the enclosing site, always NONE here. */
+openpete_mods_site_t openpete_mods_site_open(openpete_mods_ctx ctx) {
+    (void)ctx;
+    const openpete_mods_site_t none = {OPENPETE_MODS_CTX_NONE, 0, 0};
+    return none;
+}
+/** @brief Close no dispatch site.
+ * @param prev the value the open returned. */
+void openpete_mods_site_close(openpete_mods_site_t prev) { (void)prev; }
 /** @brief Accept the material tag-split arming.
  *
  * @param on Unused. */

@@ -381,12 +381,14 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # section (games: the per-game SDK, multigame, other-games, shader,
     # material and table-census rungs; matrix: the cross-mod matrix, asset
     # and wad overlays and the [test]-block runner; timeline: the arena
-    # canary, rewind, stream handles, save safety and session rungs). No
-    # section reads another's output. Each TIMEOUT is twice the section's
-    # measured wall time on an idle machine (games 283 s, matrix 481 s,
-    # timeline 342 s). `ctest -L mods`, or tests/harness/check_mods.sh
-    # with no --section for the whole ladder.
-    foreach(_sec_to games:570 matrix:970 timeline:690)
+    # canary, rewind, stream handles, save safety and session rungs; frames:
+    # the override frame stack across a parked fiber; bus: named buses
+    # between mods). No section reads another's output. Each TIMEOUT is
+    # twice the section's measured wall time (games 283 s, matrix 481 s,
+    # timeline 342 s, frames 82 s on an idle machine; bus 344 s at load 15).
+    # `ctest -L mods`, or tests/harness/check_mods.sh with no --section for
+    # the whole ladder.
+    foreach(_sec_to games:570 matrix:970 timeline:690 frames:170 bus:690)
         string(REPLACE ":" ";" _sec_to "${_sec_to}")
         list(GET _sec_to 0 _sec)
         list(GET _sec_to 1 _to)
@@ -1468,6 +1470,40 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             SKIP_RETURN_CODE 64
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
+    # The bus fixtures built -fsanitize=thread: a reader thread polling the
+    # membership snapshot across toggles and a hot reload (Spyro 1; 20 s).
+    add_test(NAME tsan_mods_spyro-1
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_tsan.sh --game spyro-1 --mods)
+    set_tests_properties(tsan_mods_spyro-1 PROPERTIES
+        LABELS "slow;tsan"
+        FIXTURES_REQUIRED tsan_bin
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 300
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+    # AddressSanitizer, label asan (and slow). asan_build configures and builds
+    # the clang-19 ASan tree build/linux-asan-clang; asan_bus_mutation runs the
+    # bus section's mutation legs (a member reloaded, reloaded with a failing
+    # entry and first enabled while another member's handler is parked) on it
+    # with the fixtures built -fsanitize=address, failing on any report (30 s).
+    add_test(NAME asan_build
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_asan.sh --build-only)
+    set_tests_properties(asan_build PROPERTIES
+        LABELS "slow;asan"
+        FIXTURES_SETUP asan_bin
+        TIMEOUT 7200
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME asan_bus_mutation
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_asan.sh)
+    set_tests_properties(asan_bus_mutation PROPERTIES
+        LABELS "slow;asan"
+        FIXTURES_REQUIRED asan_bin
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 300
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
     # Moby sub-tick continuity. Per row of
     # games/<slug>/corpus/moby-subtick-corpus.manifest, two headless replays of one

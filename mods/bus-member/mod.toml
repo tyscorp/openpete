@@ -1,0 +1,204 @@
+# bus-member - CI fixture: one member of the bus rungs
+# (tests/harness/mods_bus_rungs.sh), copied under several ids so each copy
+# has its own mod key. Every copy attaches order/1, stop/1, tick/1, deep/1,
+# regs/1, frames/1 and crash/1 handlers at entry and overrides Spyro 1's
+# GamestateDraw (a plain base()) and VecCopy (a plain base() unless a probe
+# is running). The config selects which copy sends what:
+#
+#   send_at      the sender sends order/1 on that call with an arena packet
+#                each handler appends its key to, and logs the walk.
+#   log_links    logs its GamestateDraw link on every call (chain order).
+#   no_override  a bus-only member: handlers, no override link.
+#   selftest_at  the result battery: pass, stop, OP_BUS_NONE (unattached and
+#                misspelt), bus_call_to by key and to unloaded, disabled and
+#                never-attached keys, a negative result, mod_key, depth,
+#                reentry, base() in a handler, api->call from a handler, and
+#                the saved register set.
+#   fill         recursion through VecCopy until bus_call reports the frame
+#                stack full.
+#   refusals     bus calls from a present hook, a thread, the shutdown hook
+#                and an override reached from the shutdown hook.
+#   every_tick   tick/1 on every call (runahead rung).
+#   toggle_send  its toggle hook sends order/1 and lists the members.
+#
+# Never enable it to play.
+
+[mod]
+id      = "bus-member"
+name    = "Bus Member"
+version = "0.1.0"
+game    = ["spyro-1"]
+api     = 13
+state    = "none"   # everything it keeps across ticks lives in the arena
+runahead = "pure"   # tick hooks touch guest and arena bytes only
+
+[[config]]
+key = "sender"
+type = "bool"
+default = false
+label = "Sender"
+help = "On call send_at this copy sends order/1 and logs the walk."
+
+[[config]]
+key = "log_links"
+type = "bool"
+default = false
+label = "Log the link"
+help = "Logs its GamestateDraw link on every call, so the log holds the chain order of each call."
+
+[[config]]
+key = "no_override"
+type = "bool"
+default = false
+label = "Bus only"
+help = "Attaches its handlers and registers no override link."
+
+[[config]]
+key = "send_at"
+type = "int"
+default = 0
+min = 0
+max = 1000000
+label = "Order send call"
+help = "GamestateDraw call number on which the sender sends order/1; 0 never."
+
+[[config]]
+key = "selftest_at"
+type = "int"
+default = 0
+min = 0
+max = 1000000
+label = "Self-test call"
+help = "GamestateDraw call number on which this copy runs the result battery; 0 never."
+
+[[config]]
+key = "stop"
+type = "int"
+default = 0
+min = 0
+max = 1000000
+label = "stop/1 result"
+help = "Value its stop/1 handler returns; 0 passes."
+
+[[config]]
+key = "neg"
+type = "bool"
+default = false
+label = "Negative order/1 result"
+help = "Its order/1 handler returns -7."
+
+[[config]]
+key = "deep"
+type = "bool"
+default = false
+label = "Nest deep/1 and reent/1"
+help = "Its deep/1 handler sends deep/1 again until a call fails, and its reent/1 handler reenters reent/1 once; without it both pass."
+
+[[config]]
+key = "fill"
+type = "bool"
+default = false
+label = "Fill the frame stack"
+help = "The self-test recurses through VecCopy until bus_call reports a full frame stack."
+
+[[config]]
+key = "refusals"
+type = "bool"
+default = false
+label = "Refusal probes"
+help = "A present hook, a thread and the shutdown hook try bus calls."
+
+[[config]]
+key = "crash_at"
+type = "int"
+default = 0
+min = 0
+max = 1000000
+label = "Crash call"
+help = "GamestateDraw call number on which this copy sends crash/1, whose handler faults; 0 never."
+
+[[config]]
+key = "crash_handler"
+type = "bool"
+default = false
+label = "Fault in crash/1"
+help = "Its crash/1 handler dereferences NULL."
+
+[[config]]
+key = "toggle_send"
+type = "bool"
+default = false
+label = "Send from the toggle hook"
+help = "Its toggle hook sends order/1 and lists order/1's members."
+
+[[config]]
+key = "every_tick"
+type = "bool"
+default = false
+label = "Send every call"
+help = "Sends tick/1 on every GamestateDraw call; each handler advances a counter in its own arena block."
+
+[[config]]
+key = "attach_late"
+type = "bool"
+default = false
+label = "Attach outside entry"
+help = "Calls bus_attach on its first override call (refused)."
+
+[[config]]
+key = "gen"
+type = "int"
+default = 0
+min = 0
+max = 1000000
+label = "Generation"
+help = "Logged at entry; a config edit of it requests a reload."
+
+[[config]]
+key = "probe_disabled"
+type = "string"
+default = ""
+label = "Disabled peer"
+help = "Id of a peer the rung disables before the self-test; bus_call_to its key."
+
+[[config]]
+key = "probe_unattached"
+type = "string"
+default = ""
+label = "Peer off nobody/1"
+help = "Id of a loaded peer; bus_call_to its key on nobody/1, which no mod attaches."
+
+[[config]]
+key = "park"
+type = "bool"
+default = false
+label = "Park through the bus"
+help = "Every GamestateDraw call sends park/1; this copy's handler calls GamestateDraw through api->call, whose original parks in VSync, then sends frames/1."
+
+[[config]]
+key = "park_control"
+type = "bool"
+default = false
+label = "Park directly"
+help = "Every GamestateDraw call saves the walker's register set, lowers sp by its reserve and calls GamestateDraw through api->call itself, then sends frames/1: park's control run."
+
+[[config]]
+key = "fail_entry"
+type = "bool"
+default = false
+label = "Fail the entry"
+help = "The entry point returns 1 after attaching its handlers (a failed hot reload)."
+
+[[config]]
+key = "reader"
+type = "bool"
+default = false
+label = "Reader thread"
+help = "A thread of this copy polls bus_members and mod_info until shutdown."
+
+[[config]]
+key = "plant_race"
+type = "bool"
+default = false
+label = "Plant a race"
+help = "The reader thread and the GamestateDraw override write one plain global (a sanitizer rung's positive control)."
