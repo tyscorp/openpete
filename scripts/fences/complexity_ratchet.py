@@ -22,6 +22,8 @@ Modes:
   check             every build. The same inequality over TUs clean against
                     HEAD, against HEAD's baseline. Exit 1 on a rise or an
                     UNWIRED row; 64 = SKIP (no compile database) under --ctest.
+                    A file dirty against HEAD is not read; the PASS line
+                    names each one (the hook decides them on commit).
   check --armed     exit 1 unless the resolved pre-commit hook is the tracked
                     githooks/pre-commit, executable, calling this fence, and
                     the baselines' merge driver (ratchet_tsv_merge.py) is
@@ -826,8 +828,19 @@ def mode_check(root, ctest):
             "--no-verify). Repair: reduce it, or `complexity_ratchet.py "
             "tighten --accept <key> \"<reason>\"` and commit the baseline.")
         return 1
-    say("complexity-ratchet: PASS")
+    say(check_verdict(len(clean_tus), bins["DIRTY"]))
     return 0
+
+
+def check_verdict(n_clean, dirty):
+    """The PASS line of `check`: the clean TUs it read, and each dirty
+    in-scope file it skipped by name (at most ten), since a PASS over a
+    worktree whose edits are all dirty read none of them."""
+    if not dirty:
+        return "complexity-ratchet: PASS over %d clean TUs" % n_clean
+    names = ", ".join(dirty[:10]) + (", ... %d more" % (len(dirty) - 10) if len(dirty) > 10 else "")
+    return ("complexity-ratchet: PASS over %d clean TUs; %d dirty files NOT READ (the "
+            "pre-commit hook decides them): %s" % (n_clean, len(dirty), names))
 
 
 def mode_tighten(root, argv):

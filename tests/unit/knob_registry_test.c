@@ -1,7 +1,8 @@
 /* knob_registry_test - the M-overlay knob table's non-obvious mechanics:
  * module-contributed rows (openpete_knob_add) landing inside their section,
- * capacity refusal, and KNOB_ACTION rows (a button, no value) surviving boot
- * stamping. The overlay itself needs a window, so these are the parts that
+ * capacity refusal, one row per id, flag and env var (a contributed row
+ * reusing one is refused), and KNOB_ACTION rows (a button, no value)
+ * surviving boot stamping. The overlay itself needs a window, so these are the parts that
  * would otherwise only be testable by eye.
  *
  * knob_registry.c is compiled straight in, with the host/renderer setters it
@@ -350,6 +351,62 @@ static int check_drain_skip_row_setter(void) {
     return 0;
 }
 
+/** @brief Report the first two rows of the table that share an id, a flag or an env var.
+ *
+ * Two rows under one name collide in the overlay's imgui ID scope, in the
+ * config resolver and in the surface dump; a module moved into shared code
+ * that keeps its own registration is the case this catches.
+ * @return 0 when every name is unique, 1 after printing the clash. */
+static int names_unique(void) {
+    size_t n;
+    const knob_desc_t *ks = knob_registry(&n);
+    for (size_t i = 0; i < n; i++) {
+        for (size_t j = i + 1; j < n; j++) {
+            const char *what = NULL;
+            if (ks[i].id && ks[j].id && !strcmp(ks[i].id, ks[j].id)) what = ks[i].id;
+            else if (ks[i].cli && ks[j].cli && !strcmp(ks[i].cli, ks[j].cli)) what = ks[i].cli;
+            else if (ks[i].env && ks[j].env && !strcmp(ks[i].env, ks[j].env)) what = ks[i].env;
+            if (what) {
+                printf("FAIL: rows %zu (%s) and %zu (%s) share the name %s\n", i,
+                       ks[i].id ? ks[i].id : "?", j, ks[j].id ? ks[j].id : "?", what);
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/** @brief A contributed row reusing a registered id, flag or env var is refused and the table keeps one row per name.
+ *
+ * @return 0 on pass, 1 on the first failure. */
+static int duplicate_add_refused(void) {
+    size_t n0, n1;
+    const knob_desc_t *ks = knob_registry(&n0);
+    const knob_desc_t *with_cli = NULL, *with_env = NULL;
+    for (size_t i = 0; i < n0; i++) {
+        if (!with_cli && ks[i].cli) with_cli = &ks[i];
+        if (!with_env && ks[i].env) with_env = &ks[i];
+    }
+    if (!with_cli || !with_env) return fail("no registry row carries a flag and an env var");
+    knob_desc_t row = {0};
+    row.label = "Duplicate";
+    row.section = "Gameplay";
+    row.type = KNOB_ACTION;
+    row.mut = KNOB_LIVE;
+    row.id = "test_action";
+    if (openpete_knob_add(&row) != -1) return fail("a second row with id test_action was added");
+    row.id = "test_dup_cli";
+    row.cli = with_cli->cli;
+    if (openpete_knob_add(&row) != -1) return fail("a row reusing a registered flag was added");
+    row.id = "test_dup_env";
+    row.cli = NULL;
+    row.env = with_env->env;
+    if (openpete_knob_add(&row) != -1) return fail("a row reusing a registered env var was added");
+    (void)knob_registry(&n1);
+    if (n1 != n0) return fail("a refused duplicate changed the row count");
+    return names_unique();
+}
+
 int main(void) {
     int rc = 0;
 
@@ -520,11 +577,18 @@ int main(void) {
         }
     }
 
-    /* Capacity is finite and refuses politely rather than corrupting. */
+    /* Before the capacity fill below, so a refusal here is the name's. */
+    rc |= names_unique();
+    rc |= duplicate_add_refused();
+
+    /* Capacity is finite and refuses politely rather than corrupting. Each
+     * filler has its own id, since a repeated id is refused first. */
     int added = 0;
+    static char filler_ids[64][24];
     for (int i = 0; i < 64; i++) {
         knob_desc_t filler = {0};
-        filler.id      = "test_filler";
+        snprintf(filler_ids[i], sizeof filler_ids[i], "test_filler_%d", i);
+        filler.id      = filler_ids[i];
         filler.label   = "filler";
         filler.section = "ZZZ test";
         filler.help    = "unit test";
@@ -586,6 +650,7 @@ int main(void) {
     rc |= device_marks_agree();
     rc |= legacy_fog_values_read();
     rc |= check_no_setter_never_saved();
+    rc |= names_unique();
 
     printf(rc ? "knob_registry_test: FAILED\n" : "knob_registry_test: ok\n");
     return rc;

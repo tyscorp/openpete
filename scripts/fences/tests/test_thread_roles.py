@@ -586,6 +586,35 @@ class ListsTest(unittest.TestCase):
         ref = pop.additions_refused("t", before, bare, {}, "s_x orphan")[0]
         self.assertIn("no recorded reason in its note", ref[0])
 
+    def test_refusal_collects_a_ready_accept_line_that_passes(self):
+        before = self.base()
+        after = self.base(("a.c", "-", "s_x", "static", "-", "shape a"),
+                          ("b.c", "-", "s_y", "static", "-", "shape b"))
+        pending = []
+        self.assertEqual(len(pop.additions_refused("t", before, after, {}, "",
+                                                   pending=pending)[0]), 2)
+        line = pop.accept_line(pending)
+        self.assertEqual(line, 'OPENPETE_THREAD_ROLES_ACCEPT="s_x s_y: shape a; shape b"')
+        value = line.split("=", 1)[1].strip('"')
+        self.assertEqual(pop.additions_refused("t", before, after, {}, value)[0], [])
+        note = "role=sim; reason=no row at f yet; ORPHAN f (x)"
+        d = self.base(("c.c", "-", "s_z", "static", "-", note))
+        pending = []
+        pop.additions_refused("t", before, d, {}, "", need_note=True, pending=pending)
+        value = pop.accept_line(pending).split("=", 1)[1].strip('"')
+        self.assertEqual(value, note)
+        self.assertEqual(pop.additions_refused("t", before, d, {}, value,
+                                               need_note=True)[0], [])
+
+    def test_no_accept_line_when_no_one_value_covers_the_rows(self):
+        d = self.base(("a.c", "-", "s_x", "static", "-", "ORPHAN f"),
+                      ("b.c", "-", "s_y", "static", "-", "ORPHAN g"))
+        pending = []
+        pop.additions_refused("t", self.base(), d, {}, "", need_note=True, pending=pending)
+        self.assertEqual(len(pending), 2)
+        self.assertIsNone(pop.accept_line(pending))
+        self.assertIsNone(pop.accept_line([]))
+
     def test_stateless_compare_reports_a_row_with_a_note(self):
         after = self.base(("a.c", "-", "s_x", "static", "-", "chain"))
         ref, rep = pop.additions_refused("t", self.base(), after, {}, None)

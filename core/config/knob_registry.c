@@ -3343,9 +3343,30 @@ knob_desc_t *knob_registry(size_t *count) {
     return g_rows;
 }
 
+/** @brief Return the name a row shares with a row already in the table (its id, flag or env var), or NULL.
+ *
+ * @param row The candidate row. */
+static const char *knob_name_clash(const knob_desc_t *row) {
+    for (size_t i = 0; i < g_row_count; i++) {
+        const knob_desc_t *k = &g_rows[i];
+        if (row->id && k->id && !strcmp(row->id, k->id)) return row->id;
+        if (row->cli && k->cli && !strcmp(row->cli, k->cli)) return row->cli;
+        if (row->env && k->env && !strcmp(row->env, k->env)) return row->env;
+    }
+    return NULL;
+}
+
 int openpete_knob_add(const knob_desc_t *row) {
     if (!row) return -1;
     rows_init();
+    /* One row per name: a second row under an id, flag or env var collides in
+     * the overlay's ID scope and in the config resolver's lookup by name. */
+    const char *clash = knob_name_clash(row);
+    if (clash) {
+        OPL_WARN_F("knobs", "row \"%s\" refused: %s is registered already",
+                   row->id ? row->id : "?", clash);
+        return -1;
+    }
     if (g_row_count >= KNOB_BUILTIN_COUNT + KNOB_EXTRA_MAX) {
         OPL_WARN_F("knobs", "no room for row \"%s\" (extra capacity %d)",
                    row->id ? row->id : "?", KNOB_EXTRA_MAX);

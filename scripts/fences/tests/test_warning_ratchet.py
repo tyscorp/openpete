@@ -15,8 +15,9 @@ reads one front-end and one middle-end row from it; skipped without gcc.
 OnDemandInputTest drives ratchet_lib's on-demand configure and build of
 build-produced inputs against a stub cmake, the mod SDK directory
 choice, the hook's windows-mingw SKIP reasons (no toolchain, no configured
-build directory), and a windows-mingw database missing a generated header
-built and then decided.
+build directory), a windows-mingw database missing a generated header
+built and then decided, and a database older than a CMake file configured
+again (refused, naming the command, when it may not configure).
 
 Run: python3 scripts/fences/tests/test_warning_ratchet.py
 """
@@ -349,6 +350,47 @@ class OnDemandInputTest(unittest.TestCase):
         self.assertTrue(lib.configure_db(self.tmp, wr.FENCE, "linux-release", self.db))
         self.assertFalse(lib.configure_db(self.tmp, wr.FENCE, "linux-release", self.db))
         self.assertEqual(self.cmake_runs(), ["--preset linux-release"])
+
+    def stale_database(self, preset):
+        """A database of preset older than a CMake file of the scratch root.
+        -> (database path, the CMake file's relative path)."""
+        bdir = os.path.join(self.tmp, "build", preset)
+        os.makedirs(bdir, exist_ok=True)
+        db = os.path.join(bdir, "compile_commands.json")
+        open(db, "w").close()
+        os.utime(db, (1, 1))
+        open(os.path.join(self.tmp, "CMakeLists.txt"), "w").close()
+        return db, "CMakeLists.txt"
+
+    def test_stale_database_is_configured_again_and_decided(self):
+        db, cm = self.stale_database("windows-mingw")
+        os.environ["STUB_CREATE"] = db
+        self.assertEqual(wr.stale_cmake(self.tmp, db, [cm]), [cm])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            lib.reconfigure_db(self.tmp, wr.FENCE, "windows-mingw", db, [cm])
+        self.assertEqual(self.cmake_runs(), ["--preset windows-mingw"])
+        self.assertEqual(wr.stale_cmake(self.tmp, db, [cm]), [])
+        self.assertIn("configuring: cmake --preset windows-mingw", err.getvalue())
+
+    def test_stale_database_refuses_with_the_command_when_it_cannot_configure(self):
+        db, cm = self.stale_database("windows-mingw")
+        os.environ[lib.NO_BUILD_ENV] = "1"
+        with self.assertRaises(lib.Refusal) as cmx:
+            lib.reconfigure_db(self.tmp, wr.FENCE, "windows-mingw", db, [cm])
+        self.assertIn("STALE-DB", str(cmx.exception))
+        self.assertIn("Run: cmake --preset windows-mingw", str(cmx.exception))
+        os.environ.pop(lib.NO_BUILD_ENV)
+        other = os.path.join(self.tmp, "elsewhere.json")
+        open(other, "w").close()
+        with self.assertRaises(lib.Refusal) as cmx:
+            lib.reconfigure_db(self.tmp, wr.FENCE, "windows-mingw", other, [cm])
+        self.assertIn("is not the preset's", str(cmx.exception))
+        os.environ["STUB_RC"] = "1"
+        with self.assertRaises(lib.Refusal) as cmx:
+            lib.reconfigure_db(self.tmp, wr.FENCE, "windows-mingw", db, [cm])
+        self.assertIn("configuring windows-mingw failed", str(cmx.exception))
+        self.assertEqual(self.cmake_runs(), ["--preset windows-mingw"])
 
     def mingw_toolchain(self, cc, present):
         """A toolchain file under the scratch root naming cc; present puts an

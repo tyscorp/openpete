@@ -1534,13 +1534,20 @@ def compare_lists(root, base, un, dfr, renames, accept):
         return []
     old_un = pop.Baseline(un_text)
     old_d = pop.Baseline(pop.tsv_at(root, base, pop.DEFERRED) or "")
+    pending = []
     r1, s1 = pop.additions_refused(pop.UNANNOTATED, old_un, un, renames, accept,
-                                   moved_from=old_d)
+                                   moved_from=old_d, pending=pending)
     r2, s2 = pop.additions_refused(pop.DEFERRED, old_d, dfr.base, renames, accept,
-                                   confirmed=old_un, need_note=True)
+                                   confirmed=old_un, need_note=True, pending=pending)
     for line in s1 + s2:
         say("  " + line)
-    return r1 + r2
+    if not pending:
+        return r1 + r2
+    # First, so the line cap of the printed refusals never drops it.
+    line = pop.accept_line(pending)
+    return ["to accept every added row, commit with: %s" % line if line else
+            "no one %s value covers every added row (two deferred rows record "
+            "different reasons): commit them separately" % pop.ACCEPT_ENV] + r1 + r2
 
 
 def hunks_scope(root, hunks):

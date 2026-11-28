@@ -15,7 +15,9 @@ regen-recomp.sh removes games/<game>/generated/psxrecomp.id when it starts
 and writes the identity there when it finishes, after building the
 recompiler from that source; a failed regen leaves no stamp. The build
 runs `check` for every configured game and refuses on a missing or
-different stamp, naming the regen command.
+different stamp, naming the regen command; for a game whose generated
+directory is a link (a worktree reading the main checkout's tree) it says
+never to regenerate there instead.
 
 Escape: OPENPETE_RECOMP_STAMP_SKIP="<reason>" makes `check` print the
 reason and pass.
@@ -124,9 +126,22 @@ def main(argv):
         print("recomp-stamp: generated C does not come from the current recompiler:", file=sys.stderr)
         for line in bad:
             print(line, file=sys.stderr)
-        games = " ".join(g for g in args if any(l.startswith(f"  {g}:") for l in bad))
-        print(f"  regenerate: for g in {games}; do GAME=$g bash scripts/regen-recomp.sh || break; done",
-              file=sys.stderr)
+        stale = [g for g in args if any(l.startswith(f"  {g}:") for l in bad)]
+        linked = [g for g in stale if os.path.islink(os.path.dirname(stamp_path(root, g)))]
+        if linked:
+            # A worktree's generated tree is the main checkout's: a regen here
+            # writes it (scripts/lib/regen_guard.py refuses one).
+            for g in linked:
+                print(f"  {g}: games/{g}/generated is a link to "
+                      f"{os.path.realpath(os.path.dirname(stamp_path(root, g)))}", file=sys.stderr)
+            print("  never regenerate in this checkout: test only commits whose stamp check passes "
+                  "here. Regeneration belongs to the main checkout, or to a worktree made with "
+                  "`worktree-setup.sh <name> --no-links`.", file=sys.stderr)
+            stale = [g for g in stale if g not in linked]
+        if stale:
+            games = " ".join(stale)
+            print(f"  regenerate: for g in {games}; do GAME=$g bash scripts/regen-recomp.sh || break; done",
+                  file=sys.stderr)
         return 67
     print(f"recomp-stamp: {len(args)} game(s) match recompiler {cur[:12]}")
     return 0

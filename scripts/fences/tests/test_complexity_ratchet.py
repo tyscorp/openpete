@@ -7,7 +7,8 @@ EndToEndTest builds a throwaway git repo with the
 hook installed and its own compile database (OPENPETE_COMPLEXITY_DB) and
 commits each index shape: M, A, D, identical rename, changed rename, the
 temporary-index form, and a stale hook-written baseline on a doc-only commit,
-and the refusal log row a refused commit writes. RefusalLogTest drives
+the refusal log row a refused commit writes, and `check` naming the dirty
+files it did not read. RefusalLogTest drives
 ratchet_lib.run's refusal log on each exit code.
 
 Run: python3 scripts/fences/tests/test_complexity_ratchet.py
@@ -414,6 +415,21 @@ class EndToEndTest(unittest.TestCase):
         self.wire("tail", "body", "del", "mv", "mvc2")
         self.commit("move+edit")
         self.assertEqual(self.rows()["core/mvc2.c:edited"], (38, ""))
+
+    def check_output(self):
+        p = subprocess.run([sys.executable, SCRIPT, "check"], cwd=self.repo,
+                           capture_output=True, text=True, env=self.env)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        return p.stdout + p.stderr
+
+    def test_check_names_the_dirty_files_it_did_not_read(self):
+        out = self.check_output()
+        self.assertIn("complexity-ratchet: PASS over 5 clean TUs\n", out)
+        self.assertNotIn("NOT READ", out)
+        self.write("core/tail.c", nest("tail", 8, 5))
+        out = self.check_output()
+        self.assertIn("complexity-ratchet: PASS over 4 clean TUs; 1 dirty files NOT READ "
+                      "(the pre-commit hook decides them): core/tail.c", out)
 
     def test_temporary_index_form_refused(self):
         self.write("core/body.c", nest("small", 3))

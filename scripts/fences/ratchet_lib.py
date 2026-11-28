@@ -349,6 +349,30 @@ def configure_db(root, fence, preset, path, build=True):
     return True
 
 
+def reconfigure_db(root, fence, preset, path, stale, build=True):
+    """Re-run `cmake --preset <preset>` (under nice -n 10) for a compile
+    database at path older than the CMake files in stale; the build
+    directory's cache keeps its compiler launcher. -> seconds taken.
+    Refusal naming the command when building is not allowed, when path is
+    not the preset's own database (an environment override), or when the
+    configure fails."""
+    cmd = ["cmake", "--preset", preset]
+    head = ("STALE-DB: CMake files newer than the %s database: %s"
+            % (preset, ", ".join(stale[:5])))
+    own = os.path.join(root, "build", preset, "compile_commands.json")
+    if os.path.realpath(path) != os.path.realpath(own):
+        raise Refusal("%s. The database %s is not the preset's; re-run its configure."
+                      % (head, path))
+    if not may_build(build):
+        raise Refusal("%s, and this caller does not configure (%s). Run: %s"
+                      % (head, "%s set" % NO_BUILD_ENV if build else "a build-time check",
+                         " ".join(cmd)))
+    say("%s: %s; configuring: %s" % (fence.name, head, " ".join(cmd)))
+    secs = _cmake(cmd, root, "configuring %s" % preset)
+    say("%s: configured %s in %.1f s" % (fence.name, preset, secs))
+    return secs
+
+
 def linux_db(root, fence, build=True):
     """-> the linux-release compile database path: fence.db_env when set (it
     must exist), else DB_DEFAULT, configured on demand (configure_db)."""

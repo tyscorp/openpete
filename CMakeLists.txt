@@ -1098,6 +1098,14 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     add_test(NAME build_lock_selftest
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/lib/tests/test_build_lock.py)
     set_tests_properties(build_lock_selftest PROPERTIES LABELS "fence")
+    # The regen guard: regen-recomp.sh and regen-manifest.sh refuse in a
+    # worktree whose outputs link the main checkout, and on the main checkout
+    # while a linking worktree builds or runs a fleet run (--busy-ok
+    # overrides); recomp_stamp.py says never to regenerate through a link.
+    # Scratch repositories and stand-in lock holders; nothing regenerates.
+    add_test(NAME regen_guard_selftest
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/lib/tests/test_regen_guard.py)
+    set_tests_properties(regen_guard_selftest PROPERTIES LABELS "fence")
     # The sandbox fence's own tests: a launch without the sandbox library or
     # OPENPETE_SANDBOX refused in shell and Python, the providers, helpers and
     # markers passing, the provider closure, and the checkout clean.

@@ -329,7 +329,8 @@ void knob_registry_late_stamp(void);
  * feature apply-options time, before the overlay first draws and before
  * knob_registry_init stamps boot values.
  * @param row The row to copy in.
- * @return 0 on success, -1 when row is NULL or the extra-row capacity
+ * @return 0 on success, -1 when row is NULL, when its id, flag or env var
+ *         names a registered row, or when the extra-row capacity
  *         (KNOB_EXTRA_MAX rows) is exhausted. */
 int openpete_knob_add(const knob_desc_t *row);
 

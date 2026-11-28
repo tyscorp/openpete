@@ -82,7 +82,11 @@ one, a staged in-scope source in no entry set and not exempt, zero entries
 measured, and for `check` no measured entry clean against HEAD; zero rows
 decided alone is not vacuous, since a clean entry with no row is decided):
 refuses; STALE-DB (a CMake file newer than the database, or an
-error-kind diagnostic with no option): refuses, never baselined; ERROR (an
+error-kind diagnostic with no option): refuses, never baselined, except
+that the hook configures the preset of a database older than a staged
+CMake file again (`cmake --preset <name>` under nice -n 10, the
+preset's own database only) and refuses only when that configure fails
+or OPENPETE_FENCE_NO_BUILD=1 is set; ERROR (an
 error-set diagnostic): refuses; MISSING-INPUT (a header a build rule
 generates, or the mod SDK, is absent from the build directory, or a
 staged SDK root file differs from its tracked source): the hook, tighten
@@ -1034,8 +1038,14 @@ def hook_database(root, dbname, db_path, staged, staged_cmake, fence_staged, del
     c, note = ready_corpus(root, dbname, db_path, True, jobs, True)
     stale = stale_cmake(root, db_path, staged_cmake)
     if stale:
-        raise Refusal("STALE-DB: staged CMake files newer than the %s database: %s. "
-                      "Re-run `cmake --preset %s`." % (dbname, ", ".join(stale), dbname))
+        # A database older than a staged CMake file holds the commands of the
+        # old configuration: configure the preset again and reload the corpus.
+        lib.reconfigure_db(root, FENCE, dbname, db_path, stale)
+        stale = stale_cmake(root, db_path, staged_cmake)
+        if stale:
+            raise Refusal("STALE-DB: `cmake --preset %s` left the database older than "
+                          "the staged CMake files %s." % (dbname, ", ".join(stale)))
+        c, note = ready_corpus(root, dbname, db_path, True, jobs, True)
     staged_abs = {os.path.normpath(os.path.join(root, p)) for p in staged}
     if fence_staged:
         altered = {e.id for e in c.entries}

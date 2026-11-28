@@ -413,8 +413,8 @@ foreach(_game IN LISTS OPENPETE_GAMES)
 endforeach()
 
 # knob_registry_test - the M-overlay knob table: module-contributed rows
-# (openpete_knob_add) landing inside their section, capacity refusal, and
-# KNOB_ACTION button rows. Compiles knob_registry.c directly and stubs the
+# (openpete_knob_add) landing inside their section, capacity refusal, one row
+# per id, flag and env var, and KNOB_ACTION button rows. Compiles knob_registry.c directly and stubs the
 # renderer/host setters it writes through, so no SDL in a console test.
 # config.c comes along because the registry now asks the resolver where each
 # row's value came from instead of re-deriving it - and having both tables in

@@ -6,7 +6,13 @@
 # Which game is selected by GAME= (default spyro-1); its paths, overlay
 # vaddr and options come from games/<game>/recomp.conf.
 #
-#   GAME=spyro-2 bash scripts/regen-recomp.sh
+#   GAME=spyro-2 bash scripts/regen-recomp.sh [--busy-ok "<reason>"]
+#
+# Before anything is written, scripts/lib/regen_guard.py refuses a checkout
+# whose outputs are links into the main checkout (a worktree made without
+# `worktree-setup.sh --no-links`; exit 65), and, in the main checkout, a run
+# while a worktree linking this game's generated tree builds or a fleet run
+# from it or from this checkout is in flight (exit 75; --busy-ok overrides).
 #
 # Inputs (relative to repo root):
 #   third_party/psxrecomp/build/PSXRecomp   - recompiler binary
@@ -35,6 +41,16 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 GAME="${GAME:-spyro-1}"
+BUSY_OK=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --busy-ok)
+            [[ $# -ge 2 && -n "${2// /}" ]] || { echo "regen-recomp: --busy-ok takes a reason" >&2; exit 64; }
+            BUSY_OK=(--busy-ok "$2"); shift 2 ;;
+        *) echo "regen-recomp: unknown argument $1" >&2; exit 64 ;;
+    esac
+done
+python3 scripts/lib/regen_guard.py check --tool regen-recomp --game "$GAME" "${BUSY_OK[@]}"
 GAME_CONF="games/$GAME/recomp.conf"
 if [[ ! -f "$GAME_CONF" ]]; then
     echo "regen-recomp: no $GAME_CONF - is GAME=$GAME right?" >&2

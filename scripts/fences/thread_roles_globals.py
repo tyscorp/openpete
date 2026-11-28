@@ -816,8 +816,47 @@ def added_rows(before, after, renames):
     return sorted(k for k in after.rows if k not in carried)
 
 
+def accept_refusal(key, note, accept, need_note):
+    """-> why the hook's accept reason does not cover one added row with a
+    note, or None when it does: the reason names the global (or, for a
+    deferred row, its chain's terminal), and a deferred row's note records
+    the reason."""
+    if key[2] not in accept and not (need_note and terminal_of(note) in accept):
+        return "%s must name it or its chain's terminal" % ACCEPT_ENV
+    if need_note and accept.strip() not in note:
+        return "the row must record the reason in %s" % ACCEPT_ENV
+    return None
+
+
+def accept_line(pending):
+    """-> the `OPENPETE_THREAD_ROLES_ACCEPT="..."` assignment that covers
+    every (key, note, need_note) in pending, or None when no single value
+    does. Tried in order: the global names followed by the notes (enough
+    when no deferred row is pending), then each deferred row's note (it
+    holds its own terminal), and the first value accept_refusal passes for
+    every row is returned."""
+    if not pending:
+        return None
+    names = []
+    for k, _, _ in pending:
+        if k[2] not in names:
+            names.append(k[2])
+    notes = []
+    for _, note, _ in pending:
+        if note not in notes:
+            notes.append(note)
+    cands = ["%s: %s" % (" ".join(names), "; ".join(notes))]
+    cands += [note for _, note, need in pending if need]
+    for c in cands:
+        if '"' in c or "\\" in c or "$" in c or "`" in c:
+            continue
+        if all(accept_refusal(k, note, c, need) is None for k, note, need in pending):
+            return '%s="%s"' % (ACCEPT_ENV, c)
+    return None
+
+
 def additions_refused(path, before, after, renames, accept, moved_from=None,
-                      confirmed=None, need_note=False):
+                      confirmed=None, need_note=False, pending=None):
     """The compare of one TSV with its base: an added row records its reason
     in the note column, and in the hook the accept reason names it. accept
     None: the stateless half (`check`, `range`), which cannot read a
@@ -826,6 +865,8 @@ def additions_refused(path, before, after, renames, accept, moved_from=None,
     moved_from: a TSV whose rows may move here freely (tighten's move out of
     deferred.tsv). confirmed: a TSV whose row with a confirmed local form
     bars the addition. need_note: the note records the annotator's chain.
+    pending: a list that gains (key, note, need_note) per row the accept
+    reason alone refuses, for accept_line.
     -> (refusals, reports)."""
     refused, reports = [], []
     for k in added_rows(before, after, renames):
@@ -844,12 +885,12 @@ def additions_refused(path, before, after, renames, accept, moved_from=None,
             continue
         if accept is None:
             reports.append("%s added since the base: %s" % (label, row[5]))
-        elif k[2] not in accept and not (need_note and terminal_of(row[5]) in accept):
-            refused.append("%s added: %s must name it or its chain's terminal"
-                           % (label, ACCEPT_ENV))
-        elif need_note and accept.strip() not in row[5]:
-            refused.append("%s added: the row must record the reason in %s"
-                           % (label, ACCEPT_ENV))
+            continue
+        why = accept_refusal(k, row[5], accept, need_note)
+        if why is not None:
+            refused.append("%s added: %s" % (label, why))
+            if pending is not None:
+                pending.append((k, row[5], need_note))
     return refused, reports
 
 
