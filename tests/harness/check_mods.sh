@@ -17,7 +17,7 @@
 #        mod_ladder_timeline run one section each)
 # Env:   OPENPETE_BIN / OPENPETE_DISC - forwarded to runs + oracle.
 #
-# Sections (--section; none runs all three in this order):
+# Sections (--section; none runs all four in this order):
 #   games     runs on every game: the mod SDK and object identity rungs
 #             (tests/harness/mods_sdk_rungs.sh), the rungs of the in-tree
 #             mods that load on every game (tests/harness/mods_multigame_rungs.sh:
@@ -38,6 +38,10 @@
 #   timeline  Spyro 1 only: the arena canary, rewind keyframes, stream
 #             handles, save safety, zip mods, the bug-report bundle's mod
 #             walk, live toggle, process handoff and hot reload.
+#   frames    Spyro 1 only: the override frame stack across a parked fiber
+#             (tests/harness/mods_frame_rungs.sh): base() after a reload of
+#             a passed link, base() and crash attribution from a toggle
+#             hook, and reload deferral through both reload callers.
 # No section reads a $WORK file another section writes. matrix and
 # timeline use Spyro 1's corpus (its fixtures, level names and golden),
 # so under another --game they run nothing.
@@ -69,8 +73,8 @@ for _a in "$@"; do
     fi
 done
 case "$SECTION" in
-    ""|games|debugflags|matrix|timeline) ;;
-    *) echo "unknown --section '$SECTION' (expected games, debugflags, matrix or timeline)" >&2
+    ""|games|debugflags|matrix|timeline|frames) ;;
+    *) echo "unknown --section '$SECTION' (expected games, debugflags, matrix, timeline or frames)" >&2
        exit 64 ;;
 esac
 # section_on <name>: true when the run includes that section.
@@ -1513,6 +1517,12 @@ else
 fi
 
 fi # section timeline
+
+# ══ section frames: the override frame stack across a park ═════════════
+if [ "$PG_GAME" = "spyro-1" ] && section_on frames; then
+# shellcheck source=tests/harness/mods_frame_rungs.sh
+source tests/harness/mods_frame_rungs.sh
+fi # section frames
 
 # ══ section games (part 2): shaders (Spyro 1), materials, table census ═
 # The shader rungs sample Spyro 1 frames (a title-screen VBL, level 10's

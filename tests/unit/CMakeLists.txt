@@ -783,6 +783,28 @@ set_target_properties(mod_arena_test PROPERTIES C_STANDARD 11)
 add_test(NAME mod_arena_test COMMAND mod_arena_test)
 set_tests_properties(mod_arena_test PROPERTIES LABELS "mods")
 
+# mod_chain_test - the override frame stack (core/mods/mod_chain.c): a
+# removal of a frame's own link or of links ahead of it while the frame is
+# live keeps base() on the next remaining link, a removal at index 0 and a
+# re-insert included; base() and crash attribution under a site opened over
+# a live frame; a bus frame refused by base(), named by attribution, left
+# alone by the re-anchor. Includes the module whole; the dispatch layer,
+# overlay probe, ImGui guard and clock are stubs, SDL only its headers (the
+# guard thread id is stubbed in the test).
+add_executable(mod_chain_test
+    mod_chain_test.c
+    ${CMAKE_SOURCE_DIR}/core/mods/mod_vec.c
+    ${CMAKE_SOURCE_DIR}/core/diag/log.c)
+target_include_directories(mod_chain_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/core/include/psxrt
+    ${CMAKE_SOURCE_DIR}/core/mods)
+target_include_directories(mod_chain_test SYSTEM PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/SDL/include)
+set_target_properties(mod_chain_test PROPERTIES C_STANDARD 11)
+add_test(NAME mod_chain_test COMMAND mod_chain_test)
+set_tests_properties(mod_chain_test PROPERTIES LABELS "mods")
+
 # mod_save_block_test - the mod-save key's block a savestate carries
 # (core/mods/mod_save.c): a block with a legacy length, key, key slot or
 # save index out of range is refused at parse, and a well-formed block
@@ -1484,7 +1506,7 @@ endif()
 
 # These compile sources that carry role asserts and binds, whose definitions
 # live in the role runtime.
-foreach(t boot_memfill_test line_quad_test mod_arena_test mod_material_link_test
+foreach(t boot_memfill_test line_quad_test mod_arena_test mod_chain_test mod_material_link_test
           mod_material_resolve_test mod_vec_test psx_span_test rhi_compile_stress
           rhi_compile_stress_tsan sfx_smpl_walk_test text_moby_id_test
           write_census_test)

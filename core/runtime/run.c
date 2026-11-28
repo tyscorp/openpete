@@ -2446,12 +2446,14 @@ static void log_frame_on_exit(void) {
 /** @brief Run host init and the host loop on the calling thread.
  *
  * The path when the thread split does not apply, and the fallback when
- * run_split_threaded cannot create the worker thread. The mod exit pass
+ * run_split_threaded cannot create the worker thread. The thread's mods
+ * dispatch site is set to GUEST first, as on the sim thread. The mod exit pass
  * runs inside the host loop's close on every path; the call here runs it
  * for a host init that failed before the loop.
  * @param opts The parsed options.
  * @return The init error code, or the host loop's exit code. */
 static int run_recomp_fiber(const openpete_options_t* opts) OP_REQUIRES(sim) {
+    openpete_mods_site_claim_guest();   /* this thread runs the game fiber */
     int rc = run_host_init(opts);
     if (rc != 0) {
         openpete_mods_shutdown(NULL);
@@ -2480,11 +2482,12 @@ static SDL_Window*   s_psyx_gl_win;
 
 /** @brief Body of the sim thread under the thread split: take the GL context and run the game loop until it exits.
  *
- * The loop's close runs the mod exit pass on every path, so it precedes
+ * The thread's mods dispatch site is set to GUEST at the role bind. The loop's close runs the mod exit pass on every path, so it precedes
  * main's teardown after the join. */
 static int SDLCALL openpete_sim_thread(void* unused)
 {
     OP_ROLE_BIND(sim);
+    openpete_mods_site_claim_guest();   /* this thread runs the game fiber */
     (void)unused;
     openpete_crash_thread_attach();
     if (s_psyx_gl_ctx && !SDL_GL_MakeCurrent(s_psyx_gl_win, s_psyx_gl_ctx))

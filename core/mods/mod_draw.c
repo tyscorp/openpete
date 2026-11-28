@@ -414,6 +414,7 @@ static void present_flush_draw(int canonical) OP_REQUIRES(sim) {
          * still makes calls no hook. */
         if (phook_count() > 0 && !openpete_mods_api_closed()) {
         openpete_mods_in_present = 1;
+        const openpete_mods_site_t site = openpete_mods_site_open(OPENPETE_MODS_CTX_PRESENT);
         for (int i = 0; i < phook_count(); i++) {
             const present_hook_t* h = phook_at(i);
             if (h->disabled) continue;
@@ -429,6 +430,7 @@ static void present_flush_draw(int canonical) OP_REQUIRES(sim) {
             openpete_imgui_guard_set_hook_owner(NULL);
             openpete_mods_time_add(owner, op_now() - t0, 1); /* clock-guard: wall */
         }
+        openpete_mods_site_close(site);
         openpete_mods_in_present = 0;
         }
     }

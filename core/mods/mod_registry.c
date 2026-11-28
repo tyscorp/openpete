@@ -122,6 +122,11 @@ int openpete_mods_moby_classes(uint16_t* out, int cap) {
 }
 
 static void registry_tick(CPUState* cpu);
+static void level_hook_run(const level_hook_t* h, CPUState* cpu, int lvl);
+/* Level-ready hook walks in progress on this thread: nonzero across a park
+ * inside a hook, which leaves the walk open over the tick boundaries the
+ * host loop runs on the same (sim) thread meanwhile. */
+static _Thread_local int s_level_walk;
 static void level_slots_tick(CPUState* cpu);
 static void custom_tick(CPUState* cpu);
 static int  custom_warp_queued(void);
@@ -186,22 +191,36 @@ static void registry_tick(CPUState* cpu) {
     if (lvl != s_level) s_level = lvl;
     if (lvl <= 0) return;
 
+    s_level_walk++;
     for (int i = 0; i < level_hook_count(); i++) {
         level_hook_t* h = level_hook_at(i);
-        openpete_mod_level_fn fn;
         if (h->disabled || h->fired_level == lvl) continue;
         h->fired_level = lvl;
-        /* Read out before the call: a hook body may register another
-         * level hook, which moves the table. The owner is copied for the
-         * guest-byte guard, which names it after the call. */
-        fn = h->fn;
-        char owner[MOBY_OWNER_MAX];
-        memcpy(owner, h->mod_id, sizeof owner);
-        openpete_mods_guard_enter(owner);
-        fn(cpu, lvl);
-        openpete_mods_guard_leave();
+        level_hook_run(h, cpu, lvl);
     }
+    s_level_walk--;
 }
+
+/** @brief Run one level-ready hook inside its own dispatch site and guest-guard stretch.
+ *
+ * The hook and its owner are read out before the call: a hook body may
+ * register another level hook, which moves the table, and the guest-byte
+ * guard names the owner after the call.
+ * @param h the hook row.
+ * @param cpu Live game CPU.
+ * @param lvl The live level id passed to the hook. */
+static void level_hook_run(const level_hook_t* h, CPUState* cpu, int lvl) {
+    const openpete_mod_level_fn fn = h->fn;
+    char owner[MOBY_OWNER_MAX];
+    memcpy(owner, h->mod_id, sizeof owner);
+    const openpete_mods_site_t site = openpete_mods_site_open(OPENPETE_MODS_CTX_LEVEL);
+    openpete_mods_guard_enter(owner);
+    fn(cpu, lvl);
+    openpete_mods_guard_leave();
+    openpete_mods_site_close(site);
+}
+
+int openpete_mods_registry_level_walk_active(void) { return s_level_walk > 0; }
 
 /* ── Level-slot namespace ──────────────────────────────────────────── */
 

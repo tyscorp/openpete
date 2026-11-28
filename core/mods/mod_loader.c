@@ -329,6 +329,9 @@ struct openpete_mod {
     mod_fvec mat_rows;   /* mod_material_row_t; [[material]] */
     int   cfg_reload_pending; /* Apply wrote config.toml; reload at the
                                * next tick boundary re-reads it */
+    int   reload_deferred; /* a hot reload is requested and waits: the
+                            * mod's code is on the frame stack, or a
+                            * level-ready hook walk is parked */
     /* [[level]] blocks: declarative custom levels (registered with the
      * content registry at load; the engine owns slot/TOC/warp). */
     mod_fvec levels;     /* mod_level_row_t */
@@ -1925,9 +1928,11 @@ static int mod_run_shutdown_hook(struct openpete_mod* mod, const char* why) {
     openpete_mod_shutdown_fn fn = mod->shutdown_fn;
     if (!fn || !mod->entered) return 0;
     const Uint64 t0 = SDL_GetTicks(); /* clock-guard: wall */
+    const openpete_mods_site_t site = openpete_mods_site_open(OPENPETE_MODS_CTX_SHUTDOWN);
     openpete_mods_guard_enter(mod->id);
     fn();
     openpete_mods_guard_leave();
+    openpete_mods_site_close(site);
     const Uint64 ms = SDL_GetTicks() - t0; /* clock-guard: wall */
     if (ms > MOD_SHUTDOWN_BUDGET_MS)
         OPL_WARN_F(mod->log_tag, "shutdown hook (%s) took %llu ms, over the "
@@ -1956,9 +1961,11 @@ static int mod_run_shutdown_hook(struct openpete_mod* mod, const char* why) {
  * cross the reload: entry re-derives it. On success the registration
  * surfaces take the mod's enabled state again and the toggle epoch is
  * bumped, since the reload changes what the active registration set
- * means to rewind and runahead. */
+ * means to rewind and runahead. Clears reload_deferred: the request is
+ * served, whatever its outcome. Callers test reload_must_defer first. */
 static void mod_hot_reload(struct openpete_mod* mod) {
     char key[65];
+    mod->reload_deferred = 0; /* the request is served from here */
     int need_compile = mod->build_key[0] != '\0' &&
                        mod_compute_key(mod->dir, s_sdk_dir, key) == 0 &&
                        strcmp(key, mod->build_key) != 0;
@@ -2051,11 +2058,13 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     (void)openpete_mods_shader_watch_key(mod->dir, mod->shader_key);
     mod_order_note(mod, OPENPETE_MODSET_EV_ENTRY, 0, 0);
     openpete_mods_arena_entry_begin(mod->id); /* replay its allocations */
+    const openpete_mods_site_t site = openpete_mods_site_open(OPENPETE_MODS_CTX_RELOAD_ENTRY);
     openpete_mods_guard_enter(mod->id);
     mod->in_entry = 1;
     const int entry_rc = entry(&s_api, mod);
     mod->in_entry = 0;
     openpete_mods_guard_leave();
+    openpete_mods_site_close(site);
     openpete_mods_arena_entry_end(mod->id);
     if (entry_rc != 0) {
         OPL_ERROR_F("mods", "%s: reload entry failed - mod is now INERT",
@@ -2080,6 +2089,38 @@ static void mod_hot_reload(struct openpete_mod* mod) {
                mod->enabled ? "" : " (still disabled)");
 }
 
+/** @brief Decide whether a requested hot reload of a mod waits, setting reload_deferred when it does.
+ *
+ * A reload runs the outgoing object's shutdown hook and strips its
+ * registrations, so it waits while the mod's code is on the frame stack (a
+ * game fiber parked inside its override or bus handler, whose frames stay
+ * on the sim thread's stack across the tick boundary) and while a
+ * level-ready hook walk is parked, which may hold the mod's own hook with
+ * no frame to show it. Nothing bounds the wait: an override of a function
+ * that is on the stack at every park waits until it is toggled off, or for
+ * the session. The first deferral of a request is logged, naming the
+ * parked override's address. Both callers retry: the config loop at every
+ * tick boundary, the hot-reload poll at every poll, which re-detects the
+ * key mismatch.
+ * @param mod The mod a reload is requested for.
+ * @return 1 when the reload waits, 0 when it may run now. */
+static int reload_must_defer(struct openpete_mod* mod) {
+    uint32_t addr = 0;
+    const int frame = openpete_mods_frame_owner_live(mod->id, &addr);
+    if (!frame && !openpete_mods_registry_level_walk_active()) return 0;
+    if (!mod->reload_deferred) {
+        if (frame)
+            OPL_INFO_F("mods", "hot reload of %s deferred: override of 0x%08X "
+                       "on the stack of the parked game fiber; it applies at "
+                       "the first tick boundary without it", mod->id, addr);
+        else
+            OPL_INFO_F("mods", "hot reload of %s deferred: a level-ready hook "
+                       "walk is parked; it applies after the walk", mod->id);
+    }
+    mod->reload_deferred = 1;
+    return 1;
+}
+
 /* --mod-hot-reload (OPENPETE_MOD_HOT_RELOAD): 1 arms hot_reload_poll; set
  * once in openpete_mods_init from opts. */
 static int s_hot_reload = 0;
@@ -2098,7 +2139,8 @@ static void mods_hot_reload_arm(const openpete_options_t* opts) {
  * SDK prefix, then recomputes, for every entered mod with an object, a src/
  * directory and a build key,
  * the source build key (sources and SDK), the config.toml key and the
- * shader key; any change calls mod_hot_reload. */
+ * shader key; any change calls mod_hot_reload unless reload_must_defer
+ * holds it, in which case the next poll sees the same change. */
 static void hot_reload_poll(void) {
     if (!s_hot_reload) return;
     static unsigned s_cnt = 0;
@@ -2122,9 +2164,10 @@ static void hot_reload_poll(void) {
             continue;
         (void)config_compute_key(mod->dir, ckey);
         (void)openpete_mods_shader_watch_key(mod->dir, skey);
-        if (strcmp(key, mod->build_key) != 0 ||
-            strcmp(ckey, mod->cfg_key) != 0 ||
-            strcmp(skey, mod->shader_key) != 0)
+        if ((strcmp(key, mod->build_key) != 0 ||
+             strcmp(ckey, mod->cfg_key) != 0 ||
+             strcmp(skey, mod->shader_key) != 0) &&
+            !reload_must_defer(mod))
             mod_hot_reload(mod);
     }
 }
@@ -2285,11 +2328,13 @@ static void mod_ui_run_body(struct openpete_mod* m, int i,
                             const struct openpete_mod_ui* ui,
                             int no_input) {
     openpete_mods_in_present = 1;
+    const openpete_mods_site_t site = openpete_mods_site_open(OPENPETE_MODS_CTX_UI);
     /* The body depth is what makes an ImGui call legal: the guard
      * wrappers drop a call from anywhere else. */
     openpete_imgui_body_enter_always(i, no_input);
     body(ui);
     openpete_imgui_body_leave();
+    openpete_mods_site_close(site);
     openpete_mods_in_present = 0;
     m->imgui_calls = openpete_imgui_calls_take();
     if (m->imgui_calls && !m->imgui_engaged) {
@@ -2494,53 +2539,70 @@ static void cfg_apply_schedule_run(unsigned canonical_tick) {
     }
 }
 
-void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
-    s_current_tick = canonical_tick;
-    openpete_mods_game_state_sample(cpu, canonical_tick);
-    for (size_t i = 0; i < mod_fvec_count(&s_toggle_sched); i++) {
-        const toggle_sched_t* t =
-            (const toggle_sched_t*)mod_fvec_at(&s_toggle_sched, i);
-        if (t->tick == canonical_tick)
-            (void)openpete_mods_set_mod_enabled(t->id, t->on);
-    }
-    cfg_apply_schedule_run(canonical_tick);
-    hot_reload_poll();
-
-    /* Both of these are things a UI section may have asked for from inside a
-     * present, where they could not be honoured: a retuned selector would
-     * have split the frame between two keys, and the class census reads
-     * guest RAM. The tick boundary is where they become legal. */
-    openpete_mods_material_apply_pending();
-    openpete_mods_material_overlap_tick();
-    if (mod_count()) openpete_mods_moby_class_census(cpu);
-
-    /* Apply-committed config changes: reload the mod so its entry
-     * re-reads the fresh values (build key unchanged, so the compile is
-     * a cache hit). A mod that never entered (deferred row / assets-
-     * only) just re-parses the file - entry reads it on first enable. */
+/** @brief Serve the Apply-committed config changes at a tick boundary.
+ *
+ * An entered mod with an object and sources is reloaded so its entry
+ * re-reads the fresh values (build key unchanged, so the compile is a
+ * cache hit); while reload_must_defer holds the reload, cfg_reload_pending
+ * stays set and the next boundary retries. A mod that never entered
+ * (deferred row, assets-only) re-parses the file: entry reads it on first
+ * enable. */
+static void cfg_reload_drain(void) {
     for (int i = 0; i < mod_count(); i++) {
         struct openpete_mod* mod = mod_at(i);
         if (!mod->cfg_reload_pending) continue;
-        mod->cfg_reload_pending = 0;
-        if (mod->dl && mod->has_src && mod->entered)
-            mod_hot_reload(mod);
-        else
+        if (!(mod->dl && mod->has_src && mod->entered)) {
+            mod->cfg_reload_pending = 0;
             openpete_mods_config_load(mod, mod->dir, mod->log_tag);
+        } else if (!reload_must_defer(mod)) {
+            mod->cfg_reload_pending = 0;
+            mod_hot_reload(mod);
+        }
     }
+}
 
-    /* The queue is drained in place: a deferred request is compacted down
-     * to `kept` and the tail is dropped at the end. The bound is re-read
-     * per iteration, so a request queued from a toggle body is drained by
-     * this same pass. The request is copied out first: that body's queue
-     * push may move the run under a held element pointer. */
+/** @brief Run a mod's toggle hook after a flip, in a toggle-hook dispatch site and its guest-guard stretch.
+ *
+ * Tick context: the mod may undo (or re-stage) its guest-side effects with
+ * the surfaces already in the new state.
+ * @param mod The flipped mod; one with no hook does nothing.
+ * @param cpu Live game CPU.
+ * @param on The new enabled state. */
+static void toggle_hook_run(struct openpete_mod* mod, CPUState* cpu, int on) {
+    if (!mod->toggle_fn) return;
+    const openpete_mods_site_t site = openpete_mods_site_open(OPENPETE_MODS_CTX_TOGGLE);
+    openpete_mods_guard_enter(mod->id);
+    mod->toggle_fn(cpu, on);
+    openpete_mods_guard_leave();
+    openpete_mods_site_close(site);
+}
+
+/** @brief Find a loaded mod by id.
+ * @param id The mod id.
+ * @return The mod, or NULL. */
+static struct openpete_mod* mod_by_id(const char* id) {
+    for (int i = 0; i < mod_count(); i++)
+        if (strcmp(mod_at(i)->id, id) == 0) return mod_at(i);
+    return NULL;
+}
+
+/** @brief Drain the live-toggle queue at a tick boundary, one request flipped and its hook run before the next.
+ *
+ * The queue is drained in place: a deferred request (a disable of the mod
+ * that owns the level the player is in) is compacted down to `kept` and the
+ * tail is dropped at the end. The bound is re-read per iteration, so a
+ * request queued from a toggle body is drained by this same pass. The
+ * request is copied out first: that body's queue push may move the run
+ * under a held element pointer. An applied flip bumps the toggle epoch.
+ * @param cpu Live game CPU.
+ * @param canonical_tick The tick now starting, for the log line. */
+static void toggle_queue_drain(CPUState* cpu, unsigned canonical_tick) {
     size_t kept = 0;
     for (size_t q = 0; q < mod_fvec_count(&s_toggle_q); q++) {
         toggle_req_t cur = *(toggle_req_t*)mod_fvec_at(&s_toggle_q, q);
         const char* id = cur.id;
         int on = cur.on;
-        struct openpete_mod* mod = NULL;
-        for (int i = 0; i < mod_count(); i++)
-            if (strcmp(mod_at(i)->id, id) == 0) { mod = mod_at(i); break; }
+        struct openpete_mod* mod = mod_by_id(id);
         if (!mod) {
             OPL_ERROR_F("mods", "live toggle: no loaded mod \"%s\"", id);
             continue;
@@ -2574,16 +2636,34 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
         s_toggle_epoch++;
         OPL_INFO_F("mods", "live toggle: %s %s (tick %u)",
                    id, on ? "ENABLED" : "DISABLED", canonical_tick);
-        /* Notify AFTER the flip: tick context, so the mod may undo (or
-         * re-stage) its guest-side effects with the surfaces already in
-         * the new state. */
-        if (mod->toggle_fn) {
-            openpete_mods_guard_enter(mod->id);
-            mod->toggle_fn(cpu, on);
-            openpete_mods_guard_leave();
-        }
+        /* Notify AFTER the flip. */
+        toggle_hook_run(mod, cpu, on);
     }
     mod_fvec_truncate(&s_toggle_q, kept);
+}
+
+void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
+    s_current_tick = canonical_tick;
+    openpete_mods_game_state_sample(cpu, canonical_tick);
+    for (size_t i = 0; i < mod_fvec_count(&s_toggle_sched); i++) {
+        const toggle_sched_t* t =
+            (const toggle_sched_t*)mod_fvec_at(&s_toggle_sched, i);
+        if (t->tick == canonical_tick)
+            (void)openpete_mods_set_mod_enabled(t->id, t->on);
+    }
+    cfg_apply_schedule_run(canonical_tick);
+    hot_reload_poll();
+
+    /* Both of these are things a UI section may have asked for from inside a
+     * present, where they could not be honoured: a retuned selector would
+     * have split the frame between two keys, and the class census reads
+     * guest RAM. The tick boundary is where they become legal. */
+    openpete_mods_material_apply_pending();
+    openpete_mods_material_overlap_tick();
+    if (mod_count()) openpete_mods_moby_class_census(cpu);
+
+    cfg_reload_drain();
+    toggle_queue_drain(cpu, canonical_tick);
     /* A registration, toggle or hot reload above can change the member
      * set of the combined material modules; unchanged, this returns at once. */
     openpete_mods_material_chain_sync();
@@ -5107,11 +5187,13 @@ static int mod_run_entry(struct openpete_mod* mod) {
     }
     mod_order_note(mod, OPENPETE_MODSET_EV_ENTRY, 0, 0);
     openpete_mods_arena_entry_begin(mod->id);
+    const openpete_mods_site_t site = openpete_mods_site_open(OPENPETE_MODS_CTX_ENTRY);
     openpete_mods_guard_enter(mod->id);
     mod->in_entry = 1;
     int rc = entry(&s_api, mod);
     mod->in_entry = 0;
     openpete_mods_guard_leave();
+    openpete_mods_site_close(site);
     openpete_mods_arena_entry_end(mod->id);
     if (rc != 0) {
         OPL_ERROR_F("mods", "%s: openpete_mod_entry returned %d - disabled",

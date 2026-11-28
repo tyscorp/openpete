@@ -172,11 +172,18 @@ static void owner_state_set(const char* owner_id, int disabled) {
     slot->disabled = disabled;
 }
 
-/* Per-call frame: which link of which chain is currently executing, so
- * base() knows its continuation. Sim-thread only; TLS for safety. */
+/* Per-call frame: which mod code is executing, so base() knows its
+ * continuation, a hot reload knows whose code is on the stack, and the
+ * crash handler knows whom to name. Sim-thread only; TLS for safety. A
+ * game fiber parked inside an override leaves its frames here, on the sim
+ * thread, while the host loop runs the tick boundary. */
 typedef struct {
-    mod_chain_t* chain;
-    int          link;
+    openpete_mods_frame_kind kind;
+    const char*  owner;    /* owner id, read from the link (or handler)
+                            * at push: a link index can go stale */
+    mod_chain_t* chain;    /* override: the chain; bus: NULL */
+    const char*  bus;      /* bus: the bus name; override: NULL */
+    int          link;     /* override: continuation index minus one */
     uint32_t     resident; /* overlay resident at dispatch, or
                             * OPENPETE_MODS_OVERLAY_ANY for an address
                             * outside the overlay window (no filter) */
@@ -186,6 +193,83 @@ typedef struct {
 
 static _Thread_local mod_frame_t s_frames[MOD_FRAME_STACK_MAX];
 static _Thread_local int         s_frame_depth = 0;
+
+/* The calling thread's open dispatch site (openpete_mods_site_open). */
+static _Thread_local openpete_mods_site_t s_site;
+
+/* The state a frame's bracket restores when the frame is left. */
+typedef struct {
+    mod_frame_t* f;
+    const char*  owner_save; /* the ImGui guard's hook owner before entry */
+    op_time_t    t0;         /* entry time */
+} mod_bracket_t;
+
+/** @brief Push a frame and open the bracket every frame of mod code runs in.
+ *
+ * Sets the ImGui guard's hook owner to the frame's owner (restored, not
+ * cleared, on leave, since a base() descent re-enters here for the next
+ * owner) and opens a guest-guard stretch for it. The caller fills the
+ * kind's own fields.
+ * @param b receives the state frame_leave restores.
+ * @param kind the frame kind.
+ * @param owner the owner id the frame names.
+ * @return the pushed frame, or NULL when the stack holds MOD_FRAME_STACK_MAX
+ *         frames (nothing is pushed or opened). */
+static mod_frame_t* frame_enter(mod_bracket_t* b, openpete_mods_frame_kind kind,
+                                const char* owner) {
+    if (s_frame_depth >= MOD_FRAME_STACK_MAX) return NULL;
+    mod_frame_t* f = &s_frames[s_frame_depth++];
+    f->kind     = kind;
+    f->owner    = owner;
+    f->chain    = NULL;
+    f->bus      = NULL;
+    f->link     = -1;
+    f->resident = OPENPETE_MODS_OVERLAY_ANY;
+    f->child_ns = 0;
+    b->f = f;
+    b->t0 = op_now();
+    b->owner_save = openpete_imgui_guard_hook_owner();
+    openpete_imgui_guard_set_hook_owner(owner);
+    openpete_mods_guard_enter(owner);
+    return f;
+}
+
+/** @brief Close a frame_enter bracket and pop its frame, the top one.
+ *
+ * The frame's self time (its span minus the time credited to its child_ns
+ * by its base() descent and nested frames) is charged to its owner through
+ * openpete_mods_time_add, and its full span is credited to the parent
+ * frame's child_ns, so an override that wraps an expensive original is
+ * billed only for its own code.
+ * @param b the bracket frame_enter filled. */
+static void frame_leave(const mod_bracket_t* b) {
+    const char* owner = b->f->owner;
+    openpete_mods_guard_leave();
+    openpete_imgui_guard_set_hook_owner(b->owner_save);
+    const op_time_t span = op_now() - b->t0;
+    const op_time_t child = b->f->child_ns;
+    s_frame_depth--;
+    openpete_mods_time_add(owner, span - child, 0);
+    if (s_frame_depth > 0)
+        s_frames[s_frame_depth - 1].child_ns += span;
+}
+
+/** @brief Move the continuation of every live override frame on a chain whose index is at or above a threshold.
+ *
+ * A frame's link holds its continuation index minus one, so a link inserted
+ * at index p moves frames with link >= p - 1, and a link removed at index j
+ * moves frames with link >= j. Bus frames hold no chain and never move.
+ * @param c the chain.
+ * @param at the lowest frame link index that moves.
+ * @param delta +1 for an insert, -1 for a removal. */
+static void frames_shift(const mod_chain_t* c, int at, int delta) {
+    for (int f = 0; f < s_frame_depth; f++) {
+        mod_frame_t* fr = &s_frames[f];
+        if (fr->kind == OPENPETE_MODS_FRAME_OVERRIDE && fr->chain == c &&
+            fr->link >= at)
+            fr->link += delta;
+    }
+}
 
 /* One-shot bypass: armed by base() bottoming out, consumed by the very
  * next prologue hit on that addr so the recompiled body runs. */
@@ -216,6 +300,17 @@ static int link_skipped(const mod_link_t* l, uint32_t resident) {
     if (l->disabled) return 1;
     if (resident == OPENPETE_MODS_OVERLAY_ANY) return 0;
     return l->overlay != OPENPETE_MODS_OVERLAY_ANY && l->overlay != resident;
+}
+
+/** @brief Return the index of the first link at or after idx that runs under a resident overlay, or the link count when none does.
+ *
+ * @param chain the chain.
+ * @param idx the first index considered.
+ * @param resident the frame's resident overlay (link_skipped). */
+static int first_live_link(const mod_chain_t* chain, int idx, uint32_t resident) {
+    while (idx < link_count(chain) && link_skipped(link_at(chain, idx), resident))
+        idx++;
+    return idx;
 }
 
 /** @brief Return the overlay filter for a dispatch at addr.
@@ -407,20 +502,35 @@ void openpete_mods_guard_resume(void) {
     s_guest_guard->begin();
 }
 
+/** @brief Run a chain's recompiled original through the dispatch switch with the one-shot bypass armed.
+ *
+ * The callee's prologue re-enters openpete_mods_dispatch, sees the armed
+ * bypass, and returns 0 so the recompiled body executes. The bypass is
+ * cleared again after the call in case another dispatch arm (freecam
+ * freeze) swallowed the call before the mods arm saw it. The call's span
+ * is credited to the parent frame's child_ns.
+ * @param cpu the guest CPU.
+ * @param chain the chain whose addr is called. */
+static void run_original(CPUState* cpu, const mod_chain_t* chain) {
+    const op_time_t t0 = op_now();
+    s_bypass_addr  = chain->addr;
+    s_bypass_armed = 1;
+    call_by_address(cpu, chain->addr);
+    s_bypass_armed = 0;
+    if (s_frame_depth > 0)
+        s_frames[s_frame_depth - 1].child_ns += op_now() - t0;
+}
+
 /** @brief Run the first enabled link of a chain at or after idx, or the recompiled original when none is left.
  *
  * base() is run_link(current + 1) with the frame's resident overlay. A
  * link bound to an overlay other than the resident one is skipped
- * (link_skipped), and every run is counted per resident overlay. A link runs inside a pushed frame with
- * the ImGui guard's hook owner set to the link's owner. Its self time
- * (span minus the time credited to its frame's child_ns by its base()
- * descent and nested overrides) is charged to the owner through
- * openpete_mods_time_add, and its full span is credited to the parent
- * frame's child_ns, so an override that wraps an expensive original is
- * billed only for its own code. With no link left, or when the frame stack
- * holds MOD_FRAME_STACK_MAX frames (logged), it arms the one-shot bypass
- * for the chain's addr and calls the function through call_by_address, so
- * the prologue's dispatch returns 0 and the recompiled body runs.
+ * (link_skipped), and every run is counted per resident overlay. A link
+ * runs inside an override frame pushed by frame_enter, which carries the
+ * link's owner, chain, index and resident overlay, sets the ImGui hook
+ * owner, opens the guest-guard stretch and charges the link's self time.
+ * With no link left, or when the frame stack holds MOD_FRAME_STACK_MAX
+ * frames (logged), the original runs (run_original).
  * @param cpu the guest CPU.
  * @param chain the chain.
  * @param idx the first link index to consider.
@@ -429,75 +539,73 @@ static void run_link(CPUState* cpu, mod_chain_t* chain, int idx,
                      uint32_t resident) {
     /* Live toggle and overlay scope: a skipped link is transparent -
      * base() descends straight past it. */
-    while (idx < link_count(chain) && link_skipped(link_at(chain, idx), resident))
-        idx++;
-    const op_time_t t0 = op_now();
+    idx = first_live_link(chain, idx, resident);
     if (idx < link_count(chain)) {
-        if (s_frame_depth >= MOD_FRAME_STACK_MAX) {
-            OPL_ERROR_F("mods", "override frame stack overflow at 0x%08X "
-                        "(recursion through %d chained calls?) - running "
-                        "original body", chain->addr, s_frame_depth);
-        } else {
-            mod_frame_t* f = &s_frames[s_frame_depth++];
-            f->chain = chain;
-            f->link  = idx;
+        /* Read out before the call: the body may register a link on this
+         * same chain, which moves the link list and shifts this link's
+         * index. */
+        mod_link_t* l = link_at(chain, idx);
+        openpete_mod_override_fn fn = l->fn;
+        mod_bracket_t b;
+        mod_frame_t* f = frame_enter(&b, OPENPETE_MODS_FRAME_OVERRIDE, l->owner_id);
+        if (f) {
+            f->chain    = chain;
+            f->link     = idx;
             f->resident = resident;
-            f->child_ns = 0;
-            stat_count(chain, link_at(chain, idx), resident);
-            /* Names the mod in an ImGui refusal: an override runs on
-             * the sim thread, outside any UI section body, so the guard has
-             * no mod index. Restored rather than cleared, since a link's
-             * base() descent re-enters here for the next owner. */
-            const char* owner_save = openpete_imgui_guard_hook_owner();
-            /* Read out before the call: the body may register a link on
-             * this same chain, which moves the link list and shifts this
-             * link's index. */
-            const char* owner = link_at(chain, idx)->owner_id;
-            openpete_mod_override_fn fn = link_at(chain, idx)->fn;
-            openpete_imgui_guard_set_hook_owner(owner);
-            openpete_mods_guard_enter(owner);
+            stat_count(chain, l, resident);
             fn(cpu);
-            openpete_mods_guard_leave();
-            openpete_imgui_guard_set_hook_owner(owner_save);
-            const op_time_t span = op_now() - t0;
-            s_frame_depth--;
-            openpete_mods_time_add(owner, span - f->child_ns, 0);
-            if (s_frame_depth > 0)
-                s_frames[s_frame_depth - 1].child_ns += span;
+            frame_leave(&b);
             return;
         }
+        OPL_ERROR_F("mods", "override frame stack overflow at 0x%08X "
+                    "(recursion through %d chained calls?) - running "
+                    "original body", chain->addr, s_frame_depth);
     }
-    /* Chain exhausted (or overflow fallback): call the original through
-     * the dispatch switch. The callee's prologue re-enters
-     * openpete_mods_dispatch, sees the armed bypass, and returns 0 so
-     * the recompiled body executes. */
-    s_bypass_addr  = chain->addr;
-    s_bypass_armed = 1;
-    call_by_address(cpu, chain->addr);
-    /* Normally consumed at the prologue; clear defensively in case
-     * another dispatch arm (freecam freeze) swallowed the call before our
-     * arm saw it. */
-    s_bypass_armed = 0;
-    if (s_frame_depth > 0)
-        s_frames[s_frame_depth - 1].child_ns += op_now() - t0;
+    run_original(cpu, chain);
 }
 
-/* Removes and compacts; documented in openpete_mods.h. */
+/** @brief Remove an owner's links from one chain, re-anchoring the live frames on it first.
+ *
+ * The removals are applied to the frames from the highest index down, so
+ * each comparison reads the frame's index as it stands after the higher
+ * removals, which is its pre-removal index minus those removals.
+ * @param c the chain.
+ * @param owner_id the mod id. */
+static void chain_remove_owner(mod_chain_t* c, const char* owner_id) {
+    for (int j = link_count(c) - 1; j >= 0; j--) {
+        const mod_link_t* l = link_at(c, j);
+        if (l->owner_id && strcmp(l->owner_id, owner_id) == 0)
+            frames_shift(c, j, -1);
+    }
+    int w = 0;
+    for (int j = 0; j < link_count(c); j++) {
+        mod_link_t* l = link_at(c, j);
+        if (l->owner_id && strcmp(l->owner_id, owner_id) == 0) {
+            if (!l->disabled) s_live_links--;
+            continue;
+        }
+        *link_at(c, w++) = *l;
+    }
+    mod_fvec_truncate(&c->links, (size_t)w);
+}
+
+/* Removes, re-anchors and compacts; documented in openpete_mods.h. */
 void openpete_mods_chain_remove_owner(const char* owner_id) {
     if (!owner_id) return;
-    for (int i = 0; i < chain_count(); i++) {
-        mod_chain_t* c = chain_at(i);
-        int w = 0;
-        for (int j = 0; j < link_count(c); j++) {
-            mod_link_t* l = link_at(c, j);
-            if (l->owner_id && strcmp(l->owner_id, owner_id) == 0) {
-                if (!l->disabled) s_live_links--;
-                continue;
-            }
-            *link_at(c, w++) = *l;
-        }
-        mod_fvec_truncate(&c->links, (size_t)w);
+    for (int i = 0; i < chain_count(); i++)
+        chain_remove_owner(chain_at(i), owner_id);
+}
+
+/* Scans every frame; documented in openpete_mods.h. */
+int openpete_mods_frame_owner_live(const char* owner_id, uint32_t* addr_out) {
+    if (!owner_id) return 0;
+    for (int f = s_frame_depth - 1; f >= 0; f--) {
+        const mod_frame_t* fr = &s_frames[f];
+        if (!fr->owner || strcmp(fr->owner, owner_id) != 0) continue;
+        if (addr_out) *addr_out = fr->chain ? fr->chain->addr : 0u;
+        return 1;
     }
+    return 0;
 }
 
 int openpete_mods_chain_has_owner(uint32_t addr, const char* owner_id) {
@@ -607,9 +715,7 @@ int openpete_mods_dispatch(CPUState* cpu, uint32_t addr) {
     mod_chain_t* chain = chain_find(addr);
     if (!chain) return 0;
     const uint32_t resident = resident_filter(addr);
-    int idx = 0;
-    while (idx < link_count(chain) && link_skipped(link_at(chain, idx), resident))
-        idx++;
+    const int idx = first_live_link(chain, 0, resident);
     /* Every link toggled off or bound to another overlay: run the
      * recompiled body IN PLACE. Entering
      * run_link here would still produce the right result (it bottoms out
@@ -622,25 +728,55 @@ int openpete_mods_dispatch(CPUState* cpu, uint32_t addr) {
     return 1;
 }
 
+/** @brief Return the name a refusal log line gives a dispatch context.
+ * @param ctx the context. */
+static const char* site_name(openpete_mods_ctx ctx) {
+    static const char* const names[] = {
+        "no dispatch", "override", "entry", "hot-reload entry", "toggle hook",
+        "level-ready hook", "present hook", "UI section", "host hook",
+        "refine callback", "shutdown hook", "save-record callback",
+    };
+    const unsigned i = (unsigned)ctx;
+    return i < sizeof names / sizeof names[0] ? names[i] : "?";
+}
+
 /** @brief Run the next override below the running one, bottoming out at the recompiled original.
  *
  * The mod api's base(). It continues from the link the innermost live
  * frame is executing with that frame's resident overlay, skipping
- * disabled links and links bound to another overlay. Refused with an error log
- * and no effect inside a present hook (openpete_mods_in_present set) and
- * when no override is running on this thread.
+ * disabled links and links bound to another overlay. Refused with an error
+ * log and no effect inside a present hook or UI section, when the frame
+ * stack holds no frame above the depth the open dispatch site recorded at
+ * its entry (no override is running on this thread, or the frames below
+ * belong to a game fiber parked under a toggle, level-ready or other hook
+ * that runs at the tick boundary), and when the innermost frame is a bus
+ * handler's. The site read replaces a present-flag read: one thread-local
+ * access.
  * @param cpu the guest CPU passed to the running override. */
 void openpete_mods_base(CPUState* cpu) {
-    if (openpete_mods_in_present) {
-        OPL_ERROR_F("mods", "base() refused inside a present hook "
-                    "(render-pure context)");
+    const openpete_mods_site_t site = s_site;
+    if (site.ctx == OPENPETE_MODS_CTX_PRESENT || site.ctx == OPENPETE_MODS_CTX_UI) {
+        OPL_ERROR_F("mods", "base() refused inside a %s (render-pure context)",
+                    site_name(site.ctx));
         return;
     }
     if (s_frame_depth <= 0) {
         OPL_ERROR_F("mods", "base() called outside an override - ignored");
         return;
     }
+    if (s_frame_depth <= site.depth) {
+        OPL_ERROR_F("mods", "base() refused in a %s: the override on the stack "
+                    "belongs to the parked game fiber, not to this call",
+                    site_name(site.ctx));
+        return;
+    }
     mod_frame_t f = s_frames[s_frame_depth - 1];
+    if (f.kind != OPENPETE_MODS_FRAME_OVERRIDE) {
+        OPL_ERROR_F("mods", "base() refused in a bus handler (bus \"%s\", mod "
+                    "%s): it has no chain to continue",
+                    f.bus ? f.bus : "?", f.owner ? f.owner : "?");
+        return;
+    }
     /* The calling override's code stops here and resumes after the
      * continuation returns: its stretch is closed and reopened around the
      * guest code below it, which may store into guarded bytes itself. */
@@ -649,15 +785,43 @@ void openpete_mods_base(CPUState* cpu) {
     openpete_mods_guard_resume();
 }
 
-/* Reads this thread's frame stack; documented in openpete_mods.h. */
-const char* openpete_mods_crash_attribution(uint32_t* addr_out) {
-    if (s_frame_depth <= 0) return NULL;
+/* Reads this thread's frame stack above the open site; documented in
+ * openpete_mods.h. */
+int openpete_mods_crash_attribution(openpete_mods_attribution_t* out) {
+    if (!out || s_frame_depth <= 0 || s_frame_depth <= s_site.depth) return 0;
     const mod_frame_t* f = &s_frames[s_frame_depth - 1];
-    if (addr_out) *addr_out = f->chain->addr;
-    if (f->link < link_count(f->chain) &&
-        link_at(f->chain, f->link)->owner_id)
-        return link_at(f->chain, f->link)->owner_id;
-    return "?";
+    out->kind  = f->kind;
+    out->owner = f->owner ? f->owner : "?";
+    out->addr  = f->chain ? f->chain->addr : 0u;
+    out->bus   = f->bus;
+    return 1;
+}
+
+/** @brief Return 1 for a coarse site kind of tick class: entry, hot-reload entry, toggle hook, level-ready hook. */
+static int ctx_tick_kind(openpete_mods_ctx ctx) {
+    return ctx == OPENPETE_MODS_CTX_ENTRY || ctx == OPENPETE_MODS_CTX_RELOAD_ENTRY ||
+           ctx == OPENPETE_MODS_CTX_TOGGLE || ctx == OPENPETE_MODS_CTX_LEVEL;
+}
+
+/* Records ctx, depth and class; documented in openpete_mods.h. */
+openpete_mods_site_t openpete_mods_site_open(openpete_mods_ctx ctx) {
+    const openpete_mods_site_t prev = s_site;
+    const int base = prev.ctx == OPENPETE_MODS_CTX_GUEST ||
+                     prev.ctx == OPENPETE_MODS_CTX_NONE;
+    s_site.ctx   = ctx;
+    s_site.depth = s_frame_depth;
+    s_site.tick  = ctx_tick_kind(ctx) && (base || prev.tick);
+    return prev;
+}
+
+void openpete_mods_site_close(openpete_mods_site_t prev) { s_site = prev; }
+
+openpete_mods_site_t openpete_mods_site_now(void) { return s_site; }
+
+void openpete_mods_site_claim_guest(void) {
+    s_site.ctx   = OPENPETE_MODS_CTX_GUEST;
+    s_site.depth = 0;
+    s_site.tick  = 0;
 }
 
 /** @brief Register an override link at the front of the chain for a guest function.
@@ -727,9 +891,10 @@ int openpete_mods_chain_add_ovl(uint32_t addr, uint32_t overlay,
      * frames hold link INDICES. Registration from inside a running chain
      * is a normal path (the content registry's on_level hooks fire from
      * its own driver link), and without this re-anchor base() would
-     * re-enter the link that is currently executing. */
-    for (int f = 0; f < s_frame_depth; f++)
-        if (s_frames[f].chain == chain) s_frames[f].link++;
+     * re-enter the link that is currently executing. Every frame moves,
+     * one at -1 (its own link at index 0 was removed) included: its
+     * continuation was index 0, now 1. */
+    frames_shift(chain, -1, 1);
     openpete_mods_active = 1;
     openpete_mods_link_registered(owner_id, addr, overlay);
     return 0;

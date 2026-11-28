@@ -128,7 +128,7 @@ void openpete_psx_set_diag_cpu(CPUState* cpu) { g_diag_cpu = cpu; }
  * @return The registered CPUState, or NULL before one is registered. */
 CPUState* openpete_psx_diag_cpu(void) { return g_diag_cpu; }
 
-/** @brief Append the guest registers of the registered CPUState and the mod whose override chain was executing. */
+/** @brief Append the guest registers of the registered CPUState and the mod whose override or bus handler was executing. */
 static void rep_guest_state(void) {
     const CPUState* c = g_diag_cpu;
     if (c) {
@@ -142,11 +142,15 @@ static void rep_guest_state(void) {
     } else {
         rep_str("  (no CPUState registered)\n");
     }
-    uint32_t maddr = 0;
-    const char* mod = openpete_mods_crash_attribution(&maddr);
-    if (mod) {
-        rep_str("  MOD ATTRIBUTION: inside override of "); rep_hex(maddr, 8);
-        rep_str(" registered by mod '"); rep_str(mod); rep_str("'\n");
+    openpete_mods_attribution_t at;
+    if (!openpete_mods_crash_attribution(&at)) return;
+    if (at.kind == OPENPETE_MODS_FRAME_BUS) {
+        rep_str("  MOD ATTRIBUTION: inside bus handler of bus '");
+        rep_str(at.bus ? at.bus : "?");
+        rep_str("' attached by mod '"); rep_str(at.owner); rep_str("'\n");
+    } else {
+        rep_str("  MOD ATTRIBUTION: inside override of "); rep_hex(at.addr, 8);
+        rep_str(" registered by mod '"); rep_str(at.owner); rep_str("'\n");
     }
 }
 

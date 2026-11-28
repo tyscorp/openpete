@@ -1,0 +1,57 @@
+# frame-park - CI fixture: an override that holds its frame on the
+# override stack while the game fiber parks.
+#
+# Overrides Spyro 1's GamestateDraw, which waits in VSync(0) for the draw
+# of the previous tick, so the fiber parks inside this override's base()
+# and every tick boundary during play runs with its frame live. On the
+# call numbered park_at it calls base() park_bases times, so park_bases
+# boundaries run inside one call and every base() after the first comes
+# after a park. tests/harness/mods_frame_rungs.sh drives it with
+# frame-inner (a link behind it) and frame-peer (links, toggle and level
+# hooks ahead of it): base() after a park visits every remaining link
+# once, a hot reload of this mod waits until its frame is gone, and a
+# toggle hook's base() over the parked frame is refused.
+# Never enable it to play.
+
+[mod]
+id      = "frame-park"
+name    = "Frame Park"
+version = "0.1.0"
+game    = ["spyro-1"]
+api     = 13
+
+[[config]]
+key = "park_at"
+type = "int"
+default = 0
+min = 0
+max = 1000000
+label = "Burst call"
+help = "GamestateDraw call number that runs park_bases base() calls; 0 runs one on every call."
+
+[[config]]
+key = "park_bases"
+type = "int"
+default = 1
+min = 1
+max = 100000
+label = "base() calls in the burst"
+help = "base() calls made by the burst call, one tick boundary each."
+
+[[config]]
+key = "touch_config"
+type = "int"
+default = 0
+min = 0
+max = 1000000
+label = "Edit config.toml at this call"
+help = "Rewrites this mod's config.toml (gen = 1) on this call number, so the hot-reload poll sees a config edit while the frame is live; 0 never."
+
+[[config]]
+key = "gen"
+type = "int"
+default = 0
+min = 0
+max = 1000000
+label = "Generation"
+help = "Logged at entry; a config edit of it requests a reload."

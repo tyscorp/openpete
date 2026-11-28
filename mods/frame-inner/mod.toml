@@ -1,0 +1,20 @@
+# frame-inner - CI fixture: a GamestateDraw override listed before
+# frame-park in enabled.txt, so its link sits behind frame-park's and runs
+# inside frame-park's base(). Its shutdown hook logs its call count: equal
+# to frame-park's when every base() of frame-park visited this link once.
+
+[mod]
+id      = "frame-inner"
+name    = "Frame Inner"
+version = "0.1.0"
+game    = ["spyro-1"]
+api     = 13
+
+[[config]]
+key = "gen"
+type = "int"
+default = 0
+min = 0
+max = 1000000
+label = "Generation"
+help = "Logged at entry; a config edit of it requests a reload."

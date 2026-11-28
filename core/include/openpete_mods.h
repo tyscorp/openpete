@@ -874,6 +874,15 @@ int  openpete_mods_api_closed(void);
  * @param mod_id Mod id; NULL returns 0.
  * @return 1 when busy, else 0. */
 int  openpete_mods_registry_owner_busy(const char* mod_id);
+/** @brief Report whether the registry driver's level-ready hook walk is in progress.
+ *
+ * A level-ready hook can park the game fiber through api->call, leaving the
+ * walk open across tick boundaries with no frame of the hook's owner on
+ * the stack; the loader defers every hot reload while it is open. Reads
+ * the calling thread's walk count: the walk and the tick boundary both run
+ * on the sim thread.
+ * @return 1 while the walk runs, else 0. */
+int  openpete_mods_registry_level_walk_active(void);
 /** @brief Return the toggle epoch, bumped once per applied toggle that changed a mod's enabled state.
  *
  * The run loop polls it to invalidate timeline-derived state: rewind
@@ -907,9 +916,25 @@ void openpete_mods_registry_set_owner_enabled(const char* mod_id, int on);
  * The loader calls it when it strips a mod's registrations (hot reload,
  * whose re-entry registers the links again, and a failed load). The
  * owner's enabled state is kept, so re-registered links come back in it.
- * Call only at a tick boundary.
+ * A live override frame on a chain holds its continuation index minus one;
+ * it is decremented once for every removed link at or before it, so a
+ * frame parked inside its override continues at the same next link, and a
+ * frame whose own link at index 0 was removed holds -1. Bus frames hold no
+ * chain and are left as they are. Call only at a tick boundary.
  * @param owner_id the mod id; NULL does nothing. */
 void openpete_mods_chain_remove_owner(const char* owner_id);
+/** @brief Report whether a frame of an owner is on the calling thread's frame stack.
+ *
+ * Reads every frame, override and bus kinds alike, including the frames
+ * of a game fiber parked inside an override, whose frames stay on the sim
+ * thread's stack across the park. The loader defers a hot reload of a mod
+ * with a live frame: the reload would run its shutdown hook while its code
+ * is still on the stack.
+ * @param owner_id the mod id; NULL returns 0.
+ * @param addr_out receives the innermost such frame's chain address, 0 for
+ *        a bus frame; may be NULL.
+ * @return 1 when such a frame is live, else 0. */
+int  openpete_mods_frame_owner_live(const char* owner_id, uint32_t* addr_out);
 /** @brief Enable or disable every override link an owner registered, keeping chain order.
  *
  * A disabled link is skipped by dispatch and by base(), and stays in its
@@ -958,15 +983,93 @@ void openpete_mods_time_add(const char* owner, int64_t ns, int is_present);
  * @param ticks_elapsed Sim ticks in the window; 0 counts as 1. */
 void openpete_mods_time_report(unsigned ticks_elapsed);
 
-/** @brief The mod whose override is innermost on the calling thread's override stack, for the crash handler.
+/* Kinds of a frame on the thread-local override frame stack. An override
+ * frame is pushed for every override link that runs; a bus frame for
+ * every bus handler. base() continues only an override frame. */
+typedef enum {
+    OPENPETE_MODS_FRAME_OVERRIDE = 0,
+    OPENPETE_MODS_FRAME_BUS      = 1,
+} openpete_mods_frame_kind;
+
+/* What the crash handler prints about the innermost frame. */
+typedef struct {
+    openpete_mods_frame_kind kind;
+    const char* owner; /* the frame owner's mod id, "?" when it has none */
+    uint32_t    addr;  /* override: the overridden guest vaddr; bus: 0 */
+    const char* bus;   /* bus: the bus name; override: NULL */
+} openpete_mods_attribution_t;
+
+/** @brief Describe the innermost frame on the calling thread's frame stack that belongs to the running dispatch, for the crash handler.
  *
  * The frame stack is thread-local, so the crash handler calls it on the
  * faulting thread; core/diag/crash.c prints the result as a MOD ATTRIBUTION
- * line. The crash is in that mod's override or in code it called.
- * @param addr_out Receives the overridden guest vaddr; may be NULL.
- * @return The owner mod id, "?" when the link has no owner, or NULL when no
- *         override is running on this thread. */
-const char* openpete_mods_crash_attribution(uint32_t* addr_out);
+ * line. The crash is in that frame's override or bus handler, or in code it
+ * called. Frames below the index the open dispatch site recorded at its
+ * entry (openpete_mods_site_open) belong to a fiber parked under it, not to
+ * the faulting code: with no frame above that index nothing is attributed,
+ * so a fault in a toggle hook that runs over a parked override never names
+ * that override's owner. The owner is the id stored in the frame at push.
+ * @param out receives the description; NULL returns 0.
+ * @return 1 when a frame is described, 0 when none belongs to the running
+ *         dispatch. */
+int openpete_mods_crash_attribution(openpete_mods_attribution_t* out);
+
+/* The dispatch context of the calling thread: which kind of mod callback
+ * the thread is running. A thread-local value that each coarse site (a
+ * site that runs mod code once per tick, per present or less) saves, sets
+ * and restores around its callback; it is never set per override link or
+ * per bus handler, which read the value of the site that reached them.
+ * GUEST is the sim thread's base value while it runs the game fiber with
+ * no coarse site open; NONE is every other thread's, the main thread
+ * during boot and a thread a mod started included. */
+typedef enum {
+    OPENPETE_MODS_CTX_NONE = 0,
+    OPENPETE_MODS_CTX_GUEST,
+    OPENPETE_MODS_CTX_ENTRY,
+    OPENPETE_MODS_CTX_RELOAD_ENTRY,
+    OPENPETE_MODS_CTX_TOGGLE,
+    OPENPETE_MODS_CTX_LEVEL,
+    OPENPETE_MODS_CTX_PRESENT,
+    OPENPETE_MODS_CTX_UI,
+    OPENPETE_MODS_CTX_HOST,
+    OPENPETE_MODS_CTX_REFINE,
+    OPENPETE_MODS_CTX_SHUTDOWN,
+    OPENPETE_MODS_CTX_SAVE_RECORD,
+} openpete_mods_ctx;
+
+/* The calling thread's open site: its context, the frame-stack depth at its
+ * entry, and its class. Frames at indices [depth, frame depth) belong to
+ * the site; frames below depth belong to a fiber parked under it. GUEST
+ * records depth 0, so every frame on the sim thread's stack under GUEST
+ * belongs to the game fiber, an override that parked and resumed included. */
+typedef struct {
+    openpete_mods_ctx ctx;
+    int depth; /* frame-stack depth when the site opened */
+    int tick;  /* tick class of a coarse site: an entry, hot-reload
+                * entry, toggle hook or level-ready hook opened under GUEST
+                * or NONE, or under an enclosing site of tick class; 0 for
+                * GUEST and NONE, whose class a query derives from the
+                * frames above depth */
+} openpete_mods_site_t;
+
+/** @brief Open a coarse dispatch site on the calling thread and return the site it replaces.
+ *
+ * Records ctx, the current frame-stack depth and the tick class: a site
+ * opened under GUEST or NONE takes its own kind's class, one opened under
+ * another coarse site is tick class only when its own kind and the
+ * enclosing site both are. The caller passes the result to
+ * openpete_mods_site_close after the callback returns.
+ * @param ctx the site's kind; GUEST and NONE are base values, not sites.
+ * @return the enclosing site. */
+openpete_mods_site_t openpete_mods_site_open(openpete_mods_ctx ctx);
+/** @brief Restore the site openpete_mods_site_open replaced.
+ * @param prev the value openpete_mods_site_open returned. */
+void openpete_mods_site_close(openpete_mods_site_t prev);
+/** @brief Return the calling thread's open site, one thread-local read.
+ * @return the site, {NONE, 0, 0} on a thread that never opened one. */
+openpete_mods_site_t openpete_mods_site_now(void);
+/** @brief Set the calling thread's base site to GUEST with depth 0, at the sim role claim. */
+void openpete_mods_site_claim_guest(void);
 
 /** @brief Return the set modset tag, the order-free identity of the gameplay-relevant loaded modset.
  *

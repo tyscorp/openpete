@@ -1,0 +1,67 @@
+# frame-peer - CI fixture: the mod ahead of frame-park on Spyro 1's
+# GamestateDraw chain, in the role the config selects.
+#
+#   links         number of GamestateDraw override links it registers
+#                 (each a plain base()); listed after frame-park in
+#                 enabled.txt they sit ahead of it, and toggled off they
+#                 are links frame-park's frame passed without running.
+#   toggle_base   its toggle hook calls base() and logs whether GamestateDraw
+#                 ran inside it (g_CurDB flipped).
+#   toggle_crash  its toggle hook dereferences NULL (crash attribution).
+#   level_park    a level-ready hook, reached through the engine's exported
+#                 openpete_mods_on_level (an entry failure where the
+#                 executable does not export it), that calls
+#                 GamestateDraw this many times on its first level, one
+#                 tick boundary each, with the level-hook walk in progress.
+#   gen           logged at entry; a config edit of it requests a reload.
+#
+# tests/harness/mods_frame_rungs.sh drives it with frame-park and
+# frame-inner. Never enable it to play.
+
+[mod]
+id      = "frame-peer"
+name    = "Frame Peer"
+version = "0.1.0"
+game    = ["spyro-1"]
+api     = 13
+
+[[config]]
+key = "links"
+type = "int"
+default = 1
+min = 0
+max = 2
+label = "GamestateDraw links"
+help = "Override links registered on GamestateDraw."
+
+[[config]]
+key = "toggle_base"
+type = "bool"
+default = false
+label = "base() from the toggle hook"
+help = "The toggle hook calls base() and logs that it returned."
+
+[[config]]
+key = "toggle_crash"
+type = "bool"
+default = false
+label = "Fault in the toggle hook"
+help = "The toggle hook dereferences NULL."
+
+[[config]]
+key = "level_park"
+type = "int"
+default = 0
+min = 0
+max = 100000
+label = "Level hook draws"
+help = "GamestateDraw calls the level-ready hook makes on its first level; 0 registers no level hook."
+
+[[config]]
+key = "gen"
+type = "int"
+default = 0
+min = 0
+max = 1000000
+label = "Generation"
+help = "Logged at entry; a config edit of it requests a reload."
