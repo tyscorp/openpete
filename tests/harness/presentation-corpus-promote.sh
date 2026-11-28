@@ -36,7 +36,8 @@
 #
 # A golden-fleet run leaves each unit's promotable candidate in
 # build/fleet-stream/<run-id>/<unit>/ (its pulled tiles, verdict report,
-# capture-device.txt and capture record); a capture from any fleet host is
+# capture-device.txt and capture record, kept at every unit end, the
+# record and device line also when the pull was refused); a capture from any fleet host is
 # admitted on the Environment surface, so after a run:
 #   tests/harness/presentation-corpus-promote.sh build/fleet-stream/<run-id>/<unit> <tile>...
 #
@@ -64,6 +65,14 @@ cd "$(dirname "$0")/../.." || exit 2
 # shellcheck source=scripts/presentation-game.sh
 source scripts/presentation-game.sh
 
+# A fleet stream directory is promotable once it holds the unit's capture
+# record, which golden-fleet.py puts there at every unit end; a directory of a
+# run without it holds streamed tiles under no record.
+if [[ "${1:-}" == *fleet-stream/* && -d "${1:-}" && ! -f "${1:-}/capture-record.txt" ]]; then
+  echo "[promote] REFUSED: ${1:-} holds streamed tiles and no capture-record.txt (the run kept none);"
+  echo "  promote from the run's pull target build/presentation-candidate[-<game>]/ while it holds this run's record, or re-run the unit"
+  exit 1
+fi
 # The candidate's capture record names the game and tier it was captured for;
 # they apply when the caller names neither (promote refuses a mismatch).
 rec_game="$(sed -n 's/^game=//p' "${1:-}/capture-record.txt" 2>/dev/null | tail -1)"

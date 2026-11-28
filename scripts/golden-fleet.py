@@ -12,6 +12,7 @@
                     [--hosts a,b | --no-local] [--pull divergent|all] [--wait]
                     [--expect FILE] [--filter S] [--freecam-filter S] [--repeat N]
                     [--no-takeover] [--commits RANGE] [--queries DIR]
+                    [--host-wait S | --no-host-wait] [--local-anyway]
     golden-fleet.py stop <run-id> [--unit U]
     golden-fleet.py move <run-id> --unit U --to <host> [--no-wait]
     golden-fleet.py resume <run-id> --unit U --to <host> [--from DIR]
@@ -111,7 +112,15 @@ first line of done); --wait follows it and exits with its code. The
 coordinator:
   1. selects hosts (--hosts, else every enabled host with default = true,
      minus local under --no-local), preflights them, takes the local golden
-     lock, runs clean on each host under its golden lock and ships the image;
+     lock, runs clean on each host under its golden lock and ships the image.
+     The local host is left out, as under --no-local and printed with the
+     reason, while a landing holds land-train.lock, land-branch.sh,
+     land-train.sh or sched_gate.py runs, a game process outside the fleet's
+     containers runs, or MemAvailable is under one slot plus a 4 GiB
+     reserve; --local-anyway keeps it. When no host is usable and a host is
+     dropped only for another holder's golden lock or a busy local host,
+     preflight re-runs every 60 s for up to --host-wait S (default 21600),
+     printing the holders; --no-host-wait exits 64 "no usable host" at once;
   2. builds on the fastest host with build = true: in the checkout through
      the wrapper's `build` when that is the local host, else in the build
      host's snapshot, whose build tree then reaches the other hosts through
@@ -423,6 +432,23 @@ DEFAULT_FLEET_ROOT = "~/.cache/openpete-fleet"
 CALIBRATION_GAME = "spyro-2"
 GIB_KIB = 1024 * 1024
 MEM_PER_SLOT_KIB = 2 * GIB_KIB
+# The local host takes a unit only with one slot's memory left over this
+# reserve for the processes outside the fleet (the desktop, builds, agents).
+LOCAL_MEM_RESERVE_KIB = 4 * GIB_KIB
+# A run whose every host is dropped for a transient reason (another holder
+# of a golden lock, a busy local host) re-runs preflight every
+# HOST_WAIT_POLL_S until a host is usable or --host-wait S elapses.
+HOST_WAIT_S = 6 * 3600
+HOST_WAIT_POLL_S = 60
+WAIT_REASONS = ("golden lock held", "golden lock taken since preflight", "local busy")
+# Local processes that make the local host busy: a landing (also detected by
+# its lock, land-train.lock in the checkout's git common directory) and the
+# scheduler gate; and a game process outside the fleet's containers.
+LAND_LOCK_NAME = "land-train.lock"
+BUSY_SCRIPTS = ("land-branch.sh", "land-train.sh", "sched_gate.py")
+GAME_EXE_RE = re.compile(r"(^|/)openpete(-spyro[0-9])?(\.exe)?$")
+CONTAINER_CGROUP_RE = re.compile(r"libpod|docker|containerd")
+FLEET_PARENTS = ("conmon", "supervise.sh")   # a container's monitor, the fleet unit supervisor
 IMPROVEMENT_FLOOR = 0.10
 IDLE_SETTLE_S = 90
 IDLE_RETRIES = 3
@@ -495,6 +521,7 @@ CENSUS_KEEP = 2                   # finalized entries kept per unit
 CENSUS_PART_MAX_AGE_S = 24 * 3600 # an unfinished entry older than this is removed
 STREAM_ONLY_DIR = "stream-only"  # streamed tiles the accepted pull does not hold
 STOP_STATUS = "stopped by user"
+COMPARED_NOTHING = "the filtered unit compared nothing"
 UNFINISHED_STATUS = ("attempts exhausted", "host lost")   # requeue's results of a unit out of attempts
 
 HOST_KEYS = {
@@ -1062,7 +1089,7 @@ def expand_root(root):
 
 
 def try_golden_lock(root):
-    """Take <root>/golden.lock non-blocking and write the holder record; fd or None."""
+    """Take <root>/golden.lock non-blocking and write the holder record (pid, host, run id, time); fd or None."""
     root = expand_root(root)
     os.makedirs(root, exist_ok=True)
     lock = os.path.join(root, "golden.lock")
@@ -1074,9 +1101,107 @@ def try_golden_lock(root):
         return None
     os.ftruncate(fd, 0)
     stamp = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
-    os.write(fd, f"pid {os.getpid()} host {os.uname().nodename} golden-fleet "
+    run = f"run {_run_tag} " if _run_tag else ""
+    os.write(fd, f"pid {os.getpid()} host {os.uname().nodename} golden-fleet {run}"
                  f"since {stamp}\n".encode())
     return fd
+
+
+# ---- local host busy ----------------------------------------------------------
+
+def proc_table():
+    """Return the live processes as dicts (pid, ppid, argv, exe, cgroup); zombies and kernel threads left out."""
+    out = []
+    for pid in (d for d in os.listdir("/proc") if d.isdigit()):
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                argv = [w.decode(errors="replace") for w in f.read().split(b"\0") if w]
+            with open(f"/proc/{pid}/stat", "rb") as f:
+                stat = f.read().rsplit(b")", 1)[1].split()
+            with open(f"/proc/{pid}/cgroup", "rb") as f:
+                cgroup = f.read().decode(errors="replace")
+        except (OSError, IndexError):
+            continue
+        if not argv or stat[0] == b"Z":
+            continue
+        try:
+            exe = os.readlink(f"/proc/{pid}/exe")
+        except OSError:
+            exe = ""
+        out.append({"pid": int(pid), "ppid": int(stat[1]), "argv": argv, "exe": exe, "cgroup": cgroup})
+    return out
+
+
+def land_lock_holder(tree):
+    """Return the landing lock's path while a landing holds it (land-branch.sh, land-train.sh), else ''."""
+    cp = subprocess.run(["git", "-C", tree, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                        capture_output=True, text=True)
+    if cp.returncode != 0:
+        return ""
+    lock = os.path.join(cp.stdout.strip(), LAND_LOCK_NAME)
+    if not os.path.exists(lock):
+        return ""
+    fd = os.open(lock, os.O_RDONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        return ""
+    except BlockingIOError:
+        return lock
+    finally:
+        os.close(fd)
+
+
+def local_busy(tree, memavail_kib, procs=None, me=None):
+    """Return why the local host must take no unit now (empty when it may): a landing, the scheduler gate, a game process outside the fleet, low memory.
+
+    procs is proc_table()'s list (read when None); me is the pid whose
+    ancestors are left out (this process when None). A game process is the
+    fleet's own when its cgroup is a container's or an ancestor runs
+    golden-fleet.py, conmon or the unit supervisor. Memory: MemAvailable under one slot (MEM_PER_SLOT_KIB)
+    plus LOCAL_MEM_RESERVE_KIB.
+    """
+    procs = proc_table() if procs is None else procs
+    by_pid = {p["pid"]: p for p in procs}
+    me = os.getpid() if me is None else me
+    mine, p = set(), me
+    while p in by_pid and p not in mine:
+        mine.add(p)
+        p = by_pid[p]["ppid"]
+
+    def fleet_owned(rec):
+        seen, q = set(), rec
+        while q and q["pid"] not in seen:
+            seen.add(q["pid"])
+            if CONTAINER_CGROUP_RE.search(q["cgroup"]) or any(
+                    "golden-fleet.py" in w or os.path.basename(w) in FLEET_PARENTS for w in q["argv"][:2]):
+                return True
+            q = by_pid.get(q["ppid"])
+        return False
+
+    reasons = []
+    lock = land_lock_holder(tree)
+    if lock:
+        reasons.append(f"local busy: a landing holds {lock}")
+    for rec in sorted(procs, key=lambda r: r["pid"]):
+        if rec["pid"] in mine:
+            continue
+        cmd = " ".join(rec["argv"])[:120]
+        if any(os.path.basename(w) in BUSY_SCRIPTS for w in rec["argv"][:2]):
+            reasons.append(f"local busy: {rec['pid']} {cmd}")
+        elif (GAME_EXE_RE.search(rec["argv"][0]) or GAME_EXE_RE.search(rec["exe"])) \
+                and not fleet_owned(rec):
+            reasons.append(f"local busy: {rec['pid']} {cmd}")
+    need = MEM_PER_SLOT_KIB + LOCAL_MEM_RESERVE_KIB
+    if memavail_kib < need:
+        reasons.append(f"local busy: MemAvailable {memavail_kib / GIB_KIB:.1f} GiB under "
+                       f"{need / GIB_KIB:.0f} GiB (one slot plus the "
+                       f"{LOCAL_MEM_RESERVE_KIB / GIB_KIB:.0f} GiB reserve)")
+    return reasons
+
+
+def waitable(reasons):
+    """True when every drop reason of a host is transient (WAIT_REASONS): the host may become usable by waiting."""
+    return bool(reasons) and all(r.startswith(WAIT_REASONS) for r in reasons)
 
 
 # ---- preflight --------------------------------------------------------------
@@ -2606,6 +2731,7 @@ class Job:
         self.result = None
         self.atts = {}
         self.stopped = False
+        self.candidate = None     # the stream directory an accepted pull kept as the run candidate
 
     @property
     def unit(self):
@@ -2766,20 +2892,72 @@ class Coordinator:
         return src_bytes + build_bytes + max(cand_bytes(u, self.ledger) for u in self.units)
 
     def prepare_hosts(self, src_bytes):
-        """Preflight, take the local golden lock, clean each host and ship the image."""
+        """Preflight, take the local golden lock, clean each host and ship the image; wait while every host is held.
+
+        When no host is usable and some host is dropped only for a transient
+        reason (WAIT_REASONS: another run's golden lock, a busy local host),
+        preflight re-runs every HOST_WAIT_POLL_S, a stop request polled each
+        STOP_POLL_S, for up to --host-wait S (HOST_WAIT_S); --no-host-wait,
+        or no waitable host, exits 64 "no usable host" at once.
+        """
         _path, hosts = load_hosts()
         sel = self.pick_hosts(hosts)
         self.sel = sel
         check_recipe(self.tree)
+        limit = 0 if getattr(self.a, "no_host_wait", False) else getattr(self.a, "host_wait", HOST_WAIT_S)
+        t0, said = time.monotonic(), None
+        while True:
+            held = self.admit_hosts(sel, src_bytes)
+            if self.hosts:
+                break
+            waited = int(time.monotonic() - t0)
+            if not held or limit is None or limit <= 0 or waited >= limit:
+                raise FleetError("no usable host" + (f" after waiting {waited} s (--host-wait {limit})"
+                                                     if waited else ""), EXIT_SKIP)
+            if held != said:
+                print(f"[fleet] no usable host; waiting up to {limit - waited} s more (--host-wait "
+                      f"{limit}; --no-host-wait exits 64) for: " + "; ".join(held))
+                said = held
+            end = time.monotonic() + min(HOST_WAIT_POLL_S, limit - waited)
+            while time.monotonic() < end:
+                stop_point()
+                time.sleep(STOP_POLL_S)
+            stop_point()
+        if said:
+            print(f"[fleet] waited {int(time.monotonic() - t0)} s for a usable host")
+        builders = [hs for hs in self.hosts if hs.host.cfg.get("build", True)]
+        if not builders:
+            raise FleetError("no usable host may build (build = true)", EXIT_SKIP)
+        self.build_hs = max(builders, key=lambda hs: (hs.speed, hs.host.local))
+        print(f"[fleet] hosts: {', '.join(f'{hs.name} (slots {hs.slots}, speed {hs.speed:.2f})' for hs in self.hosts)}; "
+              f"build host {self.build_hs.name}")
+
+    def admit_hosts(self, sel, src_bytes):
+        """Preflight sel and admit each usable host into self.hosts; return the transient drop reasons (`<host>: <reason>`), empty when none is waitable.
+
+        A local host with no preflight reason is dropped, as --no-local
+        would, while local_busy() names a reason, unless --local-anyway.
+        """
         results = preflight(sel, self.need_bytes(src_bytes))
+        if not getattr(self.a, "local_anyway", False):
+            for k, (h, i, reasons, slots) in enumerate(results):
+                if h.local and not reasons:
+                    busy = local_busy(self.tree, int(i.get("memavail_kib") or 0))
+                    if busy:
+                        print(f"[fleet] {h.name}: left out as --no-local would "
+                              f"(--local-anyway keeps it): {busy[0]}"
+                              + (f" (+{len(busy) - 1} more)" if len(busy) > 1 else ""))
+                        results[k] = (h, i, busy, slots)
         usable = print_preflight(results)
         infos = {h.name: i for h, i, _r, _s in results}
+        held = [f"{h.name}: {r}" for h, _i, reasons, _s in results if waitable(reasons) for r in reasons]
         for h, slots in usable:
             hs = HostState(h, infos[h.name], slots, self.run_id)
             if h.local:
                 self.golden_fd = try_golden_lock(h.fleet_root)
                 if self.golden_fd is None:
                     print(f"[fleet] {h.name}: dropped: golden lock taken since preflight")
+                    held.append(f"{h.name}: golden lock taken since preflight")
                     continue
             rc = clean_host(h, "stale", held=h.local)
             if rc != 0:
@@ -2787,14 +2965,7 @@ class Coordinator:
                 continue
             ship_image(h, infos[h.name])
             self.hosts.append(hs)
-        if not self.hosts:
-            raise FleetError("no usable host", EXIT_SKIP)
-        builders = [hs for hs in self.hosts if hs.host.cfg.get("build", True)]
-        if not builders:
-            raise FleetError("no usable host may build (build = true)", EXIT_SKIP)
-        self.build_hs = max(builders, key=lambda hs: (hs.speed, hs.host.local))
-        print(f"[fleet] hosts: {', '.join(f'{hs.name} (slots {hs.slots}, speed {hs.speed:.2f})' for hs in self.hosts)}; "
-              f"build host {self.build_hs.name}")
+        return held
 
     # -- small remote helpers --
 
@@ -4011,6 +4182,7 @@ class Coordinator:
                     print(f"[fleet] {job.name}: REFUSED: {e}")
             elif job.result["rc"] in (0, 1):
                 self.record_time(job)
+        self.keep_record(job, hs)
         if self.stream:
             att = job.atts.get(job.result.get("attempt"))
             if att is not None:
@@ -4057,7 +4229,7 @@ class Coordinator:
         errs = [f"pulled file absent: {f}" for f in want
                 if not os.path.exists(os.path.join(local, f))]
         errs += errs_pull
-        errs += self.check_report(job, report)
+        errs = self.accept_new_rows(job, report, errs + self.check_report(job, report))
         if os.path.exists(os.path.join(local, RECORD_NAME)):
             self.stamp_record(local, hs)
         print(f"[fleet] {job.name}: pulled into {local}: report, record, device, credits, "
@@ -4144,10 +4316,43 @@ class Coordinator:
                 shutil.copytree(src, dst, dirs_exist_ok=True, copy_function=link_or_copy)
             else:
                 link_or_copy(src, dst)
+        job.candidate = dest
         flags = "" if job.tier == "presentation" else f"PRESENTATION_TIER={job.tier} "
         print(f"[fleet] {job.name}: run candidate {os.path.relpath(dest, self.tree)}; promote with "
               f"{flags}tests/harness/presentation-corpus-promote.sh "
               f"{os.path.relpath(dest, self.tree)} --game {job.game} <tile>...")
+
+    def keep_record(self, job, hs):
+        """Put the unit's capture record, device line and verdict report into its stream directory at a unit end that kept no run candidate.
+
+        A refused pull, a SKIP or another exit leaves the streamed tiles in
+        build/fleet-stream/<run id>/<unit>/ without the record that
+        presentation-corpus-promote.sh reads; the three files are pulled from
+        the unit's candidate directory on the host, the record stamped
+        (stamp_record), and moved in. A capture that wrote no record is
+        printed.
+        """
+        if job.candidate or not job.result.get("unit_dir"):
+            return
+        dest = self.stream_dir(job)
+        tmp = os.path.join(dest, ".record-pull")
+        shutil.rmtree(tmp, ignore_errors=True)
+        names = [RECORD_NAME, "capture-device.txt", "verdict-report.txt"]
+        rsync_pull(hs.host, f"{job.result['unit_dir']}/cand", tmp, names=names)
+        got = [n for n in names if os.path.exists(os.path.join(tmp, n))]
+        if RECORD_NAME in got:
+            self.stamp_record(tmp, hs)
+        for n in got:
+            os.replace(os.path.join(tmp, n), os.path.join(dest, n))
+        shutil.rmtree(tmp, ignore_errors=True)
+        rel = os.path.relpath(dest, self.tree)
+        if RECORD_NAME in got:
+            print(f"[fleet] {job.name}: {', '.join(got)} kept in {rel} (rc {job.result['rc']}, "
+                  f"{job.result.get('status', '')}); its streamed tiles promote with "
+                  f"tests/harness/presentation-corpus-promote.sh {rel} <tile>...")
+        else:
+            print(f"[fleet] {job.name}: no {RECORD_NAME} on {hs.name}: the capture wrote none; "
+                  f"{rel} is not promotable")
 
     def stamp_record(self, local, hs):
         """Append the run id, the fleet host name and the local run directory to a pulled capture record."""
@@ -4208,7 +4413,7 @@ class Coordinator:
         compared = report["fields"].get("compared", "")
         if self.filtered():
             if not compared.isdigit() or int(compared) == 0:
-                errs.append(f"census compared={compared or 'absent'}: the filtered unit compared nothing")
+                errs.append(f"census compared={compared or 'absent'}: {COMPARED_NOTHING}")
             if self.repeat():
                 errs += repeat_refusals(report, self.repeat())
         elif compared != str(rows):
@@ -4218,6 +4423,36 @@ class Coordinator:
             errs.append(f"report exit {report['fields'].get('exit')} differs from the "
                         f"supervisor's rc {job.result['rc']}")
         return errs
+
+    def accept_new_rows(self, job, report, errs):
+        """Return the refusals of a pulled unit without the compared-nothing one when new_rows() holds; with none left, the unit ends NEW-ROWS (rc 0).
+
+        A filtered capture of rows with no blessed entry compares nothing and
+        its harness exits 1 on the extra tiles; that is the expected end of
+        a new row's first capture, not a failure.
+        """
+        new = self.new_rows(report)
+        if not new:
+            return errs
+        errs = [e for e in errs if COMPARED_NOTHING not in e]
+        if not errs:
+            job.result.update(rc=0, status=f"NEW-ROWS {len(new)} tile(s)", new_rows=new)
+            print(f"[fleet] {job.name}: NEW-ROWS {len(new)} tile(s) with no blessed row: " + " ".join(new))
+        return errs
+
+    def new_rows(self, report):
+        """Return a filtered unit's extra tiles when they are its only move (the rows have no blessed entry yet), else [].
+
+        Only moves: no divergent tile, no identity-leg failure, no crashed leg,
+        no incomplete capture, credits passed or not run.
+        """
+        f = report["fields"]
+        if not self.filtered() or self.repeat() or not report["extra"]:
+            return []
+        if report["divergent"] or report["identity"] or report.get("crashed") or report.get("missing") \
+                or "capture-incomplete" in "".join(f) or f.get("credits-rc", "64") not in ("0", "64"):
+            return []
+        return sorted(report["extra"])
 
     def heat_diffs(self, job, local):
         """Render heat diffs of the pulled divergent tiles against the local store."""
@@ -4498,7 +4733,7 @@ class Coordinator:
         """Print each unit's host beside its verdict, then the run's verdict."""
         for j in self.jobs:
             r = j.result or {"rc": 1, "status": "no result", "host": "-"}
-            verdict = {0: "PASS", EXIT_SKIP: "SKIP"}.get(r["rc"], "FAIL")
+            verdict = "NEW-ROWS" if r.get("new_rows") else {0: "PASS", EXIT_SKIP: "SKIP"}.get(r["rc"], "FAIL")
             census = f"; {r['census']}" if r.get("census") else ""
             moved = "".join(f"; moved {a} -> {b}" for a, b in j.moved)
             crashed = crashed_text(r.get("crashed") or [])
@@ -4508,6 +4743,10 @@ class Coordinator:
             for c in r.get("crashed") or []:
                 print(f"[fleet] result {j.name}: CRASHED {c['leg']} rc={c['rc']}"
                       + (f" retry={c['retry']}" if c["retry"] else ""))
+            if r.get("new_rows"):
+                print(f"[fleet] result {j.name}: NEW-ROWS {len(r['new_rows'])} tile(s) with no blessed "
+                      f"row (promote them from {os.path.relpath(self.stream_dir(j), self.tree)}): "
+                      + " ".join(r["new_rows"]))
             if r.get("repeat"):
                 print(f"[fleet] result {j.name}: repeat {r['repeat']}")
             if r.get("stream_mismatch"):
@@ -5170,12 +5409,12 @@ def merge_row_cost(local, job, hs, run_id):
 
 
 def parse_report(path):
-    """Parse verdict-report.txt into fields, divergent and extra tiles, identity-pair members, repeat-row and crashed-leg lines.
+    """Parse verdict-report.txt into fields, divergent, extra and missing tiles, identity-pair members, repeat-row and crashed-leg lines.
 
     A crashed-leg line is `<leg> rc=N <kept dir>[ retry=pass|fail]`; each
     becomes {leg, rc, retry} (retry None for a leg that was not retried).
     """
-    out = {"fields": {}, "divergent": [], "extra": [], "identity": [], "repeat-rows": [],
+    out = {"fields": {}, "divergent": [], "extra": [], "missing": [], "identity": [], "repeat-rows": [],
            "crashed": []}
     try:
         text = open(path, encoding="utf-8").read()
@@ -5183,7 +5422,7 @@ def parse_report(path):
         return out
     for line in text.splitlines():
         key, _sep, val = line.partition(": ")
-        if key in ("divergent", "extra") and val.split():
+        if key in ("divergent", "extra", "missing") and val.split():
             out[key].append(val.split()[0])
         elif key.startswith("identity-"):
             out["identity"] += [t for t in val.split()[:2] if t.endswith(".png")]
@@ -5370,12 +5609,38 @@ class Expectation:
         self.ext_rows = frozenset()
 
     def hit(self, tile):
-        """True when the substring occurs in the tile name or in its launch-LOD name (launch_lod_name)."""
-        return self.sub in tile or self.sub in launch_lod_name(tile, self.ext_rows)
+        """True when the substring occurs in the tile name, its launch-LOD name (launch_lod_name) or either's base-row name (variant_base_name)."""
+        names = {tile, launch_lod_name(tile, self.ext_rows)}
+        names |= {b for b in map(variant_base_name, names) if b}
+        return any(self.sub in n for n in names)
+
+    def via_variant(self, tile):
+        """True when hit() holds for the tile only through its base-row name: a `@<variant>` tile covered by a line naming the base row."""
+        names = {tile, launch_lod_name(tile, self.ext_rows)}
+        return not any(self.sub in n for n in names) and self.hit(tile)
 
     def matches(self, unit, tile):
         """True when the expectation names the unit and hit() holds for the tile."""
         return unit == self.unit and self.hit(tile)
+
+
+VARIANT_KEY_RE = re.compile(r"^(?P<base>[^@]+)@[^_]*?(?P<pose>-[0-9a-f]{6})?$")
+
+
+def variant_base_name(tile):
+    """Return the tile name of a `@<variant>` row's tile under its base row's key, or None for a tile of no variant row.
+
+    A bk2 variant `<row>@<variant>` keys `<row>`; a freecam variant
+    `<level>@<variant>-<pose hash>` (pg_pose_slug) keys `<level>-<pose hash>`,
+    the plain row at the same pose. A repeat copy's `~r<k>` suffix is kept.
+    """
+    key, sep, rest = tile.partition("__")
+    m = re.match(r"^(.*?)(~r\d+)?$", key)
+    core, copy = m.group(1), m.group(2) or ""
+    v = VARIANT_KEY_RE.match(core)
+    if not v:
+        return None
+    return f"{v.group('base')}{v.group('pose') or ''}{copy}{sep}{rest}"
 
 
 def launch_lod_name(tile, ext_rows):
@@ -5466,7 +5731,9 @@ def check_expect(exps, unit_names, universe):
         tiles, rows = universe[e.unit]
         nt = sum(1 for t in tiles if e.hit(t))
         nr = sum(1 for r in rows if e.sub in r)
-        print(f"[fleet] expect: {e.unit} '{e.sub}': {nt} tile(s), {nr} manifest row(s) match")
+        variants = sorted({t.partition("__")[0] for t in tiles if e.via_variant(t)})
+        print(f"[fleet] expect: {e.unit} '{e.sub}': {nt} tile(s), {nr} manifest row(s) match"
+              + (f"; covers variant row(s) {', '.join(variants)}" if variants else ""))
         if not nt and not nr:
             errs.append(f"line {e.lineno}: '{e.sub}' matches no tile of {e.unit}'s blessed.tsv "
                         f"and no manifest row")
@@ -5944,6 +6211,15 @@ def main(argv=None):
     h = p.add_mutually_exclusive_group()
     h.add_argument("--hosts", default="")
     h.add_argument("--no-local", action="store_true", help="leave the local host out")
+    p.add_argument("--local-anyway", action="store_true",
+                   help="keep the local host while a landing, the scheduler gate or a game process "
+                        "outside the fleet runs here, or memory is low (default: left out, printed)")
+    w = p.add_mutually_exclusive_group()
+    w.add_argument("--host-wait", type=int, default=HOST_WAIT_S, metavar="S",
+                   help="while every host is held (another run's golden lock, a busy local host), "
+                        f"wait up to S seconds for one (default {HOST_WAIT_S})")
+    w.add_argument("--no-host-wait", action="store_true",
+                   help="exit 64 \"no usable host\" at once instead of waiting")
     p.add_argument("--pull", choices=("divergent", "all"), default="divergent")
     p.add_argument("--filter", help="row substring each unit captures in every corpus (with "
                    "--freecam-filter: a partial run, decided by the capture's own verdict)")

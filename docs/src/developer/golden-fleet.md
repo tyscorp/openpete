@@ -165,6 +165,8 @@ scripts/golden-fleet.py stop <run-id>                       # every running and 
 | `--tier T` / `--all-tiers` | `presentation` or `dragons` (spyro-1 only), or both. |
 | `--hosts a,b` | These hosts instead of every enabled host with `default = true`. |
 | `--no-local` | Leave the local host out. Exclusive with `--hosts`. |
+| `--local-anyway` | Keep the local host while it is busy (Hosts, step 1). |
+| `--host-wait S` / `--no-host-wait` | While no host is usable and a host is dropped only for another holder's golden lock or a busy local host, re-run preflight every 60 s for up to `S` seconds (default 21600); `--no-host-wait` exits 64 `no usable host` at once. |
 | `--pull divergent\|all` | `divergent` (default): the report files, divergent tiles and identity pairs; `all`: the whole candidate directory. |
 | `--wait` | Follow the detached coordinator and exit with its code. |
 | `--filter S` | In every corpus, the rows whose name or tile key contains `S`: bk2 rows by name, freecam rows by name field or tile key, the credits leg when `credits-interp` contains `S`. A corpus with no matching row runs none of it. With either filter the unit captures part of its corpus and is decided by its capture's own verdict; a partial run decides nothing for landing. |
@@ -194,7 +196,18 @@ scripts/golden-fleet.py clean --all --hosts box2  # every fleet file on box2
    runs another governor than the calibrated one, lacks free space (the
    sync set, the build tree and the largest candidate set, plus the image
    when it must ship), or its golden lock is held. The local host's slots
-   are lowered to fit 2 GiB of `MemAvailable` per slot. The run refuses
+   are lowered to fit 2 GiB of `MemAvailable` per slot. The local host is
+   left out, as under `--no-local` and printed with the reason, while it is
+   busy: a landing holds `land-train.lock` in the git common directory,
+   `land-branch.sh`, `land-train.sh` or `sched_gate.py` runs, a game
+   process runs outside the fleet's containers, or `MemAvailable` is under
+   one slot plus a 4 GiB reserve; `--local-anyway` keeps it. When no host
+   is usable and some host is dropped only for another holder's golden
+   lock (the holder record names its pid, host and run) or for being busy,
+   the coordinator prints the holders and re-runs preflight every 60 s,
+   polling the stop request, for up to `--host-wait S`; then, or at once
+   under `--no-host-wait` or with no such host, the run exits 64 `no usable
+   host`. The run refuses
    (64) when the local capture image was built from a recipe other than
    the tree's `tests/harness/linux-capture.Dockerfile`. The coordinator
    takes the local golden lock, runs `clean` on each host and ships the image.
@@ -268,7 +281,15 @@ scripts/golden-fleet.py clean --all --hosts box2  # every fleet file on box2
    without its sidecar refuses the unit. A unit fails when the report's
    `blessed.tsv` or identity-baseline hash differs from the local file, its
    `compared` census differs from the local row count, or its exit differs
-   from the supervisor's. An accepted presentation unit of an unfiltered,
+   from the supervisor's. A filtered unit whose only moves are extra tiles
+   (no divergent tile, identity failure, crashed leg or failed credits
+   leg) ends `NEW-ROWS n tile(s)`, rc 0, its compared-nothing census
+   accepted: the expected end of a new row's first capture; the summary's
+   `result <unit>: NEW-ROWS` line names the tiles. A unit end that keeps no
+   run candidate (a refused pull, an exit other than 0 or 1) still pulls
+   `capture-record.txt`, stamped, `capture-device.txt` and
+   `verdict-report.txt` into `build/fleet-stream/<run-id>/<unit>/`, so its
+   streamed tiles promote. An accepted presentation unit of an unfiltered,
    unrepeated run that was not stopped is hard-linked into the census store
    (`<local fleet_root>/census/<game>-presentation/<run-id>/`, finalized
    after the done marker, two entries kept per unit; layout under
@@ -563,10 +584,14 @@ manifest row name; otherwise the run exits 2 before it detaches
 (`expected-moves file refused: line N: ...`). A bk2 row whose launch field
 selects extended LOD (`--lod extended`, `--no-lod`) runs its untagged leg
 at extended LOD too, so its tiles also match as their `__lodext__`-tagged
-names. The file is copied into the local run directory before the
+names. A line naming a base row covers that row's `@<variant>` rows: a
+tile of a bk2 variant `<row>@<v>` also matches as `<row>`'s tile name, a
+freecam variant `<level>@<v>-<pose>` as the plain row `<level>-<pose>` at
+the same pose. The file is copied into the local run directory before the
 coordinator detaches and only the copy is read. Each line's match count is
 printed at start: `expect: <unit> '<substring>': <t> tile(s), <r> manifest
-row(s) match`.
+row(s) match`, followed by `; covers variant row(s) ...` when the line
+matches variant tiles only through their base row.
 
 The streamed verbs that count as a move are DIVERGE (a blessed tile's
 digest changed), EXTRA (a tile with no blessed row: a new row) and EXCEED

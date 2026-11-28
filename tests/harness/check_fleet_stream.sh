@@ -28,6 +28,8 @@
 #               N); copies stream SAME and IDENT against the original rows
 #               and baseline; list_tiles and promote_select leave copies out;
 #               a copy's stamp imports only into a repeat run holding it
+#   promote-stream  presentation-corpus-promote.sh refuses a fleet stream
+#               directory holding no capture record, naming it
 # Coordinator (tests/harness/fleet-stream-check.py, golden-fleet.py imported,
 # a fake supervisor on this machine): poll framing, the unit-end check and
 # its refusals under OPENPETE_STREAM_DROP, kill in the last poll interval and
@@ -282,6 +284,16 @@ unset OPENPETE_RESUME_RUN
   && grep -q 'outside this run.s repeat 1' "$W/repimp-1.log" \
   && pass "repeat-import: copy 2's stamp imports under repeat 3, not under repeat 0 or 1" \
   || fail repeat-import "imported under repeat 0/1/3: $nimp; $(cat "$W"/repimp-*.log)"
+
+# promote-stream: a fleet stream directory without a capture record is refused
+# before the capture image is entered, naming the cause; one with the record
+# passes that check (it reaches the image step, so only the refusal is run).
+SD="$W/build/fleet-stream/run-x/spyro-1-presentation"; mkdir -p "$SD"
+cp "$W/src/rowa__canon__100-vk.png" "$SD/"
+out="$(tests/harness/presentation-corpus-promote.sh "$SD" rowa 2>&1)"; prc=$?
+[[ $prc -eq 1 && "$out" == *"holds streamed tiles and no capture-record.txt"* ]] \
+  && pass "promote-stream: a stream directory without a record refused (rc 1) naming the missing record" \
+  || fail promote-stream "rc $prc: $out"
 
 python3 tests/harness/fleet-stream-check.py || fails=$((fails + 1))
 

@@ -108,6 +108,30 @@ write. Cases (each prints its counts):
               (rsync server under flock and the run tag)
   on-hosts    hosts run concurrently (three 1 s children in 1 s); one
               host's failure kills the others' children and is raised
+  host-wait   prepare_hosts over a scripted preflight: every host held by
+              another run's golden lock waits and admits the host once its
+              lock frees (the holder printed); --no-host-wait and a
+              non-transient drop exit 64 at once; --host-wait 1 ends the
+              wait with 64; a stop request ends it; a busy local host is
+              left out as --no-local would (printed), kept by
+              --local-anyway, admitted once a landing ends
+  local-busy  local_busy over a fake process table: land-branch.sh and
+              sched_gate.py processes and a game process outside the fleet
+              count; a container's, a golden-fleet child's, a conmon
+              child's, an own ancestor's and an editor's do not; the land
+              lock held by flock counts until released; MemAvailable under
+              6 GiB counts
+  record-every-end  an accepted pull, a refused pull and an exit-2 unit
+              each leave the stamped capture record and device line in the
+              stream directory
+  new-rows    a filtered unit whose only moves are extra tiles ends
+              NEW-ROWS (rc 0) and the summary names them; a divergence, an
+              identity failure, a crash, an unfiltered unit and a manifest
+              mismatch stay FAIL
+  expect-variant  an expect line naming a base row covers its @variant
+              rows (freecam `<level>@<v>-<pose>` keys, a lodext leg, a
+              repeat copy, a bk2 `<row>@<v>` key), not a variant at another
+              pose; check_expect prints the variants covered
 
 Exit: 0 every case holds, 1 a case failed (named).
 """
@@ -1799,6 +1823,298 @@ def case_on_hosts(tmp):
           f"raised {err!r} after {wall:.1f} s; the other hosts' children alive: {len(alive)} of 2")
 
 
+class HostWaitCo(gf.Coordinator):
+    """A Coordinator whose prepare_hosts runs over a scripted preflight: one result list per call, the last repeated."""
+
+    def __init__(self, tmp, name, rounds, **args):
+        """Bind the scripted preflight rounds and the run arguments; no host file, clean or image ship."""
+        d = os.path.join(tmp, name)
+        os.makedirs(d)
+        a = argparse.Namespace(game=GAME, tier=TIER, all=False, all_tiers=False, hosts="",
+                               no_local=False, pull="divergent", expect=None, host_wait=gf.HOST_WAIT_S,
+                               no_host_wait=False, local_anyway=False)
+        for k, v in args.items():
+            setattr(a, k, v)
+        super().__init__(a, f"test-{name}", d)
+        self.rounds, self.calls = rounds, 0
+        self.root = os.path.join(d, "root")
+
+    def need_bytes(self, src_bytes):
+        """No sync set: the scripted preflight decides."""
+        return 0
+
+
+def with_fakes(co, fn):
+    """Run fn() with golden-fleet's host file, preflight, clean, image ship and recipe check replaced by co's script."""
+    import contextlib
+    import io
+    names = ("load_hosts", "preflight", "clean_host", "ship_image", "check_recipe", "local_busy")
+    saved = {n: getattr(gf, n) for n in names}
+    hosts = {"local": {"transport": "local", "fleet_root": co.root}, "r": {"transport": "ssh", "ssh": "u@r"}}
+
+    def preflight(sel, need):
+        """Return the next scripted round as preflight's tuples over the selected hosts."""
+        rnd = co.rounds[min(co.calls, len(co.rounds) - 1)]
+        co.calls += 1
+        return [(h, {"memavail_kib": str(64 * gf.GIB_KIB), "root": co.root, "engine": "podman"},
+                 list(rnd.get(h.name, [])), 1) for h in sel]
+    gf.load_hosts = lambda required=True: ("hosts.toml", hosts)
+    gf.preflight = preflight
+    gf.clean_host = lambda *a, **k: 0
+    gf.ship_image = lambda *a, **k: None
+    gf.check_recipe = lambda tree: None
+    gf.local_busy = getattr(co, "busy", lambda tree, kib: [])
+    out = io.StringIO()
+    err = None
+    try:
+        with contextlib.redirect_stdout(out):
+            try:
+                fn()
+            except gf.FleetError as e:
+                err = e
+    finally:
+        for n, f in saved.items():
+            setattr(gf, n, f)
+        if co.golden_fd is not None:
+            os.close(co.golden_fd)
+            co.golden_fd = None
+    sys.stdout.write(out.getvalue())
+    return out.getvalue(), err
+
+
+def case_host_wait(tmp):
+    """run waits while every host is held: admitted once a lock frees, --no-host-wait and a non-transient drop exit 64 at once, the bound ends the wait, a stop request ends it."""
+    poll, stop_poll = gf.HOST_WAIT_POLL_S, gf.STOP_POLL_S
+    gf.HOST_WAIT_POLL_S, gf.STOP_POLL_S = 0.2, 0.05
+    held = {"local": ["golden lock held: pid 7 host h golden-fleet run r-1 since x"],
+            "r": ["golden lock held: pid 9 host r golden-fleet r-1 spyro-2-presentation since y"]}
+    try:
+        co = HostWaitCo(tmp, "hw-free", [held, held, {"r": held["r"]}])
+        log, err = with_fakes(co, lambda: co.prepare_hosts(0))
+        check("host-wait-admit", err is None and co.calls == 3 and [h.name for h in co.hosts] == ["local"]
+              and "waiting up to" in log and "golden-fleet run r-1" in log and "waited " in log,
+              f"error {err}; preflight calls {co.calls}; hosts {[h.name for h in co.hosts]}; "
+              f"wait line printed {'waiting up to' in log}, holder named {'run r-1' in log}")
+
+        co = HostWaitCo(tmp, "hw-nowait", [held], no_host_wait=True)
+        log, err = with_fakes(co, lambda: co.prepare_hosts(0))
+        check("host-wait-off", err is not None and err.code == gf.EXIT_SKIP and str(err) == "no usable host"
+              and co.calls == 1 and "waiting" not in log,
+              f"--no-host-wait: exit {err and err.code} '{err}', preflight calls {co.calls}")
+
+        co = HostWaitCo(tmp, "hw-hard", [{"local": ["MemAvailable 1.0 GiB under 2 GiB for one slot"],
+                                          "r": ["unreachable: ssh: connect refused"]}])
+        log, err = with_fakes(co, lambda: co.prepare_hosts(0))
+        check("host-wait-hard", err is not None and err.code == gf.EXIT_SKIP and co.calls == 1,
+              f"no transient drop: exit {err and err.code}, preflight calls {co.calls}")
+
+        co = HostWaitCo(tmp, "hw-bound", [held], host_wait=1)
+        t0 = time.monotonic()
+        log, err = with_fakes(co, lambda: co.prepare_hosts(0))
+        dt = time.monotonic() - t0
+        check("host-wait-bound", err is not None and err.code == gf.EXIT_SKIP and "after waiting" in str(err)
+              and 1 <= dt < 3 and co.calls >= 3,
+              f"--host-wait 1: exit {err and err.code} '{err}' after {dt:.1f} s, {co.calls} preflights")
+
+        co = HostWaitCo(tmp, "hw-stop", [held])
+        FakeCo.stop_later(co, 0.5, "all")
+        t0 = time.monotonic()
+
+        def watched():
+            """prepare_hosts under the run's stop predicate, as Coordinator.run installs it."""
+            with gf.stop_watch(co.stop_covers_run):
+                co.prepare_hosts(0)
+        log, err = with_fakes(co, watched)
+        dt = time.monotonic() - t0
+        check("host-wait-stop", isinstance(err, gf.StopRequested) and dt < 3,
+              f"stop request during the wait: {type(err).__name__} after {dt:.1f} s")
+
+        co = HostWaitCo(tmp, "hw-busy", [{"r": ["unreachable: x"]}], host_wait=1)
+        co.busy = lambda tree, kib: ["local busy: 4242 build/linux-release/openpete --headless"]
+        log, err = with_fakes(co, lambda: co.prepare_hosts(0))
+        drop = "left out as --no-local would" in log and "4242" in log
+        co2 = HostWaitCo(tmp, "hw-busy-anyway", [{"r": ["unreachable: x"]}], local_anyway=True)
+        co2.busy = co.busy
+        log2, err2 = with_fakes(co2, lambda: co2.prepare_hosts(0))
+        co3 = HostWaitCo(tmp, "hw-busy-ends", [{"r": ["unreachable: x"]}])
+        seq = iter([["local busy: a landing holds /x/land-train.lock"], []])
+        co3.busy = lambda tree, kib: next(seq, [])
+        log3, err3 = with_fakes(co3, lambda: co3.prepare_hosts(0))
+        check("host-wait-local-busy", drop and err is not None and "after waiting" in str(err)
+              and err.code == gf.EXIT_SKIP and co.hosts == []
+              and err2 is None and [h.name for h in co2.hosts] == ["local"]
+              and err3 is None and co3.calls == 2 and "land-train.lock" in log3,
+              f"busy local dropped and printed: {drop}, waited to the bound: exit {err and err.code} '{err}'; "
+              f"--local-anyway keeps it: {[h.name for h in co2.hosts]}; a landing that ends: admitted after "
+              f"{co3.calls} preflights")
+    finally:
+        gf.HOST_WAIT_POLL_S, gf.STOP_POLL_S = poll, stop_poll
+
+
+def case_local_busy(tmp):
+    """local_busy over a fake process table: landing scripts, the scheduler gate, game processes outside the fleet, the land lock, memory."""
+    def proc(pid, ppid, argv, exe="", cgroup="0::/user.slice"):
+        return {"pid": pid, "ppid": ppid, "argv": argv, "exe": exe, "cgroup": cgroup}
+    repo = os.path.join(tmp, "busy-repo")
+    os.makedirs(repo)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    subprocess.run(["git", "init", "-q", repo], check=True, env=env)
+    big = 64 * gf.GIB_KIB
+    procs = [proc(1, 0, ["/sbin/init"]),
+             proc(10, 1, ["bash"]), proc(11, 10, ["python3", "/x/golden-fleet.py", "run", "--foreground"]),
+             proc(20, 1, ["bash", "/c/.claude/skills/orchestrate/scripts/land-branch.sh", "agent/x"]),
+             proc(30, 1, ["python3", "/c/sched_gate.py", "--repo", "/r"]),
+             proc(40, 1, ["build/linux-release/openpete", "--headless"], exe="/r/build/linux-release/openpete"),
+             proc(50, 1, ["/opt/openpete/openpete", "--headless"], cgroup="0::/libpod_parent/libpod-abc"),
+             proc(60, 11, ["openpete-spyro1", "--headless"]),
+             proc(70, 1, ["/usr/bin/conmon", "--cid", "x"]), proc(71, 70, ["openpete"]),
+             proc(80, 1, ["vim", "land-branch.sh.notes"])]
+    got = gf.local_busy(repo, big, procs=procs, me=11)
+    pids = sorted(int(r.split()[2]) for r in got if r.split()[2].isdigit())
+    quiet = gf.local_busy(repo, big, procs=[proc(1, 0, ["/sbin/init"])], me=1)
+    low = gf.local_busy(repo, 5 * gf.GIB_KIB, procs=[], me=1)
+    common = subprocess.run(["git", "-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                            capture_output=True, text=True, env=env).stdout.strip()
+    lock = os.path.join(common, gf.LAND_LOCK_NAME)
+    holder = subprocess.Popen(["flock", lock, "sleep", "30"], start_new_session=True)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not gf.land_lock_holder(repo):
+        time.sleep(0.05)
+    landing = gf.local_busy(repo, big, procs=[], me=1)
+    os.killpg(holder.pid, signal.SIGTERM)
+    holder.wait()
+    after = gf.local_busy(repo, big, procs=[], me=1)
+    check("local-busy", pids == [20, 30, 40] and quiet == [] and len(low) == 1 and "MemAvailable 5.0" in low[0]
+          and len(landing) == 1 and gf.LAND_LOCK_NAME in landing[0] and after == [],
+          f"busy pids {pids} (landing 20, gate 30, loose game 40; container 50, fleet child 60, conmon child 71, "
+          f"own ancestors, an editor 80 not); idle box {quiet}; 5 GiB: {low}; land lock held: {landing}; "
+          f"released: {after}")
+
+
+RECORD_LINES = (f'printf "game={GAME}\\ntier={TIER}\\nhead=0123\\n" >"$UNIT_DIR/cand/capture-record.txt"\n'
+                'echo "device=llvmpipe" >"$UNIT_DIR/cand/capture-device.txt"\n')
+
+
+def case_record_every_end(tmp):
+    """Every unit end leaves the stamped capture record in the stream directory: a refused pull and a non-verdict exit as well as an accepted pull."""
+    new = ["zz-new__canon__1-vk.png"]
+    out = {}
+    for name, rc, refuse in (("rec-accepted", 1, False), ("rec-refused", 1, True), ("rec-exit2", 2, False)):
+        co = FakeCo(tmp, name)
+        if rc == 2:
+            body = RECORD_LINES + "report 'verdict: FAIL' 'exit: 2'\nfinish 2 harness-exit\n"
+        else:
+            body = RECORD_LINES + full_unit(div=[], same=[], extra=new, ident=[], exceed=[])
+        co.plan(UNIT, body)
+
+        def pull(job, hs, co=co, refuse=refuse):
+            """The real pull's record handling over the fake report: pull and stamp the record, keep the candidate; or refuse after the report, as a census refusal does."""
+            local = co.pull_target(GAME, TIER)
+            shutil.rmtree(local, ignore_errors=True)
+            rdir = f"{job.result['unit_dir']}/cand"
+            if refuse:
+                gf.rsync_pull(hs.host, rdir, local, names=["verdict-report.txt"])
+                return ["census compared=0: the filtered unit compared nothing"]
+            gf.rsync_pull(hs.host, rdir, local, names=["verdict-report.txt", gf.RECORD_NAME, "capture-device.txt"])
+            co.stamp_record(local, hs)
+            co.pull_tiles(hs, rdir, local, gf.parse_report(os.path.join(local, "verdict-report.txt")))
+            co.keep_run_candidate(job, local)
+            return []
+        co.pull_unit = pull
+        job = gf.Job("unit", GAME, TIER)
+        co.go([job])
+        dest = co.stream_dir(job)
+        rec_path = os.path.join(dest, gf.RECORD_NAME)
+        txt = open(rec_path).read() if os.path.exists(rec_path) else ""
+        out[name] = (job.result["rc"], f"fleet-run=test-{name}" in txt and "head=0123" in txt,
+                     os.path.exists(os.path.join(dest, "capture-device.txt")),
+                     os.path.isdir(os.path.join(dest, ".record-pull")),
+                     os.path.exists(os.path.join(dest, new[0])))
+    ok = all(v[1] and v[2] and not v[3] for v in out.values()) and out["rec-refused"][4]
+    check("record-every-end", ok,
+          "; ".join(f"{k}: rc {v[0]}, stamped record {v[1]}, device {v[2]}, temp left {v[3]}, "
+                    f"streamed tile {v[4]}" for k, v in out.items()))
+
+
+def case_new_rows(tmp):
+    """A filtered unit whose only moves are extra tiles ends NEW-ROWS (rc 0) and names them; a divergence, an identity failure, a crash or an unfiltered unit keeps FAIL."""
+    import contextlib
+    import io
+    co = FakeCo(tmp, "new-rows")
+    co.a.filter = "zz-new"
+    golden = os.path.join(TREE, "tests", "golden", GAME, TIER)
+    fields = {"blessed-sha256": gf.sha256_path(os.path.join(golden, "blessed.tsv")),
+              "ident-baseline-sha256": gf.sha256_path(os.path.join(golden, "ident-baseline.tsv")),
+              "compared": "0", "exit": "1", "credits-rc": "64"}
+    new = ["zz-new__canon__1-vk.png", "zz-new__inter__1-vk.png"]
+
+    def run(over=None, **lists):
+        """check_report then accept_new_rows on a report built from fields and lists; return (refusals, result)."""
+        job = gf.Job("unit", GAME, TIER)
+        job.result = {"rc": 1, "status": "verdict", "host": "local", "attempt": 1}
+        rep = {"fields": dict(fields, **(over or {})), "divergent": [], "extra": list(new), "identity": [],
+               "repeat-rows": [], "crashed": [], "missing": []}
+        rep.update(lists)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            errs = co.accept_new_rows(job, rep, co.check_report(job, rep))
+        return errs, job
+    errs, job = run()
+    co.jobs = [job]
+    summary = io.StringIO()
+    with contextlib.redirect_stdout(summary):
+        co.print_summary(co.run_rc())
+    s = summary.getvalue()
+    sys.stdout.write(s)
+    errs_d, job_d = run(divergent=[TILES[0]])
+    errs_i, job_i = run(identity=["zz-new__ident__1-vk.png"])
+    errs_c, job_c = run(crashed=[{"leg": "x", "rc": "139", "retry": None}])
+    co.a.filter = None
+    errs_u, job_u = run()
+    co.a.filter = "zz-new"
+    errs_h, job_h = run({"blessed-sha256": "0" * 64})
+    check("new-rows", errs == [] and job.result["rc"] == 0 and job.result["status"] == "NEW-ROWS 2 tile(s)"
+          and "result spyro-2-presentation: NEW-ROWS on local (rc 0" in s
+          and "NEW-ROWS 2 tile(s) with no blessed row (promote them from" in s and new[0] in s
+          and "run test-new-rows: PASS (exit 0)" in s
+          and job_d.result["rc"] == 1 and any("compared nothing" in e for e in errs_d)
+          and job_i.result["rc"] == 1 and job_c.result["rc"] == 1
+          and job_u.result["rc"] == 1 and errs_u and job_h.result["rc"] == 1
+          and errs_h and not any("compared nothing" in e for e in errs_h),
+          f"extras only: refusals {errs}, {job.result['status']} rc {job.result['rc']}; with a divergence: "
+          f"rc {job_d.result['rc']} {errs_d}; identity failure rc {job_i.result['rc']}; crash rc "
+          f"{job_c.result['rc']}; unfiltered rc {job_u.result['rc']} {errs_u}; manifest mismatch rc "
+          f"{job_h.result['rc']} {errs_h}")
+
+
+def case_expect_variant(tmp):
+    """An expect line naming a base row covers its `@<variant>` rows' tiles (bk2 and freecam keys); the preflight count names the variants."""
+    import contextlib
+    import io
+    fc_var = "ocean_speedway@fogorig-9270a9__canon__2473-vk.png"
+    fc_lod = "ocean_speedway@fogorig-9270a9__lodext__inter__2523-vk.png"
+    bk_var = "attract-demo@heldfade__canon__100-vk.png"
+    copy = "ocean_speedway@fogorig-9270a9~r02__canon__2473-vk.png"
+    other = "ocean_speedway@fogorig-c96d7a__canon__2473-vk.png"
+    e_fc = gf.Expectation(UNIT, "ocean_speedway-9270a9", "base row", 1)
+    e_bk = gf.Expectation(UNIT, "attract-demo__canon", "base row's canon leg", 2)
+    hits = (e_fc.hit(fc_var), e_fc.hit(fc_lod), e_fc.hit(copy), e_fc.hit(other), e_bk.hit(bk_var),
+            e_bk.hit("attract-demo__inter__100-vk.png"))
+    lines = [rec("DIVERGE", fc_var), rec("END", "END")]
+    c, _r = gf.expect_counts([e_fc], {UNIT: (True, lines, set())})
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        errs = gf.check_expect([e_fc], {UNIT}, {UNIT: ({"ocean_speedway-9270a9__canon__2473-vk.png", fc_var, other},
+                                                       {"ocean_speedway", "ocean_speedway@fogorig"})})
+    msg = out.getvalue()
+    sys.stdout.write(msg)
+    check("expect-variant", hits == (True, True, True, False, True, False) and c["EXPECTED"] == 1
+          and c["UNEXPECTED"] == 0 and errs == [] and "2 tile(s)" in msg
+          and "covers variant row(s) ocean_speedway@fogorig-9270a9" in msg and "c96d7a" not in msg,
+          f"hits (freecam variant, its lodext leg, its repeat copy, a variant at another pose, bk2 variant, "
+          f"the bk2 inter leg) {hits}; counts {c}; preflight line: {msg.strip()}")
+
+
 def main():
     """Run every case in a temporary directory with the ledger redirected."""
     tmp = tempfile.mkdtemp(prefix="fleet-stream-check.")
@@ -1809,7 +2125,9 @@ def main():
                      case_expect, case_canary_verdict, case_run_candidate, case_move, case_move_cli,
                      case_keep_and_resume_inputs, case_keep_exhausted, case_ledger, case_repeat,
                      case_sync_base, case_on_hosts,
-                     case_takeover_rule, case_takeover, case_takeover_slow, case_takeover_race):
+                     case_takeover_rule, case_takeover, case_takeover_slow, case_takeover_race,
+                     case_host_wait, case_local_busy, case_record_every_end, case_new_rows,
+                     case_expect_variant):
             case(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
