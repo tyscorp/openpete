@@ -132,6 +132,24 @@ void openpete_rewind_drop_after(unsigned frame);
  * openpete_rewind_configure. */
 void openpete_rewind_clear(void);
 
+/** @brief Record a host intervention in guest state, so the next rewind step clears the rewind history.
+ *
+ * A rewind restores a keyframe and replays the ticks after it from the
+ * logged pad input only, so a teleport, a warp, a cheat, a free camera pose
+ * or a free camera engage or disengage applied inside the window would be
+ * missing from the rebuilt state. Callable from any thread: it bumps an
+ * epoch that the host loop's rewind step (host_state_ops.c) compares before
+ * its keyframe capture, so no keyframe older than the intervention survives
+ * to be restored.
+ * @param what What was applied, a string literal the clear's log line names. */
+void openpete_rewind_note_intervention(const char* what);
+
+/** @brief Read the intervention epoch openpete_rewind_note_intervention bumps.
+ *
+ * @param what Receives the last intervention's name; may be NULL.
+ * @return The number of interventions recorded since start. */
+unsigned openpete_rewind_intervention_epoch(const char** what);
+
 /** @brief Report whether the canonical world draw running now belongs to a replayed tick whose scene the host does not present.
  *
  * Called once per canonical world draw, through openpete_draw_unseen

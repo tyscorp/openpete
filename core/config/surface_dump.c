@@ -151,6 +151,7 @@ static void emit_knob(FILE* f, int* first, const knob_desc_t* k, const char* gam
     json_kv(f, "env", k->env);
     json_schema(f, k->id);
     json_kv(f, "type", k_knob_type_names[k->type]);
+    json_kv(f, "mut", k->mut == KNOB_LIVE ? "live" : "restart");
     if (k->num_min != 0.0f || k->num_max != 0.0f)
         fprintf(f, ", \"range\": [%g, %g]", (double)k->num_min, (double)k->num_max);
     json_kv(f, "section", k->section);

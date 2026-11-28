@@ -2086,7 +2086,6 @@ core/runtime/present_thread.c	pt_dbg	on	local	once	= -1, one filler, first refer
 core/runtime/present_thread.c	pt_fault_store	on	local	once	= -1, one filler, first reference tests it
 core/runtime/present_thread.c	pt_stall	ns	local	once	= -1, one filler, first reference tests it
 core/runtime/run.c	-	g_openpete_canon_lag_leg	extern	-	
-core/runtime/run.c	-	g_openpete_interp_enabled	extern	-	
 core/runtime/run.c	-	g_psyx_null_gpu	extern	-	
 core/runtime/run.c	-	g_psyx_present_native_raster	extern	-	
 core/runtime/run.c	-	g_window	extern	-	

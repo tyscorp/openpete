@@ -37,6 +37,7 @@
 #include "openpete_fiber.h"     /* openpete_speculative / openpete_replaying */
 #include "openpete_host_mouse.h" /* probe log */
 #include "openpete_log.h"
+#include "openpete_rewind.h"   /* openpete_rewind_note_intervention */
 #include "psx_runtime_internal.h"        /* CPUState + its read/write callbacks */
 #include "renderer/terrain.h"   /* terrain_native_topdown_pose / _sweep_pose */
 
@@ -928,6 +929,7 @@ static void freecam_drive(CPUState* cpu) {
         const char* pose = s_pending_pose;
         s_pending_pose = NULL;
         freecam_apply_pose(cpu, pose);
+        openpete_rewind_note_intervention("free camera pose");
     }
     /* A scripted path owns the camera outright - the interactive axes would
      * fight it, and a headless run has none to read anyway. */
@@ -1126,6 +1128,7 @@ static void freecam_teleport_player(CPUState* cpu, int32_t x, int32_t y, int32_t
         if (D->place_camera) D->place_camera(cpu);
         else OPL_INFO_F("freecam", "camera left to converge: this game has no placement camera routine");
     }
+    openpete_rewind_note_intervention("teleport");
 }
 
 /** @brief Move the player to the free camera's position.

@@ -2742,6 +2742,23 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         ENVIRONMENT "OPENPETE_BIN=${_spyro1_bin}"
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # A host intervention inside the rewind window clears the rewind history:
+    # a --player-pose placement (the teleport body) at feed key 2150 of
+    # Spyro 1 level 10, then a --rewind-hold from 2200 far enough to cross
+    # it. The rewind must stop at or after the placement and every hash-log
+    # row must match the run with no rewind; a control leg without the
+    # placement must cross 2150 exactly. Four headless runs, ~30 s. Skips
+    # (exit 64) without the binary or the disc.
+    add_test(NAME rewind_clear
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_rewind_clear.sh)
+    set_tests_properties(rewind_clear PROPERTIES
+        LABELS "slow;determinism;savestate"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 1800
+        SKIP_RETURN_CODE 64
+        ENVIRONMENT "OPENPETE_BIN=${_spyro1_bin}"
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # The savestate deferral row at an emitted polling-loop delivery: Spyro 2
     # formats an unformatted card (games/spyro-2/bk2/s2-format-card.bk2),
     # whose card-status waits take their VBLs at the loops' back edges. A

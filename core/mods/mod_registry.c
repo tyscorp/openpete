@@ -15,6 +15,7 @@
 #include "openpete_bugreport_replay.h" /* openpete_bugreport_replay_warp_take */
 #include "openpete_fiber.h" /* openpete_speculative */
 #include "openpete_log.h"
+#include "openpete_rewind.h" /* openpete_rewind_note_intervention */
 #include "mod_vec.h"
 #include "openpete_str.h"
 #include "../host/wav_loader.h" /* op_wav_probe_seconds (custom-level music) */
@@ -979,6 +980,7 @@ static void custom_warp_step(CPUState* cpu) {
         if (level_ops()->enter_level(cpu, r->donor_id) == 0) {
             s_custom_warp = -1;
             openpete_bugrec_hold(OPENPETE_BUGREC_HOLD_LEVEL_ENTRY, 1);
+            openpete_rewind_note_intervention("custom-level warp");
         }
         return; /* refused = not in gameplay yet; retry next tick */
     }
@@ -1006,6 +1008,7 @@ static void custom_warp_step(CPUState* cpu) {
         s_slot_entering = s_custom_slot_id;
         s_custom_warp = -1;
         openpete_bugrec_hold(OPENPETE_BUGREC_HOLD_LEVEL_ENTRY, 1);
+        openpete_rewind_note_intervention("custom-level warp");
         OPL_INFO_F("mods", "custom level \"%s\" entering (id %d, donor "
                    "%d)", r->name, s_custom_slot_id, r->donor_id);
     }

@@ -183,12 +183,6 @@ static void openpete_psxtrace_on_anchor(uint32_t addr) {
  * --screenshot (the -og reference). Read by psyq_DrawOTag. */
 int openpete_psycross_renders = 1;
 
-/* Master interpolation/frame-gen toggle ('I' key). Gates the native
- * sub-tick intermediate presents; 1 = smooth (default), 0 = canonical
- * ~29.913 fps only. (Moved here from the deleted screen-space render
- * matcher, whose substitute path it also used to gate.) */
-int g_openpete_interp_enabled = 1;
-
 /* Cooperative shutdown flag. Set by the event pump (window close, SDL quit,
  * the quit binding) and by our SIGINT handler. The host-fiber loop checks this
  * once per iteration and drains cleanly, instead of PsyCross's PsyX_Exit()
@@ -1542,7 +1536,7 @@ void host_pace_env_build(char* env, unsigned env_bytes, const openpete_options_t
                             openpete_native_render_present_mode(),
                             opts->fullscreen ? 1 : 0,
                             render_fps,
-                            g_openpete_interp_enabled ? 1 : 0,
+                            openpete_interp_toggle_on(),
                             runahead_requested(),
                             tick_scale,
                             openpete_split_applies(opts) ? 1 : 0,

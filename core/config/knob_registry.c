@@ -27,6 +27,7 @@
 #include "openpete_freecam.h"
 #include "openpete_host_input.h"
 #include "openpete_host_mouse.h"
+#include "openpete_interp.h"
 #include "openpete_record.h"
 #include "openpete_rewind.h"
 #include "openpete_state.h"
@@ -645,6 +646,11 @@ static int fov_set(knob_desc_t *k, double v) {
     k->stored_num = v;
     return 0;
 }
+
+/** @brief 1 while the interpolation toggle is on, else 0. */
+static double interp_get(const knob_desc_t *k) { (void)k; return openpete_interp_toggle_on(); }
+/** @brief Turn the interpolation toggle on (`v` nonzero) or off, as the interp_toggle key does. */
+static int interp_set(knob_desc_t *k, double v) { (void)k; openpete_interp_toggle_set(v != 0.0); return 0; }
 
 /** @brief 1 while the host loop has the sim paused, else 0. */
 static double pause_get(const knob_desc_t *k) { (void)k; return openpete_sim_paused(); }
@@ -1608,6 +1614,16 @@ static const knob_desc_t g_builtin[] = {
       .help_text = "engine speed x F (default {def}); scales sim AND present cadence\n"
           "together so sub-tick frames-per-tick is invariant. 0.5 = half-\n"
           "speed slow-mo to inspect high-FPS interpolation." },
+
+    { "interp", "Interpolate", "Pacing", NULL, NULL,
+      "Draw the pictures between ticks at in-between positions while the "
+      "frame rate is above the tick rate. Off shows each tick's picture "
+      "unchanged until the next, at the same frame rate. Changes only the "
+      "picture; not saved.",
+      KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
+      interp_get, interp_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .def_str = "on",
+      .key_action = "interp_toggle" },
 
     { "pause", "Pause sim", "Pacing", NULL, NULL,
       "Pause the game's ticks while presents continue. Audio mutes and "

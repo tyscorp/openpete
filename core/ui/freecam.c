@@ -6,6 +6,7 @@
 #include "openpete_freecam.h"
 #include "openpete_bugrec.h"
 #include "openpete_log.h"
+#include "openpete_rewind.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -45,6 +46,10 @@ bool openpete_freecam_toggle(void) {
     }
     s_active = !s_active;
     if (s_active) openpete_bugrec_taint(BUGREC_TAINT_FREECAM);
+    /* Engaged, the free camera freezes the player update and owns the
+     * camera follow; a rewind replay across the edge would rebuild the
+     * ticks on the other side of it. */
+    openpete_rewind_note_intervention(s_active ? "free camera engage" : "free camera disengage");
     atomic_fetch_add_explicit(&s_engage_gen, 1u, memory_order_relaxed);
     memset(&s_axes, 0, sizeof s_axes);
     /* A request only makes sense against the pose that was on screen when it

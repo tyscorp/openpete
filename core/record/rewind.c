@@ -120,6 +120,22 @@ void openpete_rewind_clear(void) {
     s_have_kf = 0;
 }
 
+/* The intervention epoch and the last intervention's name: written from
+ * whichever thread applies an intervention, read by the host loop. */
+static OP_ROLE_ATOMIC(unsigned)    s_intervention_epoch;
+static OP_ROLE_ATOMIC(const char*) s_intervention_what;
+
+void openpete_rewind_note_intervention(const char* what) {
+    atomic_store_explicit(&s_intervention_what, what, memory_order_relaxed);
+    atomic_fetch_add_explicit(&s_intervention_epoch, 1u, memory_order_release);
+}
+
+unsigned openpete_rewind_intervention_epoch(const char** what) {
+    const unsigned ep = atomic_load_explicit(&s_intervention_epoch, memory_order_acquire);
+    if (what) *what = atomic_load_explicit(&s_intervention_what, memory_order_relaxed);
+    return ep;
+}
+
 int openpete_rewind_hold_phase_ready(unsigned frame) {
     static int phase = -2;   /* -2 unread, -1 unset */
     if (phase == -2) {

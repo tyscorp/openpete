@@ -621,7 +621,34 @@ static void rewind_card_commit_clear(void) {
     last_f = openpete_frame;
 }
 
+/* Rewind histories cleared by a host intervention, for the exit report. */
+static unsigned long long s_rewind_intervention_clears OP_GUARDED_BY(sim) = 0;
+/* The intervention epoch rewind_intervention_clear last acted on. */
+static unsigned s_rewind_intervention_seen OP_GUARDED_BY(sim) = 0;
+
+/** @brief Drop every rewind keyframe when a host intervention was recorded since the last call.
+ *
+ * openpete_rewind_note_intervention bumps an epoch from wherever the
+ * intervention applies (a teleport, a warp, a cheat, a free camera pose or
+ * engage); this call runs before each keyframe capture, so the keyframe it
+ * then takes is the oldest a rewind can reach and the replay never rebuilds
+ * a tick that predates the intervention. With rewind off it only follows
+ * the epoch, so turning rewind on later clears nothing stale. */
+static void rewind_intervention_clear(void) OP_REQUIRES(sim) {
+    const char* what = NULL;
+    const unsigned ep = openpete_rewind_intervention_epoch(&what);
+    if (ep == s_rewind_intervention_seen) return;
+    s_rewind_intervention_seen = ep;
+    if (!openpete_rewind_enabled()) return;
+    openpete_rewind_clear();
+    s_rewind_intervention_clears++;
+    OPL_INFO_F("rewind", "%s applied by f=%u - history cleared (%llu intervention clear(s))",
+               what ? what : "host intervention", openpete_frame,
+               s_rewind_intervention_clears);
+}
+
 bool rewind_step(const openpete_options_t* opts, bool paused, bool bk2_active) OP_REQUIRES(sim) {
+    rewind_intervention_clear();
     if (!openpete_rewind_enabled()) {
         static bool hinted = false;
         if (!hinted && openpete_key_down(OPK_REWIND)) {
@@ -666,8 +693,10 @@ void state_ops_report(void) OP_REQUIRES(sim) {
                s_site_deferred[SITE_DEF_STRESS], s_site_deferred[SITE_DEF_RUNAHEAD],
                s_site_refused, s_site_abandoned);
     OPL_INFO_F("rewind", "replays short of their target: %llu; input log offset moved: %llu; "
-               "presented draws replayed unseen: %llu; seen draws a later draw followed: %llu",
-               s_rewind_short, s_rewind_log_moved, s_rewind_unseen_last, s_rewind_seen_early);
+               "presented draws replayed unseen: %llu; seen draws a later draw followed: %llu; "
+               "cleared by a host intervention: %llu",
+               s_rewind_short, s_rewind_log_moved, s_rewind_unseen_last, s_rewind_seen_early,
+               s_rewind_intervention_clears);
     OPL_INFO_F("runahead", "presented draws built unseen: %llu (%llu on a speculation that left "
                "gameplay); seen draws a later draw followed: %llu",
                s_ra_unseen_presented, s_ra_unseen_left, s_ra_seen_early);

@@ -10,6 +10,7 @@
 #include "openpete_fiber.h" /* openpete_speculative, openpete_frame */
 #include "openpete_freecam.h"
 #include "openpete_log.h"
+#include "openpete_rewind.h"   /* openpete_rewind_note_intervention */
 #include "openpete_surface.h"
 #include "psx_runtime_internal.h" /* CPUState + its read callbacks */
 
@@ -319,6 +320,9 @@ static void title_route(const levelwarp_game_t* g, int target) {
 
 /** @brief Start a queued request through the route it drained under.
  *
+ * A level-route warp that starts records a rewind intervention, so a rewind
+ * never replays across it; the title and demo routes start outside
+ * gameplay, where the rewind history is already empty.
  * @param w The warp.
  * @param cpu The guest CPU state.
  * @param target The target number. */
@@ -348,6 +352,7 @@ static void drain(levelwarp_t* w, CPUState* cpu, int target) {
         w->target = (uint32_t)target;
         const int ph = g->start(w, cpu, target);
         if (ph == LEVELWARP_IDLE) { levelwarp_reset(w); return; }
+        openpete_rewind_note_intervention("warp");
         w->phase = (uint32_t)ph;
         w->ticks = 0;
     } else {

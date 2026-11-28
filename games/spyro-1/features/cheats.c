@@ -44,6 +44,7 @@
 #include "openpete_fiber.h" /* openpete_speculative */
 #include "openpete_knobs.h" /* dev-overlay rows (M key) */
 #include "openpete_log.h"
+#include "openpete_rewind.h"   /* openpete_rewind_note_intervention */
 #include "openpete_surface.h"
 #include "psx_runtime_internal.h" /* CPUState + its read/write callbacks */
 
@@ -318,6 +319,7 @@ static void cheats_apply(CPUState* cpu, uint32_t mask) {
         if (mask & k_cheats[i].bit)
             OPL_INFO_F("cheats", "%s applied in level %u", k_cheats[i].name,
                        (unsigned)cpu->read_word(ADDR_G_LEVELID));
+    if (mask) openpete_rewind_note_intervention("cheat");
 }
 
 void spyro1_cheats_on_tick(CPUState* cpu) {

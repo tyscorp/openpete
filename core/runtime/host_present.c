@@ -444,7 +444,7 @@ bool host_world_live(const host_session_t* S, const host_iter_t* it, op_time_t n
 static bool host_subtick_live(const host_session_t* S)
 {
     return !S->opts->headless && openpete_native_scene_enabled() &&
-        !openpete_unlock_fps && g_openpete_interp_enabled &&
+        !openpete_unlock_fps && openpete_interp_toggle_on() &&
         openpete_interp_enabled() && !(S->paused && !S->step_one);
 }
 

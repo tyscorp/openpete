@@ -51,7 +51,10 @@ extern "C" {
 #include "openpete_settings_save.h"
 #include "openpete_rebind.h"
 
+#include <atomic>
 #include <deque>
+#include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -1379,9 +1382,31 @@ static void row_label_cell(const char *label, knob_desc_t *const *ks, int n)
     row_context_menu(ks[0]);
 }
 
+/** @brief Log a row's id the first time the panel draws it, under the OPENPETE_DEVUI_ROW_CENSUS harness variable.
+ *
+ * One line per row and drawing thread ("devui: row census: <id> drawn in
+ * <section>"; the panel draws on the display's owner, the present thread
+ * under eager production, else the host loop), so a scripted windowed run
+ * proves which rows the open panel drew; a row in a collapsed section is not
+ * drawn and logs nothing.
+ * @param k The row being drawn. */
+static void devui_row_census(const knob_desc_t *k)
+{
+    static std::atomic<int> on{-1};
+    if (on.load(std::memory_order_relaxed) < 0) {
+        const char *e = getenv("OPENPETE_DEVUI_ROW_CENSUS");
+        on.store((e && *e && *e != '0') ? 1 : 0, std::memory_order_relaxed);
+    }
+    if (on.load(std::memory_order_relaxed) == 0 || !k) return;
+    static thread_local std::unordered_set<std::string> seen;
+    if (!seen.insert(k->id).second) return;
+    OPL_INFO_F("devui", "row census: %s drawn in %s", k->id, k->section ? k->section : "?");
+}
+
 /** @brief Draw one knob as a table row: label, then its type-specific value widget. */
 static void draw_row(knob_desc_t *k)
 {
+    devui_row_census(k);
     ImGui::TableNextRow();
     row_label_cell(k->label, &k, 1);
     ImGui::TableNextColumn();
@@ -2264,6 +2289,7 @@ static const lay_row k_lay_display[] = {
     { LAY_ROW,    nullptr, { "aspect" } },
     { LAY_ONOFF,  nullptr, { "render_fps" }, nullptr, nullptr, 0,
       "Interpolation", 60 },
+    { LAY_ROW,    nullptr, { "interp" } },
     { LAY_ROW,    nullptr, { "fov" } },
     { LAY_ROW,    nullptr, { "ssaa" } },
     { LAY_ROW,    nullptr, { "vsync" } },
@@ -2779,6 +2805,7 @@ static void lay_draw_knob_row(const lay_ctx &c, const lay_row &r)
     knob_desc_t *ks[3];
     const int n = lay_knobs(c, r, ks);
     if (r.kind == LAY_ROW) { draw_row(ks[0]); return; }
+    for (int i = 0; i < n; i++) devui_row_census(ks[i]);
     ImGui::TableNextRow();
     row_label_cell(r.label ? r.label : ks[0]->label, ks, n);
     ImGui::TableNextColumn();

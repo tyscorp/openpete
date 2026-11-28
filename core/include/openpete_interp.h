@@ -343,9 +343,20 @@ uint64_t openpete_interp_total_captures(void);
  * @return Skipped-candidate count since start. */
 uint64_t openpete_interp_total_dedupe_skips(void);
 
-/* The interpolation toggle (run.c): 1 runs the native sub-tick
- * intermediate presents, 0 presents canonical ticks only. */
-extern int g_openpete_interp_enabled;
+/** @brief Report the interpolation toggle: 1 runs the native sub-tick intermediate presents, 0 presents canonical ticks only.
+ *
+ * The toggle is the `interp` registry row and the interp_toggle key; it
+ * starts on. It is one of the terms of host_subtick_live, so it changes
+ * which presents are made and never a tick.
+ * @return 1 when on, else 0. */
+int openpete_interp_toggle_on(void);
+
+/** @brief Set the interpolation toggle and log the change.
+ *
+ * Callable from any thread: the host loop reads the toggle once per
+ * iteration, so a write takes effect from the next one.
+ * @param on Nonzero turns sub-tick presents on. */
+void openpete_interp_toggle_set(int on);
 
 #ifdef __cplusplus
 }

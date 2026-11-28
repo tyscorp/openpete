@@ -56,7 +56,10 @@ that delay.
 Interpolation is on whenever the frame rate is above 30.
 {{ key("key:host.interp_toggle") }} <!-- id: key:host.interp_toggle home --> turns it off and on for
 comparison; with it off each tick's picture is shown unchanged until the
-next.
+next, at the same frame rate. The dev overlay's **Interpolate** row, under
+Display below **Render FPS**, shows the same setting and changes it
+<!-- id: knob:interp home -->. It starts checked <!-- id: knob:interp -->;
+neither the key nor the row is saved.
 
 ## Runahead
 

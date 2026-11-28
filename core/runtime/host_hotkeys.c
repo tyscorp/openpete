@@ -373,11 +373,9 @@ void host_hotkeys_toggles(bool split)
      * frame-gen doing anything perceptible?" test). Bound to I by
      * default; the toast states the new mode. */
     if (openpete_key_pressed(OPK_INTERP_TOGGLE)) {
-        g_openpete_interp_enabled = !g_openpete_interp_enabled;
-        OPL_INFO_F("render", "interpolation -> %s",
-                   g_openpete_interp_enabled ? "ON" : "OFF");
+        openpete_interp_toggle_set(!openpete_interp_toggle_on());
         openpete_osd_notify("host", "hotkey.interp", 0, "INTERPOLATION: %s",
-                            g_openpete_interp_enabled ? "ON" : "OFF");
+                            openpete_interp_toggle_on() ? "ON" : "OFF");
     }
 
     /* Live toggle of sector LOD original <-> extended (the settings

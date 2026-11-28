@@ -177,6 +177,20 @@ int openpete_interp_enabled(void) {
     return s_enabled;
 }
 
+/* The interpolation toggle: written by the key on the host loop and by the
+ * registry row from the dev overlay's thread, read by the host loop. */
+static OP_ROLE_ATOMIC(int) s_toggle_on = 1;
+
+int openpete_interp_toggle_on(void) {
+    return atomic_load_explicit(&s_toggle_on, memory_order_relaxed);
+}
+
+void openpete_interp_toggle_set(int on) {
+    on = on ? 1 : 0;
+    if (atomic_exchange_explicit(&s_toggle_on, on, memory_order_relaxed) == on) return;
+    OPL_INFO_F("render", "interpolation -> %s", on ? "ON" : "OFF");
+}
+
 /* Virtual present clock - see the header note. Atomic: the owner (the thread
  * that re-extracts) stores it, and the walk workers it dispatches read it, so
  * the release store before the dispatch is visible to every worker's acquire
