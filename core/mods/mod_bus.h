@@ -1,7 +1,8 @@
 /* core/mods/mod_bus.h - the bus table, its membership snapshot and the key
- * table (mod_bus.c), and the loader's per-mod reads they rely on
- * (mod_loader.c). Engine-internal: the mod-facing entries are
- * openpete_mod_api_t's bus_* members, which the loader's gates route here. */
+ * table (mod_bus.c), the service tables the snapshot carries (mod_svc.c),
+ * and the loader's per-mod reads they rely on (mod_loader.c).
+ * Engine-internal: the mod-facing entries are openpete_mod_api_t's bus_*
+ * and svc_* members, which the loader's gates route here. */
 #ifndef OPENPETE_MOD_BUS_H
 #define OPENPETE_MOD_BUS_H
 
@@ -77,6 +78,42 @@ void openpete_mods_bus_report(void);
  * @param tick the canonical tick of the boundary. */
 void openpete_mods_bus_note_boundary(unsigned tick);
 
+/** @brief Return the process-lifetime copy of a string, adding it on first use; legal from any thread.
+ *
+ * @param s the string.
+ * @return the copy, or NULL on an allocation failure. */
+const char* openpete_mods_bus_intern(const char* s);
+/** @brief Log a refused api call once per mod and cause, and return -1.
+ *
+ * @param m the caller, or NULL.
+ * @param entry the api entry name.
+ * @param why the cause, a string literal (its address identifies it).
+ * @return -1. */
+int openpete_mods_bus_refuse(const openpete_mod_t* m, const char* entry, const char* why);
+
+/* ---- service tables (mod_svc.c) -------------------------------------- */
+
+/** @brief The service part of a membership snapshot: every enabled mod's exports, immutable. */
+typedef struct openpete_mods_svc_snap openpete_mods_svc_snap_t;
+
+/** @brief Build the service part of a new snapshot from the export table and each owner's enabled state.
+ *
+ * Called by openpete_mods_bus_publish, on the thread that publishes.
+ * @return one block the caller owns (free() releases it), or NULL on an
+ *         allocation failure. */
+const openpete_mods_svc_snap_t* openpete_mods_svc_snap_build(void);
+/** @brief Return the service part of the published snapshot, or NULL before the first publish; legal from any thread.
+ *
+ * @return the service snapshot, or NULL. */
+const openpete_mods_svc_snap_t* openpete_mods_bus_snap_svc(void);
+/** @brief Remove every table a mod exported; the caller publishes afterwards.
+ *
+ * The removed copies are kept for the process: a consumer may hold one.
+ * @param m the mod. */
+void openpete_mods_svc_remove_owner(const openpete_mod_t* m);
+/** @brief Log the service counters at exit, when any table was exported. */
+void openpete_mods_svc_report(void);
+
 /* ---- the api entries (loader gates call these) ----------------------- */
 
 /** @brief Attach the caller's handler to a bus (bus_attach).
@@ -132,5 +169,36 @@ uint32_t openpete_mods_bus_mod_key(openpete_mod_t* self);
  * @return 0, or -1. */
 int openpete_mods_bus_mod_info(openpete_mod_t* self, uint32_t key,
                                openpete_mod_bus_sender_t* out);
+
+/** @brief Export a copy of a function table under a name and major (svc_export).
+ *
+ * @param self the caller.
+ * @param name the service name.
+ * @param major its major, 1 or more.
+ * @param table the bytes to copy.
+ * @param size their count, 1 or more.
+ * @return 0, or -1 when refused. */
+int openpete_mods_svc_export(openpete_mod_t* self, const char* name, uint32_t major,
+                             const void* table, uint32_t size);
+/** @brief Return one enabled provider's table copy from the published snapshot (svc_get).
+ *
+ * @param self the caller.
+ * @param provider_key the provider's key.
+ * @param name the service name.
+ * @param major its major.
+ * @param min_size the fewest bytes the caller reads.
+ * @return the engine's copy, or NULL. */
+const void* openpete_mods_svc_get(openpete_mod_t* self, uint32_t provider_key,
+                                  const char* name, uint32_t major, uint32_t min_size);
+/** @brief List the keys of a service's enabled providers in walk order (svc_list).
+ *
+ * @param self the caller.
+ * @param name the service name.
+ * @param major its major.
+ * @param keys_out the keys.
+ * @param cap their count.
+ * @return the provider count, 0 for a keyless caller, or -1. */
+int openpete_mods_svc_list(openpete_mod_t* self, const char* name, uint32_t major,
+                           uint32_t* keys_out, int cap);
 
 #endif /* OPENPETE_MOD_BUS_H */

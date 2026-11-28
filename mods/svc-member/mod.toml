@@ -1,0 +1,121 @@
+# svc-member - CI fixture: one provider or consumer of the service rungs
+# (tests/harness/mods_svc_rungs.sh), copied under several ids so each copy
+# has its own mod key. A provider exports the table "probe"/1 at entry,
+# whose one function passes an admission gate (an in-flight count and a
+# live flag its shutdown hook clears and drains). A consumer overrides
+# Spyro 1's GamestateDraw (a plain base()) and probes the providers on the
+# calls the config names:
+#
+#   provide        export probe/1; gen is the value ping() reports.
+#   twice          export probe/1 twice (variant 1, then 2): replaced in place.
+#   major2         also export probe/2.
+#   fail_entry     the entry returns 1 after exporting (a failed hot reload).
+#   consume        comma-separated provider ids the probes look up.
+#   probe_a/b/c    GamestateDraw calls that log svc_list, svc_get per
+#                  provider and a ping through the pointer kept at probe_a.
+#   entry_get      a provider id looked up from the entry point.
+#   keyless_probe  log svc_export, svc_get and svc_list from a keyless copy.
+#   reader         a thread looks tables up and pings them until shutdown.
+#
+# Never enable it to play.
+
+[mod]
+id      = "svc-member"
+name    = "Service Member"
+version = "0.1.0"
+game    = ["spyro-1"]
+api     = 13
+state    = "none"     # it keeps no gameplay state
+runahead = "host-fx"  # its probes call service tables from tick context
+
+[[config]]
+key = "provide"
+type = "bool"
+default = false
+label = "Provider"
+help = "Exports the table probe/1 at entry."
+
+[[config]]
+key = "gen"
+type = "int"
+default = 0
+min = 0
+max = 1000
+label = "Generation"
+help = "The value the exported ping() reports; a config Apply of it reloads the copy."
+
+[[config]]
+key = "twice"
+type = "bool"
+default = false
+label = "Export twice"
+help = "Exports probe/1 a second time with variant 2, which replaces the first copy in place."
+
+[[config]]
+key = "major2"
+type = "bool"
+default = false
+label = "Major 2"
+help = "Also exports probe/2."
+
+[[config]]
+key = "fail_entry"
+type = "bool"
+default = false
+label = "Fail the entry"
+help = "The entry point returns 1 after exporting (a failed hot reload)."
+
+[[config]]
+key = "consume"
+type = "string"
+default = ""
+label = "Providers"
+help = "Comma-separated provider ids the probes look up."
+
+[[config]]
+key = "probe_a"
+type = "int"
+default = 0
+min = 0
+max = 100000
+label = "Probe A call"
+help = "GamestateDraw call of the first probe; it also keeps the first provider's table pointer."
+
+[[config]]
+key = "probe_b"
+type = "int"
+default = 0
+min = 0
+max = 100000
+label = "Probe B call"
+help = "GamestateDraw call of the second probe."
+
+[[config]]
+key = "probe_c"
+type = "int"
+default = 0
+min = 0
+max = 100000
+label = "Probe C call"
+help = "GamestateDraw call of the third probe."
+
+[[config]]
+key = "entry_get"
+type = "string"
+default = ""
+label = "Entry lookup"
+help = "Provider id whose probe/1 the entry point looks up."
+
+[[config]]
+key = "keyless_probe"
+type = "bool"
+default = false
+label = "Keyless probe"
+help = "Logs svc_export at entry and svc_get and svc_list at probe_a."
+
+[[config]]
+key = "reader"
+type = "bool"
+default = false
+label = "Reader thread"
+help = "A thread of this copy lists probe/1, looks every provider up and pings it until shutdown."

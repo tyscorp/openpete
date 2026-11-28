@@ -14,8 +14,8 @@
 #
 # Usage: tests/harness/check_mods.sh [--game SLUG] [--section NAME]
 #        (repo root; ctest mod_ladder_games, mod_ladder_matrix,
-#        mod_ladder_timeline, mod_ladder_frames and mod_ladder_bus run one
-#        section each)
+#        mod_ladder_timeline, mod_ladder_frames, mod_ladder_bus and
+#        mod_ladder_services run one section each)
 # Env:   OPENPETE_BIN / OPENPETE_DISC - forwarded to runs + oracle.
 #
 # Sections (--section; none runs every one in this order):
@@ -47,6 +47,10 @@
 #             (tests/harness/mods_bus_rungs.sh): walk order, results,
 #             depth, the saved register set, refusals, crash attribution,
 #             mod keys, reload identity, runahead and savestate order.
+#   services  Spyro 1 only: service tables between mods
+#             (tests/harness/mods_svc_rungs.sh): lookup and provider order,
+#             replace in place, the entry-only export, keyless refusals, a
+#             hot reload, a failed reload and a toggle.
 # No section reads a $WORK file another section writes. matrix and
 # timeline use Spyro 1's corpus (its fixtures, level names and golden),
 # so under another --game they run nothing.
@@ -78,8 +82,8 @@ for _a in "$@"; do
     fi
 done
 case "$SECTION" in
-    ""|games|debugflags|matrix|timeline|frames|bus) ;;
-    *) echo "unknown --section '$SECTION' (expected games, debugflags, matrix, timeline, frames or bus)" >&2
+    ""|games|debugflags|matrix|timeline|frames|bus|services) ;;
+    *) echo "unknown --section '$SECTION' (expected games, debugflags, matrix, timeline, frames, bus or services)" >&2
        exit 64 ;;
 esac
 # section_on <name>: true when the run includes that section.
@@ -1534,6 +1538,12 @@ if [ "$PG_GAME" = "spyro-1" ] && section_on bus; then
 # shellcheck source=tests/harness/mods_bus_rungs.sh
 source tests/harness/mods_bus_rungs.sh
 fi # section bus
+
+# ══ section services: service tables between mods ═════════════════════
+if [ "$PG_GAME" = "spyro-1" ] && section_on services; then
+# shellcheck source=tests/harness/mods_svc_rungs.sh
+source tests/harness/mods_svc_rungs.sh
+fi # section services
 
 # ══ section games (part 2): shaders (Spyro 1), materials, table census ═
 # The shader rungs sample Spyro 1 frames (a title-screen VBL, level 10's

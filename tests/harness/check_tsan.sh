@@ -31,8 +31,13 @@
 # call, m2's reader thread polls bus_members and mod_info until shutdown,
 # and m3 is toggled off, hot reloaded through a config Apply and toggled on,
 # and m1 toggled off and on, so the membership snapshot is published while
-# the reader reads it. Engagement: the reader's poll count and the records
-# it matched, m3's reload, and the walker's handler-run count.
+# the reader reads it. Two copies of the svc-member fixture ride the same
+# run: s1 exports probe/1 and is hot reloaded through a config Apply and
+# toggled off and on; s2's reader thread lists probe/1, looks every
+# provider up and calls the table's function through its admission gate
+# until shutdown. Engagement: both readers' poll counts and the records and
+# tables they matched, m3's and s1's reloads, and the walker's handler-run
+# count.
 # OPENPETE_TSAN_MODS_PLANT=1 also sets m2's plant_race, a write of one plain
 # global from the reader thread and the sim thread: the run must then FAIL
 # with a report in bus_member.c (the mode's positive control).
@@ -156,20 +161,24 @@ if [[ "$MODS" == 1 ]]; then
     rm -rf "${MD:?}"
     mkdir -p "$MD"
     : > "$MD/enabled.txt"
-    for id in m1 m2 m3; do
-        cp -r mods/bus-member "$MD/$id"
+    for id in m1 m2 m3 s1 s2; do
+        src=bus-member
+        [[ "$id" == s* ]] && src=svc-member
+        cp -r "mods/$src" "$MD/$id"
         rm -rf "${MD:?}/$id/.build" "${MD:?}/$id/data"
-        sed -i "s/^id *= *\"bus-member\"/id      = \"$id\"/" "$MD/$id/mod.toml"
+        sed -i "s/^id *= *\"$src\"/id      = \"$id\"/" "$MD/$id/mod.toml"
         echo "$id" >> "$MD/enabled.txt"
     done
+    echo 'provide = true' > "$MD/s1/config.toml"
+    echo 'reader = true' > "$MD/s2/config.toml"
     echo 'every_tick = true' > "$MD/m1/config.toml"
     printf 'reader = true\n' > "$MD/m2/config.toml"
     [[ "${OPENPETE_TSAN_MODS_PLANT:-0}" == 1 ]] && echo 'plant_race = true' >> "$MD/m2/config.toml"
     # m3's GamestateDraw link encloses the fiber's park, which defers its
     # reload: it is toggled off around the Apply.
     PG_CAPTURE_ENV=("${ENV[@]}" "OPENPETE_MOD_CC=$ROOT/tests/harness/mod-sanitize-cc" OPENPETE_MOD_SANITIZE=thread
-                    OPENPETE_MODS_TOGGLE='100:m3:0,300:m3:1,400:m1:0,500:m1:1'
-                    OPENPETE_MODS_CFG_APPLY='200:m3:gen=1')
+                    OPENPETE_MODS_TOGGLE='100:m3:0,300:m3:1,400:m1:0,500:m1:1,330:s1:0,450:s1:1'
+                    OPENPETE_MODS_CFG_APPLY='200:m3:gen=1,250:s1:gen=1')
     PG_CAPTURE_TIMEOUT=$RUN_TIMEOUT
     pg_capture "$LOG" "" -- --mods-dir "$MD" --no-card --mute 1 --frame-limit 1200
     rc=$?
@@ -219,9 +228,15 @@ if [[ "$MODS" == 1 ]]; then
     runs="$(grep -o 'bus: buses=[0-9]* handler runs=[0-9]*' "$LOG" | tail -1 | sed 's/.*runs=//')"
     reloads=$(grep -c 'hot reload: m3 live' "$LOG")
     toggles=$(grep -c 'live toggle: m[13] ' "$LOG")
+    sreader="$(grep -o 'svc-member s2: reader polls=[0-9]* hits=[0-9]* pings=[0-9]* retired=[0-9]*' "$LOG" | tail -1)"
+    sreloads=$(grep -c 'hot reload: s1 live' "$LOG")
+    stoggles=$(grep -c 'live toggle: s1 ' "$LOG")
     echo "$TAG: $GAME ${reader:-no reader line} handler_runs=${runs:-0} m3_reloads=$reloads toggles=$toggles"
+    echo "$TAG: $GAME ${sreader:-no svc reader line} s1_reloads=$sreloads s1_toggles=$stoggles"
     polls="$(field "$reader" polls)" listed="$(field "$reader" listed)"
+    spolls="$(field "$sreader" polls)" spings="$(field "$sreader" pings)"
     (( ${polls:-0} > 0 && ${listed:-0} > 0 && ${runs:-0} > 0 && reloads > 0 && toggles == 4 )) || vac=1
+    (( ${spolls:-0} > 0 && ${spings:-0} > 0 && sreloads > 0 && stoggles == 2 )) || vac=1
 elif [[ "$WINDOWED" == 0 ]]; then
     push="$(grep -m1 '^\[push-fanout-check final\]' "$LOG")"
     pose="$(grep -m1 '^\[pose-cache\]' "$LOG")"

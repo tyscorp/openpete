@@ -383,12 +383,15 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # and wad overlays and the [test]-block runner; timeline: the arena
     # canary, rewind, stream handles, save safety and session rungs; frames:
     # the override frame stack across a parked fiber; bus: named buses
-    # between mods). No section reads another's output. Each TIMEOUT is
+    # between mods; services: service tables between mods). No section
+    # reads another's output. Each TIMEOUT is
     # twice the section's measured wall time (games 283 s, matrix 481 s,
-    # timeline 342 s, frames 82 s on an idle machine; bus 344 s at load 15).
+    # timeline 342 s, frames 82 s on an idle machine; bus 344 s at load 15;
+    # services 6 s with the fixture objects cached, 60 s allowed for a cold
+    # compile).
     # `ctest -L mods`, or tests/harness/check_mods.sh with no --section for
     # the whole ladder.
-    foreach(_sec_to games:570 matrix:970 timeline:690 frames:170 bus:690)
+    foreach(_sec_to games:570 matrix:970 timeline:690 frames:170 bus:690 services:60)
         string(REPLACE ":" ";" _sec_to "${_sec_to}")
         list(GET _sec_to 0 _sec)
         list(GET _sec_to 1 _to)
@@ -1470,8 +1473,9 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             SKIP_RETURN_CODE 64
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
-    # The bus fixtures built -fsanitize=thread: a reader thread polling the
-    # membership snapshot across toggles and a hot reload (Spyro 1; 20 s).
+    # The bus and service fixtures built -fsanitize=thread: reader threads
+    # polling the membership snapshot and calling service tables across
+    # toggles and hot reloads (Spyro 1; 20 s).
     add_test(NAME tsan_mods_spyro-1
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_tsan.sh --game spyro-1 --mods)
     set_tests_properties(tsan_mods_spyro-1 PROPERTIES

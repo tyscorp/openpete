@@ -11,14 +11,20 @@
  * after its retirement; bus_members and mod_info record sizes; a reader
  * thread polling bus_members and mod_info across publishes (a
  * ThreadSanitizer build of this test checks the snapshot handoff). The
- * host services the modules call are stubs. */
+ * service tables of core/mods/mod_svc.c (included whole) ride the same
+ * snapshot: svc_export at entry only, copied and replaced in place,
+ * svc_get and svc_list in provider order across a toggle, a strip and a
+ * re-export, their refusals, and a reader thread looking tables up across
+ * publishes. The host services the modules call are stubs. */
 
 #include "../../core/mods/mod_chain.c"
 #include "../../core/mods/mod_bus.c"
+#include "../../core/mods/mod_svc.c"
 #include "psx_runtime.h" /* CPUState */
 
 #include <pthread.h>
 #include <time.h>
+#include <sched.h>
 
 /* ---- stubs ------------------------------------------------------------- */
 
@@ -115,6 +121,7 @@ static void reset(void) {
     keys_once();
     for (int i = 0; i < N_MODS; i++) {
         openpete_mods_bus_remove_owner(&s_m[i]);
+        openpete_mods_svc_remove_owner(&s_m[i]);
         atomic_store(&s_m[i].enabled, 1);
         atomic_store(&s_m[i].closed, 0);
         s_m[i].neutral = 0;
@@ -143,6 +150,7 @@ static void enter(int i, const char* bus, openpete_mod_bus_fn fn) {
 /** @brief Strip a stub mod as mod_strip_registrations does: remove, retire, publish. */
 static void strip(int i) {
     openpete_mods_bus_remove_owner(&s_m[i]);
+    openpete_mods_svc_remove_owner(&s_m[i]);
     atomic_fetch_add(&s_m[i].retired, 1u);
     openpete_mods_bus_publish();
 }
@@ -514,8 +522,132 @@ static void case_reader_thread(void) {
     const int bad = atomic_load(&s_reader_stop) == 2;
     atomic_store(&s_reader_stop, 1);
     pthread_join(t, NULL);
-    CHECK(!bad, "reader saw a bad record");
+    CHECK(!bad, "reader saw a bad record (%ld reads)", atomic_load(&s_reader_reads));
     CHECK(atomic_load(&s_reader_reads) > 0, "reader never read within 5 s");
+}
+
+/* A stub service table: a marker word and the exporter's index. */
+typedef struct { uint32_t size, marker, who; } svc_tab_t;
+
+/** @brief Export a stub table from an entry site and publish, as a mod's entry does.
+ *
+ * @param i the exporter.
+ * @param name the service name.
+ * @param major its major.
+ * @param marker the table's marker word.
+ * @return svc_export's result. */
+static int export_at_entry(int i, const char* name, uint32_t major, uint32_t marker) {
+    svc_tab_t t = { sizeof t, marker, (uint32_t)i };
+    const openpete_mods_site_t prev = openpete_mods_site_open(OPENPETE_MODS_CTX_ENTRY);
+    const int rc = openpete_mods_svc_export(&s_m[i], name, major, &t, sizeof t);
+    openpete_mods_site_close(prev);
+    t.marker = 0xDEADu; /* the engine kept its own copy */
+    openpete_mods_bus_publish();
+    return rc;
+}
+
+/** @brief Format svc_list's keys for a service as exporter ids. */
+static const char* list_str(const char* name, uint32_t major) {
+    static char buf[64];
+    uint32_t keys[N_MODS];
+    const int n = openpete_mods_svc_list(&s_m[0], name, major, keys, N_MODS);
+    buf[0] = 0;
+    for (int i = 0; i < n && i < N_MODS; i++)
+        for (int j = 0; j < N_MODS; j++)
+            if (s_m[j].key == keys[i]) strncat(buf, k_ids[j], sizeof buf - strlen(buf) - 1);
+    return buf;
+}
+
+/** @brief svc_get by key and major with min_size; svc_list newest entry first; replace in place; a toggle, a strip and a re-export; refusals. */
+static void case_svc(void) {
+    reset();
+    CHECK(export_at_entry(1, "gift", 1, 11) == 0, "export b");
+    CHECK(export_at_entry(2, "gift", 1, 12) == 0, "export c");
+    CHECK(export_at_entry(3, "gift", 2, 13) == 0, "export d major 2");
+    CHECK(strcmp(list_str("gift", 1), "cb") == 0, "providers newest first: %s", list_str("gift", 1));
+    const svc_tab_t* t = openpete_mods_svc_get(&s_m[0], s_m[1].key, "gift", 1, sizeof(svc_tab_t));
+    CHECK(t && t->marker == 11 && t->who == 1, "svc_get b's copy");
+    CHECK(!openpete_mods_svc_get(&s_m[0], s_m[3].key, "gift", 1, 4), "another major");
+    CHECK(!openpete_mods_svc_get(&s_m[0], s_m[1].key, "gift", 1, sizeof(svc_tab_t) + 1), "min_size");
+    CHECK(!openpete_mods_svc_get(&s_m[0], 0, "gift", 1, 4), "key 0");
+    CHECK(!openpete_mods_svc_get(&s_m[0], s_m[1].key, "gifts", 1, 4), "another name");
+    /* A second export replaces in place; the first copy stays readable. */
+    CHECK(export_at_entry(1, "gift", 1, 21) == 0, "re-export b");
+    const svc_tab_t* t2 = openpete_mods_svc_get(&s_m[0], s_m[1].key, "gift", 1, 4);
+    CHECK(t2 && t2 != t && t2->marker == 21 && t->marker == 11, "replaced copy, old kept");
+    CHECK(strcmp(list_str("gift", 1), "cb") == 0, "replace keeps the position");
+    /* Toggle off: gone from both reads; on: back. */
+    atomic_store(&s_m[2].enabled, 0);
+    openpete_mods_bus_publish();
+    CHECK(!openpete_mods_svc_get(&s_m[0], s_m[2].key, "gift", 1, 4) &&
+          strcmp(list_str("gift", 1), "b") == 0, "disabled provider");
+    atomic_store(&s_m[2].enabled, 1);
+    openpete_mods_bus_publish();
+    /* Disabled without a republish: the live re-check hides it. */
+    atomic_store(&s_m[2].enabled, 0);
+    CHECK(!openpete_mods_svc_get(&s_m[0], s_m[2].key, "gift", 1, 4), "live re-check");
+    atomic_store(&s_m[2].enabled, 1);
+    /* Strip (a reload, or a reload that fails after the strip): no export. */
+    strip(1);
+    CHECK(!openpete_mods_svc_get(&s_m[0], s_m[1].key, "gift", 1, 4) &&
+          strcmp(list_str("gift", 1), "c") == 0, "stripped provider");
+    CHECK(export_at_entry(1, "gift", 1, 31) == 0, "reload entry exports again");
+    const svc_tab_t* t3 = openpete_mods_svc_get(&s_m[0], s_m[1].key, "gift", 1, 4);
+    CHECK(t3 && t3->marker == 31 && strcmp(list_str("gift", 1), "bc") == 0,
+          "re-export at the front with the new copy");
+    /* Refusals. */
+    svc_tab_t x = { sizeof x, 1, 0 };
+    CHECK(openpete_mods_svc_export(&s_m[4], "gift", 1, &x, sizeof x) == -1, "export outside entry");
+    const openpete_mods_site_t prev = openpete_mods_site_open(OPENPETE_MODS_CTX_ENTRY);
+    CHECK(openpete_mods_svc_export(&s_m[4], "", 1, &x, sizeof x) == -1, "empty name");
+    CHECK(openpete_mods_svc_export(&s_m[4], "gift", 0, &x, sizeof x) == -1, "major 0");
+    CHECK(openpete_mods_svc_export(&s_m[4], "gift", 1, NULL, 4) == -1, "NULL table");
+    CHECK(openpete_mods_svc_export(&s_m[4], "gift", 1, &x, 0) == -1, "size 0");
+    s_m[4].key = 0;
+    CHECK(openpete_mods_svc_export(&s_m[4], "gift", 1, &x, sizeof x) == -1, "keyless export");
+    openpete_mods_site_close(prev);
+    uint32_t keys[2];
+    CHECK(!openpete_mods_svc_get(&s_m[4], s_m[2].key, "gift", 1, 4) &&
+          openpete_mods_svc_list(&s_m[4], "gift", 1, keys, 2) == 0, "keyless consumer");
+    CHECK(openpete_mods_svc_list(&s_m[0], "gift", 1, NULL, 1) == -1 &&
+          openpete_mods_svc_list(&s_m[0], "gift", 1, NULL, 0) == 2, "list arguments");
+}
+
+static _Atomic int s_svc_stop;
+static _Atomic long s_svc_reads;
+/** @brief A reader thread: svc_list and svc_get per key in a loop until stopped; a table's who must name its provider. */
+static void* svc_reader(void* arg) {
+    (void)arg;
+    uint32_t keys[N_MODS];
+    while (!atomic_load(&s_svc_stop)) {
+        const int n = openpete_mods_svc_list(&s_m[0], "gift", 1, keys, N_MODS);
+        for (int i = 0; i < n && i < N_MODS; i++) {
+            const svc_tab_t* t = openpete_mods_svc_get(&s_m[0], keys[i], "gift", 1, sizeof *t);
+            if (t && (t->who >= N_MODS || s_m[t->who].key != keys[i])) atomic_store(&s_svc_stop, 2);
+        }
+        atomic_fetch_add(&s_svc_reads, 1);
+    }
+    return NULL;
+}
+
+/** @brief A reader thread sees consistent tables while the sim side toggles, strips and re-exports providers and publishes. */
+static void case_svc_reader_thread(void) {
+    reset();
+    for (int i = 1; i < 7; i++) (void)export_at_entry(i, "gift", 1, (uint32_t)i);
+    pthread_t t;
+    atomic_store(&s_svc_stop, 0);
+    CHECK(pthread_create(&t, NULL, svc_reader, NULL) == 0, "svc reader thread");
+    while (atomic_load(&s_svc_reads) == 0) sched_yield(); /* reading before the first publish */
+    for (int round = 0; round < 2000; round++) {
+        const int i = 1 + round % 6;
+        atomic_store(&s_m[i].enabled, !atomic_load(&s_m[i].enabled));
+        openpete_mods_bus_publish();
+        if (round % 5 == 0) { strip(i); (void)export_at_entry(i, "gift", 1, (uint32_t)round); }
+    }
+    const int bad = atomic_load(&s_svc_stop) == 2;
+    atomic_store(&s_svc_stop, 1);
+    pthread_join(t, NULL);
+    CHECK(!bad, "svc reader saw a bad table (%ld reads)", atomic_load(&s_svc_reads));
 }
 
 /** @brief Run every case; exit 1 on any failed check. */
@@ -531,6 +663,8 @@ int main(void) {
     case_members_records();
     case_attribution();
     case_reader_thread();
+    case_svc();
+    case_svc_reader_thread();
     if (s_fail) return 1;
     printf("mod_bus_test: all cases passed\n");
     return 0;

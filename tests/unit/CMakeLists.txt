@@ -810,9 +810,11 @@ set_tests_properties(mod_chain_test PROPERTIES LABELS "mods")
 # walk order across a re-entry, results, the depth cap and a full frame
 # stack, the saved register set and sp reserve, base() refused in a handler,
 # the context and owner refusals, members disabled, retired or entered while
-# a walk is in progress, record sizes, and a reader thread polling
-# bus_members and mod_info across publishes. Includes both modules whole;
-# host services are stubs.
+# a walk is in progress, record sizes, a reader thread polling
+# bus_members and mod_info across publishes, and the service tables the
+# snapshot carries (core/mods/mod_svc.c): export, lookup, provider order,
+# toggle, strip and re-export, refusals and a lookup thread. Includes the
+# three modules whole; host services are stubs.
 add_executable(mod_bus_test
     mod_bus_test.c
     ${CMAKE_SOURCE_DIR}/core/mods/mod_vec.c

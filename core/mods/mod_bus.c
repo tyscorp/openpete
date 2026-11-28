@@ -56,11 +56,7 @@ typedef struct str_node {
 
 static _Atomic(const str_node_t*) s_interned;
 
-/** @brief Return the process-lifetime copy of a string, adding it on first use.
- *
- * @param s the string.
- * @return the copy, or NULL on an allocation failure. */
-static const char* intern(const char* s) {
+const char* openpete_mods_bus_intern(const char* s) {
     const str_node_t* head = atomic_load(&s_interned);
     for (;;) {
         for (const str_node_t* n = head; n; n = n->next)
@@ -98,7 +94,7 @@ static _Atomic(const key_table_t*) s_keys;   /* NULL until the seal */
 
 const char* openpete_mods_keys_add(const char* id, uint32_t key) {
     if (atomic_load(&s_keys) || !id) return NULL;
-    const char* iid = intern(id);
+    const char* iid = openpete_mods_bus_intern(id);
     key_node_t* node = iid ? (key_node_t*)malloc(sizeof *node) : NULL;
     if (!node) return NULL;
     node->row.key = key;
@@ -183,12 +179,7 @@ static int once(const openpete_mod_t* m, const char* what, const char* bus) {
     return 1;
 }
 
-/** @brief Log a refused call once per mod and cause, and return -1.
- *
- * @param m the caller.
- * @param entry the api entry name.
- * @param why the cause, a string literal naming it. */
-static int refuse(const openpete_mod_t* m, const char* entry, const char* why) {
+int openpete_mods_bus_refuse(const openpete_mod_t* m, const char* entry, const char* why) {
     if (once(m, why, NULL))
         OPL_ERROR_F(m ? mod_owner_tag(m) : "mods", "%s refused: %s "
                     "(later refusals for this cause are not logged)", entry, why);
@@ -352,6 +343,7 @@ typedef struct {
     int               n_bus;
     const snap_bus_t* buses;
     const snap_row_t* rows;
+    const openpete_mods_svc_snap_t* svc; /* the exports (mod_svc.c) */
 } snapshot_t;
 
 static _Atomic(const snapshot_t*) s_snap;
@@ -367,11 +359,13 @@ void openpete_mods_bus_publish(void) {
             live += mod_owner_enabled(tab->rows[tab->buses[i].first + j].owner) != 0;
         if (live) { n_bus++; n_rows += live; }
     }
-    snapshot_t* s = (snapshot_t*)malloc(sizeof *s + n_bus * sizeof(snap_bus_t) +
-                                        n_rows * sizeof(snap_row_t));
+    const openpete_mods_svc_snap_t* svc = openpete_mods_svc_snap_build();
+    snapshot_t* s = svc ? (snapshot_t*)malloc(sizeof *s + n_bus * sizeof(snap_bus_t) +
+                                              n_rows * sizeof(snap_row_t)) : NULL;
     if (!s) {
+        free((void*)svc);
         OPL_ERROR_F("mods", "bus snapshot allocation failed - bus membership "
-                    "keeps its previous state");
+                    "and service exports keep their previous state");
         return;
     }
     snap_bus_t* buses = (snap_bus_t*)(s + 1);
@@ -401,8 +395,14 @@ void openpete_mods_bus_publish(void) {
     s->n_bus = bi;
     s->buses = buses;
     s->rows  = rows;
+    s->svc   = svc;
     atomic_store(&s_snap, s);
     atomic_fetch_add_explicit(&s_published, 1, memory_order_relaxed);
+}
+
+const openpete_mods_svc_snap_t* openpete_mods_bus_snap_svc(void) {
+    const snapshot_t* s = atomic_load(&s_snap);
+    return s ? s->svc : NULL;
 }
 
 /** @brief Find a bus's member run in a snapshot.
@@ -428,10 +428,10 @@ static const snap_bus_t* snap_find(const snapshot_t* s, const char* name) {
 static int owner_refused(const openpete_mod_t* self, const char* entry, int mutating) {
     if (!self) return -1;
     if (!mod_owner_key(self))
-        return refuse(self, entry, "this mod is keyless (its key is 0, collides "
+        return openpete_mods_bus_refuse(self, entry, "this mod is keyless (its key is 0, collides "
                       "with another mod's, or its id is 64 bytes or longer)");
     if (mutating && mod_owner_sim_neutral(self))
-        return refuse(self, entry, "the manifest declares sim_mutative = false, "
+        return openpete_mods_bus_refuse(self, entry, "the manifest declares sim_mutative = false, "
                       "and a bus handler or sender changes gameplay state");
     return 0;
 }
@@ -604,12 +604,12 @@ static int call_admit(openpete_mod_t* self, const char* entry, CPUState* cpu,
                       const char* bus, uint32_t msg, uint32_t size,
                       const snap_bus_t** run, const snapshot_t** snap) {
     if (owner_refused(self, entry, 1)) return -1;
-    if (!bus_name_valid(bus)) return refuse(self, entry, "a bus name is <name>/<major>, the major 1 or more");
+    if (!bus_name_valid(bus)) return openpete_mods_bus_refuse(self, entry, "a bus name is <name>/<major>, the major 1 or more");
     const char* why = call_context_refusal();
-    if (why) return refuse(self, entry, why);
-    if (!cpu) return refuse(self, entry, "a NULL CPUState");
+    if (why) return openpete_mods_bus_refuse(self, entry, why);
+    if (!cpu) return openpete_mods_bus_refuse(self, entry, "a NULL CPUState");
     if (!range_ok(msg, size))
-        return refuse(self, entry, "[msg_addr, msg_addr + size) is not one "
+        return openpete_mods_bus_refuse(self, entry, "[msg_addr, msg_addr + size) is not one "
                       "contiguous view of guest memory");
     *snap = atomic_load(&s_snap);
     *run = snap_find(*snap, bus);
@@ -688,15 +688,15 @@ int openpete_mods_bus_attach(openpete_mod_t* self, const char* bus,
                              openpete_mod_bus_fn fn, void* user) {
     if (owner_refused(self, "bus_attach", 1)) return -1;
     if (!bus_name_valid(bus) || !fn)
-        return refuse(self, "bus_attach", "a NULL handler or a bus name not of "
+        return openpete_mods_bus_refuse(self, "bus_attach", "a NULL handler or a bus name not of "
                       "the form <name>/<major>");
     const openpete_mods_ctx ctx = openpete_mods_site_now().ctx;
     if (ctx != OPENPETE_MODS_CTX_ENTRY && ctx != OPENPETE_MODS_CTX_RELOAD_ENTRY)
-        return refuse(self, "bus_attach", "bus_attach is legal in the entry point only");
-    const char* iname = intern(bus);
+        return openpete_mods_bus_refuse(self, "bus_attach", "bus_attach is legal in the entry point only");
+    const char* iname = openpete_mods_bus_intern(bus);
     const handler_t h = { self, openpete_mods_key_id(mod_owner_key(self)), fn, user };
     if (!iname || table_attach(iname, &h) != 0)
-        return refuse(self, "bus_attach", "the bus table could not grow");
+        return openpete_mods_bus_refuse(self, "bus_attach", "the bus table could not grow");
     return 0;
 }
 
@@ -708,7 +708,7 @@ int openpete_mods_bus_attach(openpete_mod_t* self, const char* bus,
  * @return 0, or -1 refused (logged once). */
 static int record_size_refused(const openpete_mod_t* self, const char* entry, uint32_t size) {
     if (size >= BUS_SENDER_SIZE_13) return 0;
-    return refuse(self, entry, "struct_size is below sizeof(openpete_mod_bus_sender_t) "
+    return openpete_mods_bus_refuse(self, entry, "struct_size is below sizeof(openpete_mod_bus_sender_t) "
                   "of api 13");
 }
 
@@ -731,9 +731,9 @@ int openpete_mods_bus_members(openpete_mod_t* self, const char* bus,
                               openpete_mod_bus_sender_t* out, int cap) {
     if (owner_refused(self, "bus_members", 0)) return -1;
     if (!bus_name_valid(bus))
-        return refuse(self, "bus_members", "a bus name is <name>/<major>, the major 1 or more");
+        return openpete_mods_bus_refuse(self, "bus_members", "a bus name is <name>/<major>, the major 1 or more");
     if (cap < 0 || (cap > 0 && !out))
-        return refuse(self, "bus_members", "a negative cap or a NULL out with a cap");
+        return openpete_mods_bus_refuse(self, "bus_members", "a negative cap or a NULL out with a cap");
     const uint32_t stride = cap > 0 ? out[0].struct_size : BUS_SENDER_SIZE_13;
     if (record_size_refused(self, "bus_members", stride)) return -1;
     const snapshot_t* snap = atomic_load(&s_snap);

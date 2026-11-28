@@ -1814,6 +1814,74 @@ typedef struct openpete_mod_api {
     int (*mod_info)(openpete_mod_t* self, uint32_t key,
                     openpete_mod_bus_sender_t* out);
     /** @} */
+
+    /** @name Service tables
+     * A service table is a struct of function pointers (and data) one mod
+     * exports under a name and a major and other mods call directly, from
+     * any thread the provider's own header permits. The engine copies the
+     * table at export, never frees a copy and never unloads a mod's code,
+     * so a pointer `svc_get` returned stays readable for the process; the
+     * provider's state ends at its shutdown hook, so a provider gates every
+     * function with an in-flight count and a live flag that its shutdown
+     * hook clears and drains. A hot reload runs the old copy's shutdown
+     * hook, removes its exports, then runs the new entry, which exports
+     * again. A keyless mod is refused every service entry.
+     * @{ */
+    /**
+     * @brief Export a copy of a table as the calling mod's provider of a service.
+     *
+     * Legal only in the entry point (boot or hot reload). The engine copies
+     * @p size bytes; the caller may reuse its buffer afterwards. A second
+     * export of one name and major by one mod replaces its copy in place
+     * (its position in the provider order does not change). Providers of a
+     * service are listed newest entry first, as bus handlers walk.
+     * @param name The service name, 1 to 95 bytes.
+     * @param major Its major, 1 or more; another major is another service.
+     * @param table The bytes to copy; NULL returns -1.
+     * @param size Their count; 0 returns -1.
+     * @return 0, or -1 for a malformed argument, a call outside the entry
+     *         point, a keyless mod or an allocation failure (one log line
+     *         per mod and cause).
+     * @since api 13
+     */
+    int (*svc_export)(openpete_mod_t* self, const char* name, uint32_t major,
+                      const void* table, uint32_t size);
+    /**
+     * @brief Return the engine's copy of one provider's table for a service.
+     *
+     * Legal from any thread; one hash probe of an immutable snapshot the
+     * engine republishes at entries, toggles and reloads, so a consumer may
+     * look up on every use instead of caching. At entry it returns a table
+     * only from a provider that has already entered, which a `deps` entry
+     * on the provider guarantees.
+     * @param provider_key The provider's key (openpete_mod_key_of of its id).
+     * @param name The service name.
+     * @param major The service major.
+     * @param min_size The fewest table bytes the caller reads.
+     * @return The table, or NULL when the provider is not loaded, is
+     *         disabled, exports no such name or major, or exported fewer
+     *         than @p min_size bytes; NULL for @p provider_key 0, for a
+     *         keyless caller and for a malformed name.
+     * @since api 13
+     */
+    const void* (*svc_get)(openpete_mod_t* self, uint32_t provider_key,
+                           const char* name, uint32_t major, uint32_t min_size);
+    /**
+     * @brief List the keys of a service's enabled providers, newest entry first.
+     *
+     * Legal from any thread. A consumer that uses every provider lists once
+     * and calls `svc_get` per key.
+     * @param name The service name.
+     * @param major The service major.
+     * @param keys_out Keys to fill; NULL with @p cap 0 counts.
+     * @param cap Keys @p keys_out holds.
+     * @return The provider count (keys written: at most @p cap); 0 for a
+     *         keyless caller; -1 for a malformed name or a negative @p cap.
+     * @since api 13
+     */
+    int (*svc_list)(openpete_mod_t* self, const char* name, uint32_t major,
+                    uint32_t* keys_out, int cap);
+    /** @} */
 } openpete_mod_api_t;
 
 /**

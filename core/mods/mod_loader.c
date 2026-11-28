@@ -617,8 +617,9 @@ static int mod_check_abi(void* dl, const char* id, const char* path) {
  * latches, stops the rumble slots it drove, removes its chain links,
  * present hooks, registry rows, postfx passes, materials and shaders (postfx
  * before shaders, which retires the pipelines), and clears its UI body and
- * toggle hook, removes its bus handlers, increments its retirement count
- * and publishes the bus membership snapshot, and records a STRIP
+ * toggle hook, removes its bus handlers and service exports, increments
+ * its retirement count and publishes the membership snapshot (buses and
+ * services), and records a STRIP
  * override-order event. Runs before a
  * reload re-enters the mod, and after a failed entry: an entry that
  * registered and then returned nonzero must not leave its registrations
@@ -649,6 +650,7 @@ static void mod_strip_registrations(struct openpete_mod* mod) {
     mod->shutdown_fn = NULL;
     openpete_modsave_remove_owner(mod->id);
     openpete_mods_bus_remove_owner(mod);
+    openpete_mods_svc_remove_owner(mod);
     atomic_fetch_add(&mod->retired, 1u);
     openpete_mods_bus_publish();
 }
@@ -2731,6 +2733,7 @@ void openpete_mods_shutdown(void (*progress)(void)) {
     if (s_ran) return;
     s_ran = 1;
     openpete_mods_bus_report();
+    openpete_mods_svc_report();
     int hooks = 0;
     for (int i = mod_count() - 1; i >= 0; i--) {
         struct openpete_mod* mod = mod_at(i);
@@ -3540,7 +3543,10 @@ static int api_material_set_selector(openpete_mod_t* self, int material,
     X(int, bus_attach, openpete_mods_bus_attach, -1, (openpete_mod_t* self, const char* bus, openpete_mod_bus_fn fn, void* user), (self, bus, fn, user)) \
     X(int, bus_members, openpete_mods_bus_members, -1, (openpete_mod_t* self, const char* bus, openpete_mod_bus_sender_t* out, int cap), (self, bus, out, cap)) \
     X(uint32_t, mod_key, openpete_mods_bus_mod_key, 0, (openpete_mod_t* self), (self)) \
-    X(int, mod_info, openpete_mods_bus_mod_info, -1, (openpete_mod_t* self, uint32_t key, openpete_mod_bus_sender_t* out), (self, key, out))
+    X(int, mod_info, openpete_mods_bus_mod_info, -1, (openpete_mod_t* self, uint32_t key, openpete_mod_bus_sender_t* out), (self, key, out)) \
+    X(int, svc_export, openpete_mods_svc_export, -1, (openpete_mod_t* self, const char* name, uint32_t major, const void* table, uint32_t size), (self, name, major, table, size)) \
+    X(const void*, svc_get, openpete_mods_svc_get, NULL, (openpete_mod_t* self, uint32_t provider_key, const char* name, uint32_t major, uint32_t min_size), (self, provider_key, name, major, min_size)) \
+    X(int, svc_list, openpete_mods_svc_list, -1, (openpete_mod_t* self, const char* name, uint32_t major, uint32_t* keys_out, int cap), (self, name, major, keys_out, cap))
 
 /* One gate_<member> per MOD_API_GATED_ENTRIES row. */
 #define MOD_API_GATED(ret, name, impl, refused, params, args)             \
@@ -7009,8 +7015,8 @@ static int mods_assign_keys(mod_fvec* pending, int n) {
             continue;
         }
         if (!m->bus_key)
-            OPL_WARN_F("mods", "\"%s\" loads with api %u; its bus calls and "
-                       "mod_key are refused", m->id, m->api_pin);
+            OPL_WARN_F("mods", "\"%s\" loads with api %u; its bus and service "
+                       "calls and mod_key are refused", m->id, m->api_pin);
         else
             (void)openpete_mods_keys_add(m->id, m->bus_key);
         if (w != i) {

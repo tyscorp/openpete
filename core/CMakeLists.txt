@@ -214,6 +214,7 @@ add_library(openpete_core STATIC
     # the mod install's checkpoint, exec and restore path (handoff.c).
     mods/mod_vec.c
     mods/mod_bus.c
+    mods/mod_svc.c
     mods/mod_chain.c
     mods/mod_save.c
     mods/handoff.c
