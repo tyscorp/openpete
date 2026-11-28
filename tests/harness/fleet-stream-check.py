@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# sandbox-guard: no-launch (the game argv lines are fake process-table rows; the supervisor is a stub)
 """fleet-stream-check.py - the golden fleet coordinator's stream handling on this machine.
 
 Run by tests/harness/check_fleet_stream.sh. scripts/golden-fleet.py is
