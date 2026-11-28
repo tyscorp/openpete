@@ -5,7 +5,9 @@
 {{ key("key:host.bug_report") }} <!-- id: key:host.bug_report home --> writes one
 [bug report](glossary.md#bug-report) zip.
 Nothing is uploaded: you send the file, with what happened (the level,
-what you did, what you expected, and what you saw instead).
+what you did, what you expected, and what you saw instead). The dev
+overlay's **Bug report** row has a **Write** button
+<!-- id: knob:bug_report home --> that writes the same zip.
 
 ### What it holds
 

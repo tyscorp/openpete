@@ -76,9 +76,11 @@ void host_hotkeys_toggles(bool split);
 /** @brief Apply the fill-tag inspector keys: the engage toggle, then while engaged the preview toggle, the three verdict marks and undo. */
 void host_hotkeys_fillpick(void);
 
-/** @brief Apply the debug camera keys: the freecam and camera-lock toggles with their exclusivity, the relative-mouse request, the teleport request, then while a camera is engaged its fly and look axes and speed steps.
+/** @brief Apply the debug camera rows' requests and keys: the freecam and camera-lock toggles with their exclusivity, the relative-mouse request, the teleport request, then while a camera is engaged its fly and look axes and speed steps.
  *
- * The order is load-bearing: the exclusivity test reads both toggles'
- * results, and the capture request and the axes latch read the
+ * The rows' pending requests (freecam, camlock, freecam_speed) apply
+ * first, so a row write and a key press in one iteration apply in that
+ * order. The order is load-bearing: the exclusivity test reads both
+ * toggles' results, and the capture request and the axes latch read the
  * resulting engagement. */
 void host_hotkeys_camera(void);

@@ -601,6 +601,27 @@ static bool rewind_key_held(const openpete_options_t* opts, int live, bool pause
     return k;
 }
 
+/* The rewind_hold row's remaining ticks (openpete_rewind_hold_request). */
+static SDL_AtomicInt s_rewind_hold_row;
+
+int openpete_rewind_hold_request(int ticks) {
+    if (ticks < 0 || (ticks > 0 && !openpete_rewind_enabled())) return -1;
+    SDL_SetAtomicInt(&s_rewind_hold_row,
+                     ticks > OPENPETE_REWIND_HOLD_MAX ? OPENPETE_REWIND_HOLD_MAX : ticks);
+    return 0;
+}
+
+int openpete_rewind_hold_value(void) {
+    const int row = SDL_GetAtomicInt(&s_rewind_hold_row);
+    return openpete_key_down(OPK_REWIND) ? OPENPETE_REWIND_HOLD_MAX : row;
+}
+
+/** @brief Count one seek off the rewind_hold row's remaining ticks, unless a new request replaced the count meanwhile.
+ * @param seen The count read before the seek. */
+static void rewind_hold_row_consume(int seen) {
+    (void)SDL_CompareAndSwapAtomicInt(&s_rewind_hold_row, seen, seen - 1);
+}
+
 /** @brief Drop every rewind keyframe when a card write reached the card file since the last call.
  *
  * Rewind keyframes carry no card and rewind never writes the card file, so
@@ -650,6 +671,7 @@ static void rewind_intervention_clear(void) OP_REQUIRES(sim) {
 bool rewind_step(const openpete_options_t* opts, bool paused, bool bk2_active) OP_REQUIRES(sim) {
     rewind_intervention_clear();
     if (!openpete_rewind_enabled()) {
+        SDL_SetAtomicInt(&s_rewind_hold_row, 0);
         static bool hinted = false;
         if (!hinted && openpete_key_down(OPK_REWIND)) {
             hinted = true;
@@ -661,9 +683,12 @@ bool rewind_step(const openpete_options_t* opts, bool paused, bool bk2_active) O
     rewind_card_commit_clear();
     const int live = game_is_gameplay_live(&g_game.cpu);
     openpete_rewind_on_iter(&g_game.cpu, openpete_frame, live);
-    const bool held = rewind_key_held(opts, live, paused);
+    const int row = SDL_GetAtomicInt(&s_rewind_hold_row);
+    const bool held = rewind_key_held(opts, live, paused) || row > 0;
     if (!held || !live || paused || !rewind_mods_allow()) return false;
-    return rewind_seek_one_tick(bk2_active);
+    const bool rewound = rewind_seek_one_tick(bk2_active);
+    if (row > 0) rewind_hold_row_consume(row);
+    return rewound;
 }
 
 bool state_ops_quiescent(const openpete_options_t* opts, bool paused, bool bk2_active) OP_REQUIRES(sim) {

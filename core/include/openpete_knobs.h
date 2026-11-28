@@ -65,6 +65,44 @@ typedef enum {
 
 #define KNOB_STR_MAX 256
 
+/* What a row's value can reach. Gameplay is the default: a row is
+ * presentation only when an audit of every consumer of its value, and of
+ * every other row or subsystem its setter writes, finds no write to guest
+ * RAM (and, for a value the recompiled render pass reads, its spelling
+ * clears the oracle once per non-default value); pace rows change when or
+ * how fast ticks run, never what a tick computes. */
+typedef enum {
+    KNOB_EFFECT_GAMEPLAY = 0,
+    KNOB_EFFECT_PRESENTATION,
+    KNOB_EFFECT_PACE
+} knob_effect_t;
+
+/* What --bug-report-replay does with a live value row
+ * (openpete_bugknobs_class): `host` rows set window, pacing, audio, input,
+ * logging or menu state the replay's own options decide; `sim` rows act on
+ * the sim's timeline; `follow` rows are selections that track game state
+ * and are not sampled after boot; `render` rows write renderer state and
+ * are the only class the replay applies. A live, non-action row that is
+ * not an OPENPETE_* variable row declares one: openpete_knob_add refuses
+ * such a row with KNOB_REPLAY_UNSET. Action, restart-only and variable rows
+ * derive their class and leave it unset. */
+typedef enum {
+    KNOB_REPLAY_UNSET = 0,
+    KNOB_REPLAY_HOST,
+    KNOB_REPLAY_SIM,
+    KNOB_REPLAY_FOLLOW,
+    KNOB_REPLAY_RENDER
+} knob_replay_t;
+
+/* knob_desc_t.flags bits. HOLD: the value is held while a source holds it
+ * (the key, a row write) and drops when none does. CONTENT_TOKENS: the enum
+ * values are mod content claimed at run time, so a vocabulary that loses a
+ * token between builds is not a removed control. NO_MOD: the row is outside
+ * the mod surface. */
+#define KNOB_FLAG_HOLD           0x01u
+#define KNOB_FLAG_CONTENT_TOKENS 0x02u
+#define KNOB_FLAG_NO_MOD         0x04u
+
 typedef struct knob_desc {
     const char *id;        /* stable slug; imgui ID scope */
     const char *label;     /* display name */
@@ -174,6 +212,13 @@ typedef struct knob_desc {
      * grammar refuses def_str with "x" appended. NULL takes that default
      * control. */
     const char *control_str;
+
+    /* knob_effect_t: what the value can reach; gameplay when undeclared. */
+    unsigned char effect;
+    /* knob_replay_t: the bug-report replay class of a live value row. */
+    unsigned char replay;
+    /* KNOB_FLAG_* bits. */
+    unsigned char flags;
 } knob_desc_t;
 
 /* Arity of a row's flag: the default, a flag that takes no value
@@ -330,9 +375,17 @@ void knob_registry_late_stamp(void);
  * knob_registry_init stamps boot values.
  * @param row The row to copy in.
  * @return 0 on success, -1 when row is NULL, when its id, flag or env var
- *         names a registered row, or when the extra-row capacity
- *         (KNOB_EXTRA_MAX rows) is exhausted. */
+ *         names a registered row, when it is a live value row that needs
+ *         a replay class and declares none (knob_needs_replay_class), or
+ *         when the extra-row capacity (KNOB_EXTRA_MAX rows) is exhausted. */
 int openpete_knob_add(const knob_desc_t *row);
+
+/** @brief Report whether a row must declare its replay class: a live row that is neither an action nor an OPENPETE_* variable row.
+ *
+ * A variable row has an env spelling, no flag and a string value.
+ * @param k The row.
+ * @return 1 when the row needs a declared knob_replay_t, else 0. */
+int knob_needs_replay_class(const knob_desc_t *k);
 
 /** @brief Record the game's default window size for the --window row's "(default)" text.
  *

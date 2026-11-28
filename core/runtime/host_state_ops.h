@@ -34,7 +34,7 @@ void state_ops_collect(const openpete_options_t* opts) OP_REQUIRES(sim);
  * @param opts Run options (--state-stress, --state-stress-rewind). */
 void state_stress_step(const openpete_options_t* opts) OP_REQUIRES(sim);
 
-/** @brief Run one quiescent iteration of rewind: the keyframe cadence, then one tick back while the rewind key is held in live, unpaused gameplay.
+/** @brief Run one quiescent iteration of rewind: the keyframe cadence, then one tick back while the rewind key or the rewind_hold row holds it in live, unpaused gameplay.
  * @param opts Run options.
  * @param paused The host is paused.
  * @param bk2_active A movie is loaded for replay.

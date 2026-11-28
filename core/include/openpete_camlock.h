@@ -46,6 +46,19 @@ bool openpete_camlock_active(void);
  * already returns every present's camera bytes. */
 void openpete_camlock_toggle(void);
 
+/** @brief Request the lock engaged or disengaged from any thread; the host loop applies it at its camera site.
+ *
+ * The request names the wanted state; a later request replaces an earlier
+ * one. An engage applied while the free camera is engaged disengages the
+ * free camera first, as the G key does.
+ * @param on true to engage, false to disengage. */
+void openpete_camlock_request(bool on);
+
+/** @brief Take and clear the pending lock request.
+ *
+ * @return 1 for engage, 0 for disengage, -1 when none is pending. */
+int openpete_camlock_take_request(void);
+
 /** @brief Return the engage generation, bumped by every toggle and by the environment engage.
  *
  * openpete_camlock_integrate compares it with the last generation it saw to

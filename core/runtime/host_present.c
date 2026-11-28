@@ -40,10 +40,10 @@
 #include "PsyX/PsyX_public.h"  /* PsyX_EndScene */
 #include "openpete_thread_roles.h"   /* OP_REQUIRES */
 
-/* Player screenshot pending (the `screenshot` binding). Raised where the
- * bindings are sampled, consumed at the next canonical present's capture
- * site - both on this thread, so a plain int is enough. */
-static int s_screenshot_request = 0;
+/* Player screenshot pending (the `screenshot` binding or row). Raised where
+ * the bindings are sampled or by the row from the dev overlay's thread,
+ * consumed at the next canonical present's capture site. */
+static SDL_AtomicInt s_screenshot_request;
 
 /** @brief Advance the virtual present clock and pass it to openpete_interp_set_present_target as this present's instant.
  *
@@ -449,9 +449,9 @@ static bool host_subtick_live(const host_session_t* S)
 }
 
 /* Documented at the declaration in host_loop_internal.h. */
-void host_present_request_screenshot(void)
+void openpete_screenshot_request(void)
 {
-    s_screenshot_request = 1;
+    SDL_SetAtomicInt(&s_screenshot_request, 1);
 }
 
 /** @brief Engage or disengage eager production at a canonical present on the full engage predicate.
@@ -611,8 +611,8 @@ static void present_player_screenshot(void) OP_REQUIRES(sim)
         openpete_bugreport_display_service(ok);
         openpete_present_thread_return(pt_was);
     }
-    if (!s_screenshot_request && !openpete_host_mouse_take_screenshot_request()) return;
-    s_screenshot_request = 0;
+    if (!SDL_SetAtomicInt(&s_screenshot_request, 0) &&
+        !openpete_host_mouse_take_screenshot_request()) return;
     char path[1024];
     if (!openpete_native_render_enabled()) {
         OPL_WARN_F("screenshot",

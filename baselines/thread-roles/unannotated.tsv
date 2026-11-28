@@ -2036,7 +2036,6 @@ core/runtime/host_pacer.c	host_pacer_unlock_verdict	s_logged	local	-
 core/runtime/host_pacer.c	pace_flip_log_on	on	local	once	= -1, one filler, first reference tests it
 core/runtime/host_present.c	-	s_eager_shot	static	once	= -1, one filler, first reference tests it
 core/runtime/host_present.c	-	s_inline_rex	static	-	
-core/runtime/host_present.c	-	s_screenshot_request	static	-	
 core/runtime/host_present.c	-	s_shed	static	-	
 core/runtime/host_present.c	gpu_audit_selftest_arm	state	local	once	= -1, one filler, first reference tests it
 core/runtime/host_present.c	held_present_gate	s_owed	local	-	
@@ -2192,7 +2191,6 @@ core/ui/devui.cpp	-	s_win	static	-
 core/ui/devui.cpp	depth_widget	s_last_on	local	-	
 core/ui/devui.cpp	devui_toggle_trace	en	local	-	
 core/ui/devui.cpp	devui_toggle_trace	last	local	-	
-core/ui/devui.cpp	draw_custom_level_rows	k_modes	local	-	
 core/ui/devui.cpp	draw_note_prompt	s_focus	local	-	
 core/ui/devui.cpp	draw_panel	s_filter	local	-	
 core/ui/devui.cpp	draw_panel	s_tab	local	-	
@@ -2206,7 +2204,6 @@ core/ui/freecam.c	-	s_active	static	-
 core/ui/freecam.c	-	s_axes	static	-	
 core/ui/freecam.c	-	s_bk2_active	static	atomic	1 storing function(s), none reads it
 core/ui/freecam.c	-	s_speed_index	static	-	
-core/ui/freecam.c	-	s_teleport_req	static	-	
 core/ui/imgui_guard.c	-	s_mod_id_fn	static	-	
 core/ui/openpete_menu.c	-	s_aspect_idx	static	-	
 core/ui/openpete_menu.c	-	s_close_hover	static	-	

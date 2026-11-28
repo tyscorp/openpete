@@ -1255,6 +1255,34 @@ void openpete_sim_step_request(void);
  *
  * @return 1 while paused, else 0. */
 int  openpete_sim_paused(void);
+/** @brief Hold or release turbo from a row write, beside the turbo key; callable from any thread.
+ *
+ * The host loop runs unpaced while the key or this hold is held. Pacing
+ * only: the VBL count is yield-driven, so turbo never changes game state.
+ * @param on Nonzero holds, 0 releases. */
+void openpete_turbo_hold(int on);
+/** @brief Report whether turbo is held, by the key or by openpete_turbo_hold.
+ *
+ * @return 1 while held, else 0. */
+int  openpete_turbo_held(void);
+/** @brief Hold rewind for a count of ticks from a row write, beside the rewind key; callable from any thread.
+ *
+ * The host loop's rewind site seeks one tick back per iteration while the
+ * count lasts, under the key's own conditions (live gameplay, not paused,
+ * every enabled mod declaring a state posture), and counts down once per
+ * iteration it seeks. A later request replaces the remaining count; 0
+ * releases. Refused while rewind is disabled.
+ * @param ticks Ticks to seek back, at most OPENPETE_REWIND_HOLD_MAX.
+ * @return 0 when accepted, -1 when rewind is disabled or ticks is negative. */
+int  openpete_rewind_hold_request(int ticks);
+/** @brief Report the rewind hold: OPENPETE_REWIND_HOLD_MAX while the key is held, else the row's remaining count, whichever is larger.
+ *
+ * @return Ticks still to seek back, 0 when not held. */
+int  openpete_rewind_hold_value(void);
+/* The rewind hold's row maximum, which the held key reads as: 300 s of ticks. */
+#define OPENPETE_REWIND_HOLD_MAX 9000
+/** @brief Request a player screenshot from any thread; the next canonical present takes it, as the screenshot key does. */
+void openpete_screenshot_request(void);
 /** @brief Return the runahead depth the host loop applied; callable from any thread.
  *
  * @return Depth in ticks, 0 when disarmed. */

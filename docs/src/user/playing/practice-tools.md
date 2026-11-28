@@ -34,7 +34,9 @@ that tick.
 
 Holding {{ key("key:host.turbo") }} <!-- id: key:host.turbo home --> runs the game as fast as the
 computer can, with no wait between ticks. Releasing it returns to normal
-speed.
+speed. The dev overlay's **Turbo** checkbox <!-- id: knob:turbo home --> holds
+the same fast-forward while checked; it starts unchecked
+<!-- id: knob:turbo -->.
 
 ## Game speed
 
@@ -107,7 +109,9 @@ and can be pressed again; see [Dev overlay](dev-overlay.md#cheat-buttons).
 camera and Spyro's own update are frozen and the camera flies:
 [Free camera keys](controls.md#free-camera-keys). The speed keys step
 through five speeds; the camera starts at the middle one and keeps the
-chosen speed for the rest of the session.
+chosen speed for the rest of the session. The dev overlay's **Freecam speed**
+row <!-- id: knob:freecam_speed home --> shows the speed as 0 (slowest) to 4
+(fastest) and sets it; it starts at 2 <!-- id: knob:freecam_speed -->.
 
 Turning the free camera off returns the camera to the game.
 
@@ -119,3 +123,5 @@ The free camera cannot be turned on while a bk2 movie replays or records
 With the free camera on, {{ key("key:host.teleport") }} <!-- id: key:host.teleport home --> moves Spyro to
 the camera's position, turns the free camera off and returns the camera to
 the game, on the next tick. With the free camera off, ++t++ does nothing.
+The dev overlay's **Teleport** button <!-- id: knob:teleport home --> does the
+same and is disabled while the free camera is off.

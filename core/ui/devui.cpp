@@ -1147,6 +1147,57 @@ static bool slider_int_stepped(const char *label, int *v, int mn, int mx)
     return changed;
 }
 
+/** @brief Find the registry row with an id, hidden or not.
+ *
+ * @param id The row id.
+ * @return The row, or NULL when no row has the id (compiled out). */
+static knob_desc_t *row_by_id(const char *id)
+{
+    size_t n = 0;
+    knob_desc_t *ks = knob_registry(&n);
+    for (size_t i = 0; i < n; i++)
+        if (strcmp(ks[i].id, id) == 0) return &ks[i];
+    return nullptr;
+}
+
+/** @brief Write a value through a row's setter, logging it as the row drawers do.
+ *
+ * @param k The row, or NULL (nothing is written).
+ * @param v The value; 1 fires an action row.
+ * @return true when the setter accepted it. */
+static bool row_write(knob_desc_t *k, double v)
+{
+    if (!k || !k->set_num || k->set_num(k, v) != 0) return false;
+    OPL_INFO_F("devui", "%s = %g", k->id, v);
+    return true;
+}
+
+/** @brief Draw a captioned button that fires an action row, disabled while the row's gate reads 0.
+ *
+ * @param id The action row's id.
+ * @param caption The button caption.
+ * @return true when the row fired. */
+static bool row_button(const char *id, const char *caption)
+{
+    knob_desc_t *k = row_by_id(id);
+    const bool ready = k && (!k->get_num || k->get_num(k) != 0.0);
+    if (!ready) ImGui::BeginDisabled();
+    const bool fired = ImGui::Button(caption) && row_write(k, 1.0);
+    if (!ready) ImGui::EndDisabled();
+    return fired;
+}
+
+/** @brief Draw a captioned checkbox over a bool row, written through the row's setter.
+ *
+ * @param id The bool row's id.
+ * @param caption The checkbox caption. */
+static void row_checkbox(const char *id, const char *caption)
+{
+    knob_desc_t *k = row_by_id(id);
+    bool b = k && (k->get_num ? k->get_num(k) : k->stored_num) != 0.0;
+    if (ImGui::Checkbox(caption, &b)) (void)row_write(k, b ? 1.0 : 0.0);
+}
+
 /** @brief Draw a float knob as a slider over its registered range, applied on every change.
  *
  * A drag widget that commits only on release reads as dead while it is
@@ -2149,49 +2200,71 @@ static bool mod_owns_custom_levels(const char *mod_id)
     return false;
 }
 
-/** @brief Draw a mod's declarative [[level]] rows, each with a Warp button, inside its node in the Mods list.
+/** @brief Write the tooltip of a custom level's name: its Custom World, donor and serving.
  *
  * The registry's index order is alphabetical across all mods, and that
  * global order buckets levels five per Custom World (7 + index / 5), so the
- * world number is shown per row in the tooltip rather than as a grouping.
+ * world number is shown per level here rather than as a grouping.
+ * @param i The level's position in the registry's name order.
+ * @param ci The level's descriptor. */
+static void custom_level_tooltip(int i, const openpete_mods_custom_info_t &ci)
+{
+    ImGui::BeginTooltip();
+    ImGui::Text("Custom World %d - donor level %d", 7 + i / 5, ci.donor_id);
+    if (!ci.files_ok)
+        ImGui::TextDisabled("level files not derived yet");
+    else
+        ImGui::TextDisabled(ci.replace_mode
+            ? "serves over its donor level's own entry"
+            : "time-shares the free level slot (id 65); "
+              "per-level progress is shared between custom "
+              "levels until real extra worlds land");
+    ImGui::EndTooltip();
+}
+
+/** @brief Draw one custom level's line: the Warp button, its name, and the serving combo.
+ *
+ * The Warp button and the combo write the custom-level rows: the level
+ * becomes the custom_level target, then custom_level_go fires or
+ * custom_level_mode takes the picked mode. The button is disabled while the
+ * level's files are missing or its mod is disabled.
+ * @param i The level's position in the registry's name order.
+ * @param ci The level's descriptor. */
+static void draw_custom_level_line(int i, const openpete_mods_custom_info_t &ci)
+{
+    knob_desc_t *target = row_by_id("custom_level");
+    const bool playable = ci.files_ok && openpete_mods_is_enabled(ci.owner) != 0;
+    if (!playable) ImGui::BeginDisabled();
+    // host-control: custom_level_go
+    if (ImGui::Button(ci.active ? "In slot" : "Warp") && row_write(target, i))
+        (void)row_write(row_by_id("custom_level_go"), 1.0);
+    if (!playable) ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(ci.name);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) custom_level_tooltip(i, ci);
+    ImGui::SameLine();
+    knob_desc_t *mode_row = row_by_id("custom_level_mode");
+    if (!mode_row) return;
+    int mode = ci.replace_mode;
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.0f);
+    // host-control: custom_level_mode
+    if (ImGui::Combo("##m", &mode, mode_row->enum_values, mode_row->enum_count) &&
+        row_write(target, i))
+        (void)row_write(mode_row, mode);
+}
+
+/** @brief Draw a mod's declarative [[level]] rows, each with a Warp button, inside its node in the Mods list.
+ *
  * @param mod_id The owning mod's id. */
 static void draw_custom_level_rows(const char *mod_id)
 {
     const int n = openpete_mods_custom_count();
     for (int i = 0; i < n; i++) {
         openpete_mods_custom_info_t ci;
-        if (!openpete_mods_custom_info(i, &ci)) continue;
-        if (strcmp(ci.owner, mod_id) != 0) continue;
+        if (!openpete_mods_custom_info(i, &ci) || strcmp(ci.owner, mod_id) != 0) continue;
         ImGui::PushID(i);
-        const bool owner_on = openpete_mods_is_enabled(ci.owner) != 0;
-        const bool playable = ci.files_ok && owner_on;
-        if (!playable) ImGui::BeginDisabled();
-        if (ImGui::Button(ci.active ? "In slot" : "Warp"))
-            (void)openpete_mods_custom_warp(i);
-        if (!playable) ImGui::EndDisabled();
-        ImGui::SameLine();
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(ci.name);
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
-            ImGui::BeginTooltip();
-            ImGui::Text("Custom World %d - donor level %d", 7 + i / 5,
-                        ci.donor_id);
-            if (!ci.files_ok)
-                ImGui::TextDisabled("level files not derived yet");
-            else
-                ImGui::TextDisabled(ci.replace_mode
-                    ? "serves over its donor level's own entry"
-                    : "time-shares the free level slot (id 65); "
-                      "per-level progress is shared between custom "
-                      "levels until real extra worlds land");
-            ImGui::EndTooltip();
-        }
-        ImGui::SameLine();
-        int mode = ci.replace_mode;
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.0f);
-        static const char *k_modes[] = { "own slot", "replace donor" };
-        if (ImGui::Combo("##m", &mode, k_modes, 2))
-            openpete_mods_custom_set_mode(i, mode);
+        draw_custom_level_line(i, ci);
         ImGui::PopID();
     }
 }
@@ -2316,11 +2389,15 @@ static const lay_row k_lay_display[] = {
 
 static const lay_row k_lay_gameplay[] = {
     { LAY_ROW,    nullptr, { "freecam" } },
+    { LAY_ROW,    nullptr, { "freecam_speed" } },
+    { LAY_ROW,    nullptr, { "teleport" } },
     { LAY_PICK,   "Savestate", { "state_slot", "state_save", "state_load" } },
     { LAY_ROW,    nullptr, { "tick_scale" } },
     { LAY_INLINE, nullptr, { "pause", "frame_step" } },
+    { LAY_ROW,    nullptr, { "turbo" } },
     { LAY_DEPTH,  nullptr, { "runahead" } },
     { LAY_ONOFF,  "Rewind", { "rewind" }, nullptr, nullptr, 0, "", 30 },
+    { LAY_ROW,    nullptr, { "rewind_hold" } },
     { LAY_REST,   "Gameplay" },
     { LAY_PICK,   "Level warp", { "warp_level", "warp_go" } },
     { LAY_PICK,   "Area warp", { "warp_area", "warp_area_go" } },
@@ -2378,6 +2455,10 @@ static const lay_section k_layout[] = {
 static const char *const k_lay_hidden[] = {
     "background", "version_osd", "mouse", "input_lock", "camlock", "bk2_stop_on_end", "cheats",
     "launcher_fullscreen", "launcher_window", "hide_player",
+    /* Drawn by the fill-tag inspector's panel and by each custom level's
+     * line in the Mods list, through these rows. */
+    "fillpick_fill", "fillpick_nofill", "fillpick_none", "fillpick_undo",
+    "custom_level", "custom_level_mode", "custom_level_go",
 };
 
 /** @brief Report whether a knob id is named by a layout row or hidden from the panel.
@@ -3326,9 +3407,8 @@ static void draw_fillpick_panel(void)
         return;
     }
 
-    bool preview = openpete_fillpick_preview() != 0;
-    if (ImGui::Checkbox("preview untagged LP candidates (H)", &preview))
-        openpete_fillpick_set_preview(preview);
+    // host-control: fillpick_preview
+    row_checkbox("fillpick_preview", "preview untagged LP candidates (H)");
     ImGui::TextDisabled("green = listed FILL   magenta = candidate   yellow = picked");
     ImGui::Separator();
 
@@ -3357,18 +3437,18 @@ static void draw_fillpick_panel(void)
                                h.hp_sec, h.hp_face, h.vz - h.hp_vz);
         }
         ImGui::Separator();
-        if (ImGui::Button("FILL (Y)"))   openpete_fillpick_mark(OPENPETE_FILLPICK_FILL);
+        (void)row_button("fillpick_fill", "FILL (Y)");       // host-control: fillpick_fill
         ImGui::SameLine();
-        if (ImGui::Button("NOFILL (N)")) openpete_fillpick_mark(OPENPETE_FILLPICK_NOFILL);
+        (void)row_button("fillpick_nofill", "NOFILL (N)");   // host-control: fillpick_nofill
         ImGui::SameLine();
-        if (ImGui::Button("clear (B)"))  openpete_fillpick_mark(OPENPETE_FILLPICK_NONE);
+        (void)row_button("fillpick_none", "clear (B)");      // host-control: fillpick_none
     }
 
     ImGui::Separator();
     int n = openpete_fillpick_count();
     ImGui::Text("session: %d verdict(s)", n);
     ImGui::SameLine();
-    if (ImGui::Button("undo (U)")) openpete_fillpick_undo();
+    (void)row_button("fillpick_undo", "undo (U)");           // host-control: fillpick_undo
     ImGui::TextDisabled("%s", openpete_fillpick_session_path());
     if (ImGui::BeginChild("##fpsession", ImVec2(0, 0), ImGuiChildFlags_Borders)) {
         for (int i = n - 1; i >= 0; i--) {

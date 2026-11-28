@@ -136,6 +136,11 @@ of play to keep, or with the **Rewind window** row of the
   the memory they hold once, plus about the amount they change each second.
 - Rewind stays within the current level: loading a level clears the history.
 - Changing the window clears the history.
+- The dev overlay's **Rewind ticks** row <!-- id: knob:rewind_hold home -->
+  rewinds the number of ticks typed into it, one tick per step as the held
+  key does, and counts down to 0; it reads 9000 while the key is held. It
+  starts at 0 <!-- id: knob:rewind_hold --> and refuses a value while rewind
+  is off.
 - A code mod that does not declare how it keeps its own state blocks rewind;
   the log names the mod.
 - With rewind off, pressing ++backspace++ writes one line to the log saying

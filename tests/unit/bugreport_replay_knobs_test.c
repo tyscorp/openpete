@@ -3,7 +3,7 @@
  * that mislabels rows: the replay applies a recorded value only to a row
  * this build classifies `render` (core/runtime/bugknobs_class.c), whatever
  * class the bundle's line names. The registry is a stub of three live
- * rows, each counting its setter's calls; br_read_file is a stub serving
+ * rows declaring their replay class, each counting its setter's calls; br_read_file is a stub serving
  * the member text. */
 
 #include "../../core/record/bugreport_internal.h"
@@ -24,9 +24,12 @@ static int set_vsync(knob_desc_t* k, double v) { (void)k; (void)v; s_set_vsync++
 static int set_bloom(knob_desc_t* k, double v) { (void)k; (void)v; s_set_bloom++; return 0; }
 
 static knob_desc_t s_rows[] = {
-    { .id = "freecam", .cli = "--freecam", .type = KNOB_BOOL, .mut = KNOB_LIVE, .set_num = set_freecam },
-    { .id = "vsync", .cli = "--vsync", .type = KNOB_BOOL, .mut = KNOB_LIVE, .set_num = set_vsync },
-    { .id = "bloom", .cli = "--bloom", .type = KNOB_BOOL, .mut = KNOB_LIVE, .set_num = set_bloom },
+    { .id = "freecam", .cli = "--freecam", .type = KNOB_BOOL, .mut = KNOB_LIVE, .set_num = set_freecam,
+      .replay = KNOB_REPLAY_SIM },
+    { .id = "vsync", .cli = "--vsync", .type = KNOB_BOOL, .mut = KNOB_LIVE, .set_num = set_vsync,
+      .replay = KNOB_REPLAY_HOST },
+    { .id = "bloom", .cli = "--bloom", .type = KNOB_BOOL, .mut = KNOB_LIVE, .set_num = set_bloom,
+      .replay = KNOB_REPLAY_RENDER },
 };
 
 knob_desc_t* knob_registry(size_t* count) {

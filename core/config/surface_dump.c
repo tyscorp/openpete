@@ -7,6 +7,7 @@
 #include "openpete_config.h"
 #include "openpete_keymap.h"
 #include "openpete_knobs.h"
+#include "openpete_bugreport.h" /* openpete_bugknobs_class */
 #include "openpete_menu.h"
 #include "config_schema.h"
 #include "game_extras.h"
@@ -152,6 +153,13 @@ static void emit_knob(FILE* f, int* first, const knob_desc_t* k, const char* gam
     json_schema(f, k->id);
     json_kv(f, "type", k_knob_type_names[k->type]);
     json_kv(f, "mut", k->mut == KNOB_LIVE ? "live" : "restart");
+    static const char* const k_effect_names[] = { "gameplay", "presentation", "pace" };
+    json_kv(f, "effect", k->effect < 3 ? k_effect_names[k->effect] : "?");
+    json_kv(f, "replay", openpete_bugknobs_class(k));
+    fprintf(f, ", \"hold\": %s, \"content_tokens\": %s, \"no_mod\": %s",
+            (k->flags & KNOB_FLAG_HOLD) ? "true" : "false",
+            (k->flags & KNOB_FLAG_CONTENT_TOKENS) ? "true" : "false",
+            (k->flags & KNOB_FLAG_NO_MOD) ? "true" : "false");
     if (k->num_min != 0.0f || k->num_max != 0.0f)
         fprintf(f, ", \"range\": [%g, %g]", (double)k->num_min, (double)k->num_max);
     json_kv(f, "section", k->section);

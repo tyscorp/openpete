@@ -31,6 +31,11 @@ static const double s_move_speed[OPENPETE_FREECAM_SPEED_STEPS] = { 25, 100, 300,
 static const double s_turn_speed[OPENPETE_FREECAM_SPEED_STEPS] = { 10,  25,  35,  50,  75 };
 
 static _Atomic unsigned s_engage_gen;
+/* Pending lock request: -1 none, 0 disengage, 1 engage. */
+static atomic_int s_lock_req = -1;
+
+void openpete_camlock_request(bool on) { atomic_store(&s_lock_req, on ? 1 : 0); }
+int  openpete_camlock_take_request(void) { return atomic_exchange(&s_lock_req, -1); }
 
 unsigned openpete_camlock_engage_generation(void) {
     return atomic_load_explicit(&s_engage_gen, memory_order_relaxed);

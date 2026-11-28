@@ -582,7 +582,7 @@ static bool host_unlock_wanted(const host_session_t* S)
     return host_pacer_unlock_verdict(
         (opts->headless && !force_pacing) ||
         openpete_skip_present_until_level ||
-        openpete_key_down(OPK_TURBO) ||
+        openpete_turbo_held() ||
         (opts->unlock_ranges_count > 0 &&
          unlock_frame_in_ranges(opts, openpete_feed_key_now())));
 }

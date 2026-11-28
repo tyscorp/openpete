@@ -105,7 +105,8 @@ static const knob_desc_t k_area_rows[2] = {
               "level. Follows the sub-area you are in until you pick "
               "something.",
       .type = KNOB_ENUM, .mut = KNOB_LIVE,
-      .default_note = "the sub-area the player is in" },
+      .default_note = "the sub-area the player is in",
+      .replay = KNOB_REPLAY_FOLLOW },
     { .id = "warp_area_go", .label = "Warp to area", .section = "Gameplay",
       .help = "Enter the selected sub-area the way its portal does, keeping "
               "progress. From another level, or from a sub-area, the warp "

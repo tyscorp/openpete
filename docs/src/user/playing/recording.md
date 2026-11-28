@@ -67,7 +67,9 @@ with `-2`, `-3` and so on appended for more shots in the same second) in the
 screenshots folder ([File locations](../help/file-locations.md)).
 
 The image is the native renderer's output: widescreen, mods and the in-game
-overlays it draws are in it. The dev overlay panel is not.
+overlays it draws are in it. The dev overlay panel is not. The dev overlay's
+**Screenshot** row has a **Save PNG** button <!-- id: knob:screenshot home -->
+that takes the same screenshot.
 
 The log line for the shot ends in `key=N`; `--screenshot-on-frame N` in a
 later run of the same start captures that tick

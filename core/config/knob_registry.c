@@ -28,6 +28,9 @@
 #include "openpete_host_input.h"
 #include "openpete_host_mouse.h"
 #include "openpete_interp.h"
+#include "openpete_bugreport.h"
+#include "openpete_launcher.h"
+#include "openpete_mods.h"
 #include "openpete_record.h"
 #include "openpete_rewind.h"
 #include "openpete_state.h"
@@ -1060,11 +1063,10 @@ static void cheats_get_str(const knob_desc_t *k, char *buf, size_t cap) {
 
 /** @brief 1 when the freecam is active, else 0. */
 static double freecam_get(const knob_desc_t *k) { (void)k; return openpete_freecam_active() ? 1.0 : 0.0; }
-/** @brief Toggle the freecam when `v` differs from its current state. */
+/** @brief Request the freecam engaged (`v` nonzero) or disengaged; the host loop's camera site applies it. */
 static int freecam_set(knob_desc_t *k, double v) {
     (void)k;
-    if ((v != 0.0) != (openpete_freecam_active() != 0))
-        openpete_freecam_toggle();
+    openpete_freecam_request_active(v != 0.0);
     return 0;
 }
 
@@ -1109,25 +1111,152 @@ static int fillpick_prev_set(knob_desc_t *k, double v) {
 
 /** @brief 1 when the camera lock is active, else 0. */
 static double camlock_get(const knob_desc_t *k) { (void)k; return openpete_camlock_active() ? 1.0 : 0.0; }
-/** @brief Toggle the camera lock when `v` differs from its current state.
+/** @brief Request the camera lock engaged (`v` nonzero) or disengaged; the host loop's camera site applies it.
  *
- * Engaging the lock while the freecam is active first toggles the freecam off,
- * because both drive the fly axes. */
+ * An engage also requests the freecam disengaged when it is engaged or an
+ * engage of it is pending, because both drive the fly axes; the camera site
+ * applies the freecam request before the lock's. */
 static int camlock_set(knob_desc_t *k, double v) {
     (void)k;
-    if ((v != 0.0) != (openpete_camlock_active() != 0)) {
-        if (v != 0.0 && openpete_freecam_active())
-            openpete_freecam_toggle();   /* the two share the fly axes */
-        openpete_camlock_toggle();
-    }
+    if (v != 0.0 && (openpete_freecam_active() || openpete_freecam_pending_active() == 1))
+        openpete_freecam_request_active(false);
+    openpete_camlock_request(v != 0.0);
     return 0;
 }
+
+/* ---- host actions ---- */
+
+/** @brief Raise the player screenshot request, as the screenshot key does. */
+static int screenshot_fire(knob_desc_t *k, double v) { (void)k; (void)v; openpete_screenshot_request(); return 0; }
+/** @brief Raise the bug-report press, as the bug_report key does. */
+static int bugreport_fire(knob_desc_t *k, double v) { (void)k; (void)v; openpete_bugreport_request(); return 0; }
+/** @brief End the process as the quit key does: cancel a pending return to the launcher, then request the shutdown. */
+static int quit_fire(knob_desc_t *k, double v) {
+    (void)k; (void)v;
+    openpete_launcher_return_cancel();
+    openpete_request_shutdown();
+    return 0;
+}
+/** @brief 1 while the freecam is engaged, so the teleport button is enabled, else 0. */
+static double teleport_ready(const knob_desc_t *k) { (void)k; return openpete_freecam_active() ? 1.0 : 0.0; }
+/** @brief Request the player moved to the freecam, as the teleport key does; refused while the freecam is disengaged. */
+static int teleport_fire(knob_desc_t *k, double v) {
+    (void)k; (void)v;
+    if (!openpete_freecam_active()) return -1;
+    openpete_freecam_request_teleport();
+    return 0;
+}
+/** @brief The freecam speed step. */
+static double fcspeed_get(const knob_desc_t *k) { (void)k; return (double)openpete_freecam_speed_index(); }
+/** @brief Request speed step `v`; the host loop's camera site applies it. */
+static int fcspeed_set(knob_desc_t *k, double v) {
+    (void)k;
+    if (!(v >= 0.0) || v >= (double)OPENPETE_FREECAM_SPEED_STEPS) return -1;
+    openpete_freecam_request_speed((int)v);
+    return 0;
+}
+/** @brief 1 while turbo is held by its key or this row, else 0. */
+static double turbo_get(const knob_desc_t *k) { (void)k; return openpete_turbo_held() ? 1.0 : 0.0; }
+/** @brief Hold turbo (`v` nonzero) or release the row's hold; the key holds it independently. */
+static int turbo_set(knob_desc_t *k, double v) { (void)k; openpete_turbo_hold(v != 0.0); return 0; }
+/** @brief The rewind hold's remaining ticks; the held key reads as the maximum. */
+static double rewindhold_get(const knob_desc_t *k) { (void)k; return (double)openpete_rewind_hold_value(); }
+/** @brief Hold rewind for `v` ticks; refused while rewind is disabled. */
+static int rewindhold_set(knob_desc_t *k, double v) {
+    (void)k;
+    if (!(v >= 0.0)) return -1;
+    return openpete_rewind_hold_request(v > OPENPETE_REWIND_HOLD_MAX ? OPENPETE_REWIND_HOLD_MAX : (int)v);
+}
+
+/* ---- the fill-tag inspector's verdicts ---- */
+
+/** @brief 1 while the inspector is engaged and a face is picked, so a verdict button is enabled, else 0. */
+static double fpmark_ready(const knob_desc_t *k) {
+    (void)k;
+    return openpete_fillpick_active() && openpete_fillpick_get(NULL) ? 1.0 : 0.0;
+}
+/** @brief Mark the picked face FILL, as the fillpick_fill key does. */
+static int fpfill_fire(knob_desc_t *k, double v) { (void)k; (void)v; openpete_fillpick_mark(OPENPETE_FILLPICK_FILL); return 0; }
+/** @brief Mark the picked face NOFILL, as the fillpick_nofill key does. */
+static int fpnofill_fire(knob_desc_t *k, double v) { (void)k; (void)v; openpete_fillpick_mark(OPENPETE_FILLPICK_NOFILL); return 0; }
+/** @brief Clear the picked face's session verdict, as the fillpick_none key does. */
+static int fpnone_fire(knob_desc_t *k, double v) { (void)k; (void)v; openpete_fillpick_mark(OPENPETE_FILLPICK_NONE); return 0; }
+/** @brief 1 while the inspector is engaged and the session holds a verdict, so undo is enabled, else 0. */
+static double fpundo_ready(const knob_desc_t *k) {
+    (void)k;
+    return openpete_fillpick_active() && openpete_fillpick_count() > 0 ? 1.0 : 0.0;
+}
+/** @brief Undo the newest session verdict, as the fillpick_undo key does. */
+static int fpundo_fire(knob_desc_t *k, double v) { (void)k; (void)v; openpete_fillpick_undo(); return 0; }
+
+/* ---- the custom-level warp ---- */
+
+/* The custom_level row's selection: a position in the custom levels' name
+ * order (openpete_mods_custom_info). The rows' getters run on the dev
+ * overlay's thread and the bug-report sampler's, so it is atomic. */
+static atomic_int s_custom_sel;
+
+/** @brief The selected custom level's name-order position, or -1 when no custom level is registered. */
+static int custom_sel(void) {
+    const int n = openpete_mods_custom_count();
+    if (n <= 0) return -1;
+    const int i = atomic_load(&s_custom_sel);
+    return i < n ? i : n - 1;
+}
+/** @brief 1 when a mod registered a custom level, so the custom-level rows are shown, else 0. */
+static int custom_visible(const knob_desc_t *k) { (void)k; return openpete_mods_custom_count() > 0; }
+/** @brief The selected custom level's name-order position, 0 when none is registered. */
+static double custom_level_get(const knob_desc_t *k) { (void)k; const int i = custom_sel(); return i < 0 ? 0.0 : (double)i; }
+/** @brief Select custom level `v` (a name-order position). */
+static int custom_level_set(knob_desc_t *k, double v) {
+    (void)k;
+    if (!(v >= 0.0) || v >= (double)openpete_mods_custom_count()) return -1;
+    atomic_store(&s_custom_sel, (int)v);
+    return 0;
+}
+/** @brief The selected custom level's serving mode: 0 its own slot, 1 over its donor's entry; a queued change reads as applied. */
+static double custom_mode_get(const knob_desc_t *k) {
+    (void)k;
+    openpete_mods_custom_info_t ci;
+    return openpete_mods_custom_info(custom_sel(), &ci) && ci.replace_mode ? 1.0 : 0.0;
+}
+/** @brief Queue the selected custom level's serving mode; the registry's tick driver applies it on its next committed tick. */
+static int custom_mode_set(knob_desc_t *k, double v) {
+    (void)k;
+    const int i = custom_sel();
+    if (i < 0 || !(v >= 0.0) || v > 1.0) return -1;
+    openpete_mods_custom_set_mode(i, v != 0.0);
+    return 0;
+}
+/** @brief 1 when the selected custom level's files were found and its mod is enabled, so Warp is enabled, else 0. */
+static double custom_go_ready(const knob_desc_t *k) {
+    (void)k;
+    openpete_mods_custom_info_t ci;
+    return openpete_mods_custom_info(custom_sel(), &ci) && ci.files_ok &&
+           openpete_mods_is_enabled(ci.owner) ? 1.0 : 0.0;
+}
+/** @brief Queue a warp into the selected custom level; the registry's tick driver takes it on its next committed tick. */
+static int custom_go_fire(knob_desc_t *k, double v) {
+    (void)v;
+    if (custom_go_ready(k) == 0.0) return -1;
+    return openpete_mods_custom_warp(custom_sel());
+}
+/** @brief Write "in slot" while the selected custom level holds the shared slot, else an empty string. */
+static void custom_go_status(const knob_desc_t *k, char *buf, size_t cap) {
+    (void)k;
+    openpete_mods_custom_info_t ci;
+    snprintf(buf, cap, "%s", openpete_mods_custom_info(custom_sel(), &ci) && ci.active ? "in slot" : "");
+}
+
+static const char *const k_custom_mode_names[] = { "own slot", "replace donor" };
 
 /* ------------------------------------------------------------------ */
 /* the table                                                          */
 /* ------------------------------------------------------------------ */
 
 #define ENUM_ROW(vals) vals, (int)(sizeof(vals)/sizeof((vals)[0]))
+/* ENUM_ROW's designated-initializer form. */
+#define ENUM_ROW_D(vals) .enum_values = vals, .enum_count = (int)(sizeof(vals)/sizeof((vals)[0]))
 
 /* Built-in rows outside the debug block. The registry hands out g_rows (these,
  * the debug rows, and whatever game modules contributed through
@@ -1138,6 +1267,7 @@ static const knob_desc_t g_builtin[] = {
       "Borderless-desktop fullscreen (Alt+Enter and a double-click toggle it too).",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       fullscreen_get, fullscreen_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_HOST, .effect = KNOB_EFFECT_PRESENTATION,
       .def_str = "0",
       .help_arg = "0|1", .help_order = 110,
       .help_text = "launch in borderless-desktop fullscreen (default {def} = windowed;\n"
@@ -1150,6 +1280,7 @@ static const knob_desc_t g_builtin[] = {
       "ratio windowed resizes the window to match.",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_aspect_names), 0, 0,
       aspect_get, aspect_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
       .def_str = "auto",
       .help_arg = "W:H|auto", .help_order = 70,
       .help_text = "Hor+ widescreen. {def} (default) = follow the window/fullscreen\n"
@@ -1163,6 +1294,7 @@ static const knob_desc_t g_builtin[] = {
       "the next present.",
       KNOB_FLOAT, KNOB_LIVE, NULL, 0, 30, 120,
       fov_get, fov_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
       .zero_label = "Original",
       .def_str = "0",
       .help_arg = "DEG", .help_order = 80,
@@ -1177,6 +1309,7 @@ static const knob_desc_t g_builtin[] = {
       "the render targets next present.",
       KNOB_STRING, KNOB_LIVE, NULL, 0, 0, 0,
       NULL, NULL, resolution_get_str, resolution_set_str, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
       .def_str = "window", .control_str = "2",
       .help_arg = "window|N|WxH", .help_order = 88,
       .help_text = "pixel count of the native 3D scene (default {def}): window = the\n"
@@ -1190,6 +1323,7 @@ static const knob_desc_t g_builtin[] = {
       "next present (brief hitch at large factors; GPU-max capped).",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_ssaa_names), 0, 0,
       ssaa_get, ssaa_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
       .def_str = "1",
       .help_arg = "N", .help_order = 90,
       .help_text = "native vk supersampling 1..4 (default {def}=off); renders the live\n"
@@ -1203,6 +1337,7 @@ static const knob_desc_t g_builtin[] = {
       "on the next frame.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       vsync_get, vsync_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_HOST, .effect = KNOB_EFFECT_PRESENTATION,
       .default_note = "on (FIFO), unless OPENPETE_PRESENT_MODE or the device selects another present mode",
       .device_creation = 2,
       .help_arg = "0|1", .help_order = 100,
@@ -1229,6 +1364,7 @@ static const knob_desc_t g_builtin[] = {
       "per 1000, and the shed / interpolation share of presents.",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_perf_names), 0, 0,
       perfstats_get, perfstats_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
       .def_str = "fps",
       .help_arg = "LEVEL", .help_order = 130,
       .help_text = "on-screen performance stats: off | {def} (default) | detailed.\n"
@@ -1241,6 +1377,7 @@ static const knob_desc_t g_builtin[] = {
       "first, the other stacks clear of it.",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_anchor_names), 0, 0,
       perfpos_get, perfpos_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
       .def_str = "top-right",
       .help_arg = "ANCHOR", .help_order = 150,
       .help_text = "where the stats block sits: {def} (default) | top-left | top-center | bottom-left | bottom-center | bottom-right" },
@@ -1250,6 +1387,7 @@ static const knob_desc_t g_builtin[] = {
       "chrome. Mods raise them too.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       osd_get, osd_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
       .def_str = "on",
       .help_arg = "on|off", .help_order = 160,
       .help_text = "on-screen notifications when a setting changes (default {def})" },
@@ -1261,6 +1399,7 @@ static const knob_desc_t g_builtin[] = {
       "names the build it came from; a locally built binary shows no line.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       versionosd_get, versionosd_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
       .def_str = "on",
       .help_arg = "on|off", .help_order = 190,
       .help_text = "the release build's two-second version line at the bottom\n"
@@ -1274,6 +1413,7 @@ static const knob_desc_t g_builtin[] = {
       "clear of it.",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_anchor_names), 0, 0,
       osdpos_get, osdpos_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
       .def_str = "top-left",
       .help_arg = "ANCHOR", .help_order = 170,
       .help_text = "where notifications stack; same six anchors (default {def})" },
@@ -1283,6 +1423,7 @@ static const knob_desc_t g_builtin[] = {
       "its own; this is what it gets when it does not.",
       KNOB_FLOAT, KNOB_LIVE, NULL, 0, 0.5, 30.0,
       osdtimeout_get, osdtimeout_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
       .def_str = "3.0",
       .help_arg = "SECONDS", .help_order = 180,
       .help_text = "how long a notification stays up (default {def}, max 30)" },
@@ -1292,6 +1433,7 @@ static const knob_desc_t g_builtin[] = {
       "subpixel.",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_vprec_names), 0, 0,
       vprec_get, vprec_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
       .def_str = "subpixel",
       .help_arg = "MODE", .help_order = 280,
       .help_text = "native vk vertex screen-coordinate precision: {def} (default =\n"
@@ -1306,6 +1448,7 @@ static const knob_desc_t g_builtin[] = {
       "always aligned with the integer vertex snap.",
       KNOB_INT, KNOB_LIVE, NULL, 0, 0, 16,
       rquant_get, rquant_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
       .default_note = "0 (off), or 1 under --vertex-precision integer",
       .help_arg = "N", .help_order = 290,
       .help_text = "point-resample the 3D scene (pre-HUD) to N x the PSX raster (1 =\n"
@@ -1361,6 +1504,7 @@ static const knob_desc_t g_builtin[] = {
       "verdicts, the retained GPU cache and the occlusion pre-pass.",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_tervis_names), 0, 0,
       tervis_get, tervis_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
       .def_str = "auto",
       .help_arg = "MODE", .help_order = 250,
       .help_text = "sector candidate set: {def} (default) = filled on Spyro 2/3,\n"
@@ -1387,6 +1531,7 @@ static const knob_desc_t g_builtin[] = {
       "Applying re-bakes every scene pipeline (one-time hitch).",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       notex_get, notex_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
       .def_str = "0",
       .help_arg = "0|1", .help_order = 330,
       .help_text = "1 = draw the 3D scene with textures replaced by neutral grey,\n"
@@ -1403,6 +1548,7 @@ static const knob_desc_t g_builtin[] = {
       "(one-time hitch).",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       wireframe_get, wireframe_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
       .def_str = "0",
       .help_arg = "0|1", .help_order = 340,
       .help_text = "1 = draw every 3D scene triangle as its three edges, coloured by the\n"
@@ -1416,6 +1562,7 @@ static const knob_desc_t g_builtin[] = {
       "crosshatch).",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       dither_get, dither_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
       .def_str = "0",
       .help_arg = "N", .help_order = 310,
       .help_text = "1 = PS1 15-bit colour: quantize the 3D scene to RGB555 with the\n"
@@ -1431,6 +1578,7 @@ static const knob_desc_t g_builtin[] = {
       "Native renderer only.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       hide_player_get, hide_player_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
       .def_str = "0",
       .help_arg = "0|1", .help_order = 315,
       .help_text = "1 = draw the scene without the player: Spyro, his fire breath\n"
@@ -1444,6 +1592,7 @@ static const knob_desc_t g_builtin[] = {
       "pipeline at the next present (brief hitch).",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_texmap_names), 0, 0,
       texmap_get, texmap_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
       .def_str = "perspective",
       .help_arg = "MODE", .help_order = 320,
       .help_text = "texture/colour interpolation: {def} (default = modern\n"
@@ -1456,6 +1605,7 @@ static const knob_desc_t g_builtin[] = {
       "unless explicitly set.",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_lod_names), 0, 0,
       lod_get, lod_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
       .def_str = "original",
       .help_arg = "MODE", .help_order = 240,
       .help_text = "sector level-of-detail: {def} (default = authentic PSX LOD band) |\n"
@@ -1471,6 +1621,7 @@ static const knob_desc_t g_builtin[] = {
       "any other entry stays as chosen.",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_fog_names), 0, 0,
       fog_get, fog_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
       .default_note = "follows --lod: original under original, per-pixel under extended",
       .help_arg = "MODE", .help_order = 245,
       .help_text = "distance fog: original (the game's per-corner fade and per-face\n"
@@ -1484,6 +1635,7 @@ static const knob_desc_t g_builtin[] = {
       "LOD autopilot.",
       KNOB_FLOAT, KNOB_LIVE, NULL, 0, 0.25f, 128.0f,
       fogscale_get, fogscale_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
       .default_note = "1",
       .help_arg = "N", .help_order = 270,
       .help_text = "terrain fog-distance multiplier: 1 = authentic PSX curve, N = fog\n"
@@ -1568,6 +1720,7 @@ static const knob_desc_t g_builtin[] = {
       "Changes only the picture.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, renderpaths_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
       .default_note = "every path",
       .help_arg = "LIST", .help_order = 100,
       .help_text = "draw ONLY these paths, e.g.\n"
@@ -1582,6 +1735,7 @@ static const knob_desc_t g_builtin[] = {
       "pacer target (an unset launch value resolves to display refresh).",
       KNOB_INT, KNOB_LIVE, NULL, 0, 0, 1000,
       renderfps_get, renderfps_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_HOST, .effect = KNOB_EFFECT_PRESENTATION,
       .default_note = "the display's refresh rate in a windowed run; 0 (the match-sim pacer) under --headless",
       .help_arg = "N", .help_order = 220,
       .help_text = "target render Hz (default: the display's refresh rate; 0=match\n"
@@ -1596,6 +1750,7 @@ static const knob_desc_t g_builtin[] = {
       "Applies from the next tick.",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_cadence_names), 0, 0,
       cadence_get, cadence_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
       .def_str = "even",
       .help_arg = "MODE", .help_order = 225,
       .help_text = "with vsync on, when a tick affords fewer pictures than refreshes:\n"
@@ -1609,6 +1764,7 @@ static const knob_desc_t g_builtin[] = {
       "runs identical ticks on a stretched wall clock.",
       KNOB_FLOAT, KNOB_LIVE, NULL, 0, (float)OPENPETE_TICK_SCALE_MIN, (float)OPENPETE_TICK_SCALE_MAX,
       tickscale_get, tickscale_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_HOST, .effect = KNOB_EFFECT_PACE,
       .def_str = "1.0",
       .help_arg = "F", .help_order = 230,
       .help_text = "engine speed x F (default {def}); scales sim AND present cadence\n"
@@ -1622,6 +1778,7 @@ static const knob_desc_t g_builtin[] = {
       "picture; not saved.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       interp_get, interp_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
       .def_str = "on",
       .key_action = "interp_toggle" },
 
@@ -1630,6 +1787,7 @@ static const knob_desc_t g_builtin[] = {
       "rumble stops while paused.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       pause_get, pause_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_SIM, .effect = KNOB_EFFECT_PACE,
       .def_str = "off",
       .key_action = "pause" },
 
@@ -1637,8 +1795,16 @@ static const knob_desc_t g_builtin[] = {
       "Advance the paused game by one tick.",
       KNOB_ACTION, KNOB_LIVE, NULL, 0, 0, 0,
       step_ready, step_fire, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .effect = KNOB_EFFECT_PACE,
       .action_label = "Step tick",
       .key_action = "frame_step" },
+
+    { .id = "turbo", .label = "Turbo", .section = "Pacing",
+      .help = "Run unpaced (fast-forward) while checked or while the turbo "
+              "key is held. Changes only how fast ticks run.",
+      .type = KNOB_BOOL, .mut = KNOB_LIVE, .get_num = turbo_get, .set_num = turbo_set,
+      .def_str = "off", .key_action = "turbo",
+      .replay = KNOB_REPLAY_HOST, .effect = KNOB_EFFECT_PACE, .flags = KNOB_FLAG_HOLD },
 
     { "runahead", "Runahead", "Pacing", "--runahead", NULL,
       "Present-timeline lead of N sim ticks (latency cut, ~N extra ticks of "
@@ -1646,6 +1812,7 @@ static const knob_desc_t g_builtin[] = {
       "refuse (row falls back to 0). Presents snap for one tick on change.",
       KNOB_INT, KNOB_LIVE, NULL, 0, 0, 3,
       runahead_get, runahead_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_HOST, .effect = KNOB_EFFECT_PACE,
       .def_str = "0",
       .help_arg = "N", .help_order = 210,
       .help_text = "lead the presented timeline by N sim ticks (default {def} = off).\n"
@@ -1661,6 +1828,7 @@ static const knob_desc_t g_builtin[] = {
       "enabled mods change per second.",
       KNOB_INT, KNOB_LIVE, NULL, 0, 0, 600,
       get_stored, rewind_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_HOST, .effect = KNOB_EFFECT_GAMEPLAY,
       .def_str = "0",
       .help_arg = "N", .help_order = 200,
       .help_text = "hold the rewind key to rewind up to N seconds (default {def} = off;\n"
@@ -1668,12 +1836,22 @@ static const knob_desc_t g_builtin[] = {
           "per second; same-level only)",
       .key_action = "rewind" },
 
+    { .id = "rewind_hold", .label = "Rewind ticks", .section = "Pacing",
+      .help = "Rewind this many ticks, one per host iteration, as holding the "
+              "rewind key does; reads the maximum while the key is held. "
+              "Needs a rewind window.",
+      .type = KNOB_INT, .mut = KNOB_LIVE, .num_min = 0, .num_max = OPENPETE_REWIND_HOLD_MAX,
+      .get_num = rewindhold_get, .set_num = rewindhold_set,
+      .def_str = "0", .key_action = "rewind",
+      .replay = KNOB_REPLAY_SIM, .effect = KNOB_EFFECT_GAMEPLAY, .flags = KNOB_FLAG_HOLD },
+
     /* -------- Audio -------- */
     { "mute", "Mute", "Audio", "--mute", NULL,
       "Mute all audio at the OpenAL layer (SPU SFX + XA music + WAV "
       "override). Leaving pause restores this setting.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       mute_get, mute_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_HOST, .effect = KNOB_EFFECT_PRESENTATION,
       .def_str = "0",
       .help_arg = "0|1", .help_order = 470,
       .help_text = "mute all audio at the OpenAL layer (default {def} = audio on; on|off also accepted)" },
@@ -1685,6 +1863,7 @@ static const knob_desc_t g_builtin[] = {
       "slider in the game's options menu.",
       KNOB_INT, KNOB_LIVE, NULL, 0, -1, 10,
       sfxvol_get, sfxvol_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_HOST, .effect = KNOB_EFFECT_GAMEPLAY,
       .def_str = "-1",
       .help_arg = "N", .help_order = 480,
       .help_text = "preset the game's SOUND EFFECTS slider: 0 (OFF) .. 10 (max), or on|off.\n"
@@ -1696,6 +1875,7 @@ static const knob_desc_t g_builtin[] = {
       "it alone. Same stamping rules as the SFX row.",
       KNOB_INT, KNOB_LIVE, NULL, 0, -1, 10,
       musicvol_get, musicvol_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_HOST, .effect = KNOB_EFFECT_GAMEPLAY,
       .def_str = "-1",
       .help_arg = "N", .help_order = 490,
       .help_text = "preset the game's MUSIC slider, same scale and rules as --sfx" },
@@ -1710,6 +1890,7 @@ static const knob_desc_t g_builtin[] = {
       "Pad while unfocused is on.",
       KNOB_INT, KNOB_LIVE, NULL, 0, -1, 10,
       vibration_get, vibration_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_HOST, .effect = KNOB_EFFECT_GAMEPLAY,
       .def_str = "-1",
       .help_arg = "N", .help_order = 500,
       .help_text = "controller rumble: 0 (off) .. 10 (max), or on|off.\n"
@@ -1727,6 +1908,7 @@ static const knob_desc_t g_builtin[] = {
       "receive nothing. The scripted injection stream is unaffected.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       mouse_get, mouse_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_HOST, .effect = KNOB_EFFECT_GAMEPLAY,
       .def_str = "1",
       .help_arg = "0|1", .help_order = 510,
       .help_text = "host mouse channel: 0 ignores every mouse movement, button and\n"
@@ -1757,6 +1939,7 @@ static const knob_desc_t g_builtin[] = {
       "is in the background. Input lock still ignores every physical pad.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       padunf_get, padunf_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_HOST, .effect = KNOB_EFFECT_GAMEPLAY,
       .def_str = "0", .flag_arg = KNOB_FLAG_ARG_OPTIONAL,
       .help_arg = "[0|1]", .help_order = 525,
       .help_text = "keep reading controllers, and driving their rumble, while the\n"
@@ -1774,6 +1957,7 @@ static const knob_desc_t g_builtin[] = {
       "replay is unaffected.",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_stick_names), 0, 0,
       stick_get, stick_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_HOST, .effect = KNOB_EFFECT_GAMEPLAY,
       .def_str = "console",
       .help_arg = "MODE", .help_order = 526,
       .help_text = "analog stick response: {def} (default: full value at about\n"
@@ -1788,6 +1972,7 @@ static const knob_desc_t g_builtin[] = {
       "keymap actions (mouse:x, mouse:-y).",
       KNOB_FLOAT, KNOB_LIVE, NULL, 0, 0.0, 100.0,
       mousesens_get, mousesens_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_HOST, .effect = KNOB_EFFECT_GAMEPLAY,
       .def_str = "1.0",
       .help_arg = "S", .help_order = 530,
       .help_text = "mouse look scale for the free camera and camlock (default {def};\n"
@@ -2061,6 +2246,7 @@ static const knob_desc_t g_builtin[] = {
       "different set of mods. The log line is written either way.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       mismatch_toast_get, mismatch_toast_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_HOST, .effect = KNOB_EFFECT_PRESENTATION,
       .def_str = "off",
       .help_arg = "on|off", .help_order = 455,
       .help_text = "toast when a loaded save was written under different mods (default {def});\n"
@@ -2159,14 +2345,33 @@ static const knob_desc_t g_builtin[] = {
       "Fly the camera freely, detached from the player.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       freecam_get, freecam_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_SIM, .effect = KNOB_EFFECT_GAMEPLAY,
       .def_str = "off",
       .key_action = "freecam" },
+
+    { .id = "teleport", .label = "Teleport player", .section = "Gameplay",
+      .help = "Drop the player at the freecam's position and hand the camera "
+              "back to the game, on the next tick. Enabled while the freecam "
+              "is engaged.",
+      .type = KNOB_ACTION, .mut = KNOB_LIVE,
+      .get_num = teleport_ready, .set_num = teleport_fire,
+      .action_label = "Teleport", .key_action = "teleport" },
+
+    { .id = "freecam_speed", .label = "Freecam speed", .section = "Gameplay",
+      .help = "The freecam's and the camera lock's fly and turn speed step, "
+              "0 slowest to 4 fastest. Applies at the next host iteration.",
+      .type = KNOB_INT, .mut = KNOB_LIVE, .num_min = 0,
+      .num_max = OPENPETE_FREECAM_SPEED_STEPS - 1,
+      .get_num = fcspeed_get, .set_num = fcspeed_set,
+      .def_str = "2", .key_action = "speed_up",
+      .replay = KNOB_REPLAY_SIM, .effect = KNOB_EFFECT_GAMEPLAY },
 
     { "state_slot", "Savestate", "Gameplay", NULL, NULL,
       "The slot the Save and Load buttons and the quick-save, quick-load "
       "and slot-cycle keys use.",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_state_slot_names), 0, 0,
       state_slot_get, state_slot_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_HOST, .effect = KNOB_EFFECT_GAMEPLAY,
       .def_str = "Slot 0",
       .key_action = "savestate_cycle" },
 
@@ -2223,8 +2428,58 @@ static const knob_desc_t g_builtin[] = {
       "cutscenes play on underneath - the close-up inspection tool.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       camlock_get, camlock_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_SIM, .effect = KNOB_EFFECT_GAMEPLAY,
       .def_str = "off",
       .key_action = "camlock" },
+
+    { .id = "screenshot", .label = "Screenshot", .section = "Gameplay",
+      .help = "Save a PNG of the next presented picture, as the screenshot "
+              "key does.",
+      .type = KNOB_ACTION, .mut = KNOB_LIVE, .set_num = screenshot_fire,
+      .action_label = "Save PNG", .key_action = "screenshot",
+      .effect = KNOB_EFFECT_PRESENTATION },
+
+    { .id = "bug_report", .label = "Bug report", .section = "Gameplay",
+      .help = "Write a bug report zip to send, as the bug report key does.",
+      .type = KNOB_ACTION, .mut = KNOB_LIVE, .set_num = bugreport_fire,
+      .action_label = "Write", .key_action = "bug_report",
+      .flags = KNOB_FLAG_NO_MOD },
+
+    { .id = "quit", .label = "Quit", .section = "Gameplay",
+      .help = "End the game process, as the quit key does; a pending return "
+              "to the launcher is cancelled.",
+      .type = KNOB_ACTION, .mut = KNOB_LIVE, .set_num = quit_fire,
+      .action_label = "Quit", .key_action = "quit" },
+
+    /* The custom-level warp: a mod's [[level]] rows, drawn per level in the
+     * Mods list. The registry binds the target row's values at each
+     * registration (openpete_mods_custom_register). */
+    { .id = "custom_level", .label = "Custom level", .section = "Gameplay",
+      .help = "Destination for the custom-level Warp button: a mod's "
+              "[[level]], named <mod id>/<level name>.",
+      .type = KNOB_ENUM, .mut = KNOB_LIVE,
+      .get_num = custom_level_get, .set_num = custom_level_set,
+      .visible = custom_visible,
+      .default_note = "the first custom level in name order",
+      .replay = KNOB_REPLAY_FOLLOW, .flags = KNOB_FLAG_CONTENT_TOKENS },
+
+    { .id = "custom_level_mode", .label = "Custom level serving", .section = "Gameplay",
+      .help = "How the selected custom level is served: from its own level "
+              "slot, or over its donor level's own entry. Applies on the next "
+              "tick.",
+      .type = KNOB_ENUM, .mut = KNOB_LIVE, ENUM_ROW_D(k_custom_mode_names),
+      .get_num = custom_mode_get, .set_num = custom_mode_set,
+      .visible = custom_visible,
+      .default_note = "the level's replace setting in its mod.toml",
+      .replay = KNOB_REPLAY_FOLLOW },
+
+    { .id = "custom_level_go", .label = "Warp to custom level", .section = "Gameplay",
+      .help = "Load the selected custom level, on the next tick. Enabled while "
+              "its files were found and its mod is enabled.",
+      .type = KNOB_ACTION, .mut = KNOB_LIVE,
+      .get_num = custom_go_ready, .set_num = custom_go_fire,
+      .get_str = custom_go_status, .visible = custom_visible,
+      .action_label = "Warp" },
 
     /* A movie drives the pad, so it belongs with what shapes the session
      * rather than with the video-capture rows it used to sit among. */
@@ -2324,6 +2579,7 @@ static const knob_desc_t g_builtin[] = {
       "on the next recorded frame.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       get_stored, recfps_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_HOST, .effect = KNOB_EFFECT_PRESENTATION,
       .visible = recording_visible, .build_cond = "OPENPETE_HAS_LIBAV",
       .default_note = "env OPENPETE_FPS_IN_RECORD, else 0",
       .help_arg = "0|1", .help_order = 80,
@@ -2395,6 +2651,7 @@ static const knob_desc_t g_builtin_debug[] = {
       "REPLACES all boot rules with the typed spec (empty = *:info).",
       KNOB_STRING, KNOB_LIVE, NULL, 0, 0, 0,
       NULL, NULL, loglevel_get_str, loglevel_set_str, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_HOST, .effect = KNOB_EFFECT_PRESENTATION,
       .help_arg = "SPEC", .help_order = 140,
       .help_text = "e.g. cd:debug,*:info; env OPENPETE_LOG=..." },
 
@@ -2419,6 +2676,7 @@ static const knob_desc_t g_builtin_debug[] = {
       "unchanged. Native renderer only.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       hide_hud_get, hide_hud_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
       .def_str = "0",
       .help_arg = "0|1", .help_order = 112,
       .help_text = "1 = draw the scene without the HUD: the flat 2D HUD layer and\n"
@@ -2472,6 +2730,7 @@ static const knob_desc_t g_builtin_debug[] = {
       "effect on the next line.",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_logfmt_names), 0, 0,
       logfmt_get, logfmt_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_HOST, .effect = KNOB_EFFECT_PRESENTATION,
       .device_creation = 2,
       .help_arg = "json|plain", .help_order = 130,
       .help_text = "structured stderr (default plain)" },
@@ -2965,6 +3224,7 @@ static const knob_desc_t g_builtin_debug[] = {
       "tests/freecam/fill-tags.verdicts; verdicts land in a session file.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       fillpick_get, fillpick_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
       .key_action = "fillpick" },
 
     { "fillpick_preview", "Fill-tag preview", "Debug", NULL, "OPENPETE_FILLPICK_PREVIEW",
@@ -2973,7 +3233,29 @@ static const knob_desc_t g_builtin_debug[] = {
       "face that should be filling a hole is found before it is tagged.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       fillpick_prev_get, fillpick_prev_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION,
       .key_action = "fillpick_preview" },
+
+    { .id = "fillpick_fill", .label = "Fill-tag FILL", .section = "Debug",
+      .help = "Mark the face under the inspector's crosshair FILL.",
+      .type = KNOB_ACTION, .mut = KNOB_LIVE, .get_num = fpmark_ready, .set_num = fpfill_fire,
+      .action_label = "FILL", .key_action = "fillpick_fill",
+      .effect = KNOB_EFFECT_PRESENTATION },
+    { .id = "fillpick_nofill", .label = "Fill-tag NOFILL", .section = "Debug",
+      .help = "Mark the face under the inspector's crosshair NOFILL.",
+      .type = KNOB_ACTION, .mut = KNOB_LIVE, .get_num = fpmark_ready, .set_num = fpnofill_fire,
+      .action_label = "NOFILL", .key_action = "fillpick_nofill",
+      .effect = KNOB_EFFECT_PRESENTATION },
+    { .id = "fillpick_none", .label = "Fill-tag clear", .section = "Debug",
+      .help = "Clear the session verdict of the face under the inspector's crosshair.",
+      .type = KNOB_ACTION, .mut = KNOB_LIVE, .get_num = fpmark_ready, .set_num = fpnone_fire,
+      .action_label = "clear", .key_action = "fillpick_none",
+      .effect = KNOB_EFFECT_PRESENTATION },
+    { .id = "fillpick_undo", .label = "Fill-tag undo", .section = "Debug",
+      .help = "Undo the inspector's newest session verdict.",
+      .type = KNOB_ACTION, .mut = KNOB_LIVE, .get_num = fpundo_ready, .set_num = fpundo_fire,
+      .action_label = "undo", .key_action = "fillpick_undo",
+      .effect = KNOB_EFFECT_PRESENTATION },
 
     ENVROW_LATCHED("ACTOR_OWN_KEY", "Debug", "1",
         "Actor faces contest only other mobys' keys (0 = own keys too)."),
@@ -3151,7 +3433,8 @@ static const knob_desc_t g_builtin_debug[] = {
       .env = "OPENPETE_TERRAIN_DRAIN_SKIP",
       .help = "Terrain sub-cell key packing, taken at each walk: 1 = a skipped sub-cell carries the sentinel key; 0 = it is keyed at the face's least key and drawn (default 1).",
       .type = KNOB_BOOL, .mut = KNOB_LIVE, .get_num = drainskip_get, .set_num = drainskip_set,
-      .boot_src = KNOB_SRC_DEFAULT, .def_str = "on" },
+      .boot_src = KNOB_SRC_DEFAULT, .def_str = "on",
+      .replay = KNOB_REPLAY_RENDER, .effect = KNOB_EFFECT_PRESENTATION },
     ENVROW_LATCHED("TERRAIN_ENVMODEL", "Debug", "1",
         "The walker model drives a sector's HP banks on a tick the game's walkers skipped it (default 1; 0 = the older pose in memory draws)."),
     ENVROW_LATCHED("TERRAIN_FANOUT_MIN", "Debug", "400",
@@ -3372,9 +3655,21 @@ static const char *knob_name_clash(const knob_desc_t *row) {
     return NULL;
 }
 
+int knob_needs_replay_class(const knob_desc_t *k) {
+    if (!k || k->mut != KNOB_LIVE || k->type == KNOB_ACTION) return 0;
+    return !(k->env && !k->cli && k->type == KNOB_STRING);
+}
+
 int openpete_knob_add(const knob_desc_t *row) {
     if (!row) return -1;
     rows_init();
+    /* The bug-report replay reads the class off the row; a live value row
+     * without one would leave the replay's choice undecided. */
+    if (knob_needs_replay_class(row) && row->replay == KNOB_REPLAY_UNSET) {
+        OPL_WARN_F("knobs", "row \"%s\" refused: a live row declares its replay class",
+                   row->id ? row->id : "?");
+        return -1;
+    }
     /* One row per name: a second row under an id, flag or env var collides in
      * the overlay's ID scope and in the config resolver's lookup by name. */
     const char *clash = knob_name_clash(row);

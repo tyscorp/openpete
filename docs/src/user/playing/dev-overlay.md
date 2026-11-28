@@ -66,7 +66,7 @@ it.
 | --- | --- |
 | Display | Fullscreen, Aspect ratio, Render FPS, [Interpolate](../graphics/smoothness.md#interpolation), Field of view, Supersampling, VSync, Performance stats (level and position), Vertex precision, Raster quantize, Color depth, Texture mapping, LOD, Fog |
 | Display, Advanced (collapsed) | [Cadence](../graphics/smoothness.md#cadence), Notifications (on, position, timeout), Fog scale, Render mode, Terrain GPU cache, Sector visibility, Render paths |
-| Gameplay | Freecam, [Savestate](saves.md#savestates), Tick scale, Pause sim, Runahead, Rewind, Level warp, Area warp (Spyro 3) |
+| Gameplay | Freecam, [Freecam speed](practice-tools.md#free-camera), [Teleport player](practice-tools.md#teleport), [Savestate](saves.md#savestates), Tick scale, Pause sim, [Turbo](practice-tools.md#fast-forward), Runahead, Rewind, [Rewind ticks](saves.md#rewind), [Screenshot](recording.md#screenshots), [Bug report](../help/reporting-a-bug.md#the-bug-report-zip), [Quit](controls.md#openpete-keys), Level warp, Area warp (Spyro 3) |
 | Gameplay, Cheats (collapsed) | one button per cheat, on games that have them |
 | Audio (collapsed) | Mute, SFX volume, Music volume |
 | Input (collapsed) | Vibration, Pad while unfocused, Mouse sensitivity |
@@ -233,7 +233,17 @@ mods; the **Open folder** button at the line's right end opens the mods
 folder in the file manager, creating it when it is missing. With no mod
 installed the tab shows only that line and button. A mod that registers its own controls shows
 them under its name. A mod that adds levels lists each with a **Warp**
-button. See [Mods](../customizing/mods.md).
+button <!-- id: knob:custom_level_go home --> and a serving list
+<!-- id: knob:custom_level_mode home -->. **Warp** makes that level the
+custom-level destination, named `<mod id>/<level name>`
+<!-- id: knob:custom_level home -->, and loads it on the next tick; it is
+disabled while the level's files are missing or its mod is disabled. The
+serving list picks **own slot** (the level time-shares the free level slot)
+or **replace donor** (the level serves over its donor level's own entry) on
+the next tick; the default is the level's `replace` setting in its mod's
+`mod.toml` <!-- id: knob:custom_level_mode -->. The destination starts at the
+first custom level in name order <!-- id: knob:custom_level -->. See
+[Mods](../customizing/mods.md).
 
 ## The I and L keys
 

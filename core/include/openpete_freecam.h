@@ -63,6 +63,35 @@ bool openpete_freecam_active(void);
  * @return false when the engage was refused, else true. */
 bool openpete_freecam_toggle(void);
 
+/** @brief Request the free camera engaged or disengaged from any thread; the host loop applies it at its camera site.
+ *
+ * The request names the wanted state, so a repeat before it is applied
+ * changes nothing and a state already in force is a no-op when applied.
+ * A later request replaces an earlier one. The applying toggle keeps every
+ * rule openpete_freecam_toggle has, the bk2 refusal included.
+ * @param on true to engage, false to disengage. */
+void openpete_freecam_request_active(bool on);
+
+/** @brief Take and clear the pending engage request.
+ *
+ * @return 1 for engage, 0 for disengage, -1 when none is pending. */
+int openpete_freecam_take_active_request(void);
+
+/** @brief Report the pending engage request without taking it.
+ *
+ * @return 1 for engage, 0 for disengage, -1 when none is pending. */
+int openpete_freecam_pending_active(void);
+
+/** @brief Request a speed step from any thread; the host loop applies it at its camera site.
+ *
+ * @param step The step, clamped to [0, OPENPETE_FREECAM_SPEED_STEPS) when applied. */
+void openpete_freecam_request_speed(int step);
+
+/** @brief Take and clear the pending speed step request.
+ *
+ * @return The requested step, or -1 when none is pending. */
+int openpete_freecam_take_speed_request(void);
+
 /** @brief Report whether a bk2 movie is replaying or recording.
  *
  * @return The flag the run loop last set through openpete_bk2_set_active. */
@@ -134,8 +163,8 @@ unsigned openpete_freecam_engage_generation(void);
 
 /** @brief Request that the player be moved to the free camera's position (the T-key edge).
  *
- * Ignored while disengaged. The host loop latches the request; the game
- * side takes it on the next tick, since it needs the game fiber to read the
+ * Ignored while disengaged; callable from any thread. The host loop or the
+ * dev overlay latches the request; the game side takes it on the next tick, since it needs the game fiber to read the
  * camera and write the player, and disengages the free camera as part of
  * applying it. A toggle before the request is taken drops it. */
 void openpete_freecam_request_teleport(void);
@@ -156,3 +185,9 @@ int openpete_freecam_speed_index(void);
  * Logs the new step when it changed.
  * @param dir Positive steps up, negative steps down, 0 does nothing. */
 void openpete_freecam_adjust_speed(int dir);
+
+/** @brief Set the speed step, clamped to the step range.
+ *
+ * Logs the new step when it changed.
+ * @param step The step. */
+void openpete_freecam_set_speed(int step);

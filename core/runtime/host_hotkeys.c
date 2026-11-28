@@ -47,6 +47,15 @@ void openpete_sim_pause_request(int on) { SDL_SetAtomicInt(&s_pause_req, on ? 1 
 void openpete_sim_step_request(void)    { SDL_SetAtomicInt(&s_step_req, 1); }
 int  openpete_sim_paused(void)          { return SDL_GetAtomicInt(&s_paused_shown); }
 
+/* The turbo row's hold, ORed with the turbo key by openpete_turbo_held. */
+static SDL_AtomicInt s_turbo_row;
+
+void openpete_turbo_hold(int on) { SDL_SetAtomicInt(&s_turbo_row, on ? 1 : 0); }
+int  openpete_turbo_held(void)
+{
+    return openpete_key_down(OPK_TURBO) || SDL_GetAtomicInt(&s_turbo_row) != 0;
+}
+
 /* Scripted pause for windowed harnesses, OPENPETE_PAUSE_AT_VBL=N[,M[,K]]:
  * pause at VBL N through the dev overlay's pause request (the pause key's
  * path), then, after every M paused idle iterations (each one repaints the
@@ -366,7 +375,7 @@ void host_hotkeys_toggles(bool split)
      * eager is engaged, so it runs beside the --screenshot-on-frame
      * dumps later this iteration, under the same handoff. */
     if (openpete_key_pressed(OPK_SCREENSHOT))
-        host_present_request_screenshot();
+        openpete_screenshot_request();
 
     /* Live on/off A/B for interpolation itself. Off = intermediate
      * renders present the lagged frame unchanged (a clean "is
@@ -490,9 +499,32 @@ static void camera_axes_latch(void)
         openpete_freecam_adjust_speed(+1);
 }
 
+/** @brief Apply the free camera's and the camera lock's pending row requests, in that order, then the speed step request.
+ *
+ * Each engage or disengage request applies only when it differs from the
+ * current state, through the same toggles the F and G keys use, so the bk2
+ * refusal, the taint, the rewind clear and the lock's free camera
+ * disengage are the keys'. */
+static void camera_requests_apply(void)
+{
+    const int fc = openpete_freecam_take_active_request();
+    if (fc >= 0 && (fc != 0) != openpete_freecam_active())
+        openpete_freecam_toggle();
+    const int cl = openpete_camlock_take_request();
+    if (cl >= 0 && (cl != 0) != openpete_camlock_active()) {
+        if (cl && openpete_freecam_active())
+            openpete_freecam_toggle();   /* the two share the fly axes */
+        openpete_camlock_toggle();
+    }
+    const int sp = openpete_freecam_take_speed_request();
+    if (sp >= 0) openpete_freecam_set_speed(sp);
+}
+
 /* Documented at the declaration in host_hotkeys.h. */
 void host_hotkeys_camera(void)
 {
+    camera_requests_apply();
+
     /* Debug free camera. While engaged: the fly keys / left stick
      * move, the look keys / right stick aim, rise+descend raise and
      * lower, the speed keys / triggers step the speed, and teleport

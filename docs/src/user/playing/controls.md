@@ -60,6 +60,9 @@ PlayStation pad's Start or Select. The other OpenPete actions have no
 controller binding by default; [Key bindings](../customizing/key-bindings.md)
 adds one, for example `savestate_save = ["1", "hold:pad:r3"]`.
 
+The dev overlay's **Quit** button <!-- id: knob:quit home --> quits the game
+as the quit key does.
+
 ++alt+enter++ is fixed. The rebindable `fullscreen` action is a second,
 single-key route to the same toggle and is unbound by default
 <!-- id: key:host.fullscreen home -->.

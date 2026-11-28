@@ -14,6 +14,7 @@
 #include "openpete_bugrec.h" /* openpete_bugrec_warp, openpete_bugrec_hold */
 #include "openpete_bugreport_replay.h" /* openpete_bugreport_replay_warp_take */
 #include "openpete_fiber.h" /* openpete_speculative */
+#include "openpete_knobs.h" /* openpete_knob_bind_vocab: the custom_level row */
 #include "openpete_log.h"
 #include "openpete_rewind.h" /* openpete_rewind_note_intervention */
 #include "mod_vec.h"
@@ -589,6 +590,38 @@ static void custom_order_insert(int row, const char* name) {
     *(int*)mod_fvec_at(&s_custom_order, (size_t)at) = row;
 }
 
+/* The custom_level row's values, `<mod id>/<level name>` in name order,
+ * and their count. Rebuilt at each registration; registration runs at boot,
+ * before the dev overlay or the bug-report sampler reads the row, and the
+ * atomics publish the array to those threads. */
+static _Atomic(char**) s_custom_tokens;
+static atomic_int      s_custom_token_n;
+
+/** @brief Rebuild the custom_level row's values from the name order and bind them to the row.
+ *
+ * On an allocation failure the row keeps its previous values. */
+static void custom_tokens_bind(void) {
+    const int n = custom_count();
+    char** t = (char**)calloc((size_t)n, sizeof *t);
+    if (!t) return;
+    for (int i = 0; i < n; i++) {
+        const custom_level_t* r = custom_at(order_row(i));
+        const size_t len = strlen(r->mod_id) + 1 + strlen(r->name) + 1;
+        t[i] = (char*)malloc(len);
+        if (!t[i]) {
+            for (int j = 0; j < i; j++) free(t[j]);
+            free(t);
+            return;
+        }
+        snprintf(t[i], len, "%s/%s", r->mod_id, r->name);
+    }
+    (void)openpete_knob_bind_vocab("custom_level", (const char* const*)t, n);
+    char** old = atomic_exchange(&s_custom_tokens, t);
+    const int old_n = atomic_exchange(&s_custom_token_n, n);
+    for (int i = 0; old && i < old_n; i++) free(old[i]);
+    free(old);
+}
+
 /* Documented at the declaration in openpete_mods.h. */
 int openpete_mods_custom_register(const char* mod_id, const char* name,
                                   const char* stem, const char* dir,
@@ -637,6 +670,7 @@ int openpete_mods_custom_register(const char* mod_id, const char* name,
         return -1;
     }
     custom_order_insert(row, name);
+    custom_tokens_bind();
     OPL_INFO_F(log_tag, "custom level \"%s\" registered (donor %d%s)",
                name, donor_id, replace ? ", replace" : "");
     return 0;

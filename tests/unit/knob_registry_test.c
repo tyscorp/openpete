@@ -12,6 +12,8 @@
 #include "openpete.h"
 #include "openpete_knobs.h"
 #include "openpete_config.h"
+#include "openpete_fillpick.h"
+#include "openpete_mods.h"
 #include "../../core/config/config_schema.h"
 
 #include <math.h>
@@ -165,6 +167,31 @@ void   openpete_log_set_spec(const char *s)    { (void)s; }
 void   openpete_logf(int lvl, const char *sub, const char *fmt, ...) {
     (void)lvl; (void)sub; (void)fmt;
 }
+
+/* The host-action, fill-tag verdict and custom-level rows' channels. */
+void   openpete_screenshot_request(void)       { }
+void   openpete_bugreport_request(void)        { }
+void   openpete_request_shutdown(void)         { }
+void   openpete_launcher_return_cancel(void)   { }
+void   openpete_freecam_request_teleport(void) { }
+void   openpete_freecam_request_active(bool on) { (void)on; }
+int    openpete_freecam_pending_active(void)   { return -1; }
+int    openpete_freecam_speed_index(void)      { return 2; }
+void   openpete_freecam_request_speed(int s)   { (void)s; }
+void   openpete_camlock_request(bool on)       { (void)on; }
+void   openpete_turbo_hold(int on)             { (void)on; }
+int    openpete_turbo_held(void)               { return 0; }
+int    openpete_rewind_hold_request(int t)     { (void)t; return 0; }
+int    openpete_rewind_hold_value(void)        { return 0; }
+void   openpete_fillpick_mark(int verdict)     { (void)verdict; }
+void   openpete_fillpick_undo(void)            { }
+int    openpete_fillpick_get(openpete_fillpick_hit *out) { (void)out; return 0; }
+int    openpete_fillpick_count(void)           { return 0; }
+int    openpete_mods_custom_count(void)        { return 0; }
+int    openpete_mods_custom_info(int i, openpete_mods_custom_info_t *out) { (void)i; (void)out; return 0; }
+int    openpete_mods_custom_warp(int i)        { (void)i; return 0; }
+void   openpete_mods_custom_set_mode(int i, int r) { (void)i; (void)r; }
+int    openpete_mods_is_enabled(const char *id) { (void)id; return 0; }
 
 /* ---- the action row under test ---- */
 
@@ -409,6 +436,38 @@ static int duplicate_add_refused(void) {
     return names_unique();
 }
 
+/** @brief Check the two class fields across the table: every live value row that is not a variable row declares its replay class, every replay-render row is presentation, and a contributed row without a class is refused.
+ * @return 0 on pass, else 1. */
+static int classes_declared(void) {
+    int rc = 0;
+    size_t n0;
+    const knob_desc_t *ks = knob_registry(&n0);
+    for (size_t i = 0; i < n0; i++) {
+        if (knob_needs_replay_class(&ks[i]) && ks[i].replay == KNOB_REPLAY_UNSET) {
+            rc |= fail("a live value row declares no replay class");
+            fprintf(stderr, "       %s\n", ks[i].id);
+        }
+        if (ks[i].replay == KNOB_REPLAY_RENDER && ks[i].effect != KNOB_EFFECT_PRESENTATION) {
+            rc |= fail("a replay-render row is not presentation");
+            fprintf(stderr, "       %s\n", ks[i].id);
+        }
+    }
+    knob_desc_t row = {0};
+    row.id = "test_unclassified";
+    row.label = "Unclassified";
+    row.section = "Gameplay";
+    row.type = KNOB_BOOL;
+    row.mut = KNOB_LIVE;
+    if (openpete_knob_add(&row) != -1) rc |= fail("a live row with no replay class was added");
+    row.env = "OPENPETE_TEST_UNCLASSIFIED";
+    row.type = KNOB_STRING;
+    if (openpete_knob_add(&row) != 0) rc |= fail("a variable row was refused for its derived class");
+    size_t n1;
+    (void)knob_registry(&n1);
+    if (n1 != n0 + 1) rc |= fail("the class refusal changed the row count");
+    return rc;
+}
+
 int main(void) {
     int rc = 0;
 
@@ -446,6 +505,7 @@ int main(void) {
             rc |= fail("row landed before the section's last built-in");
     }
     if (!sections_contiguous()) rc |= fail("insertion split a section run");
+    rc |= classes_declared();
 
     /* Boot stamping must leave an action row alone: it has no value, and a
      * stamped boot_num would make the overlay render it as "edited". */

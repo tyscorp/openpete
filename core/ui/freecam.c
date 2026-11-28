@@ -15,7 +15,11 @@
 static bool                  s_active      = false;
 static openpete_freecam_axes s_axes        = {0};
 static int                   s_speed_index = 2;   /* "normal" (middle step) */
-static bool                  s_teleport_req = false;
+static atomic_bool           s_teleport_req = false;
+/* Pending engage request: -1 none, 0 disengage, 1 engage. */
+static atomic_int            s_active_req = -1;
+/* Pending speed step request: -1 none, else the step. */
+static atomic_int            s_speed_req = -1;
 
 bool openpete_freecam_active(void) { return s_active; }
 
@@ -54,7 +58,7 @@ bool openpete_freecam_toggle(void) {
     memset(&s_axes, 0, sizeof s_axes);
     /* A request only makes sense against the pose that was on screen when it
      * was made, so it never survives a toggle in either direction. */
-    s_teleport_req = false;
+    atomic_store(&s_teleport_req, false);
     if (s_active) {
         OPL_INFO_F("freecam",
                    "ON - WASD move, arrows look, Space/LShift up/down, "
@@ -87,14 +91,20 @@ void openpete_freecam_look_counts(long long* x, long long* y) {
 }
 
 void openpete_freecam_request_teleport(void) {
-    if (s_active) s_teleport_req = true;
+    if (s_active) atomic_store(&s_teleport_req, true);
 }
 
 bool openpete_freecam_take_teleport_request(void) {
-    bool req = s_teleport_req;
-    s_teleport_req = false;
-    return req;
+    return atomic_exchange(&s_teleport_req, false);
 }
+
+void openpete_freecam_request_active(bool on) { atomic_store(&s_active_req, on ? 1 : 0); }
+int  openpete_freecam_take_active_request(void) { return atomic_exchange(&s_active_req, -1); }
+int  openpete_freecam_pending_active(void) { return atomic_load(&s_active_req); }
+void openpete_freecam_request_speed(int step) {
+    atomic_store(&s_speed_req, step < 0 ? 0 : step);
+}
+int  openpete_freecam_take_speed_request(void) { return atomic_exchange(&s_speed_req, -1); }
 
 int openpete_freecam_speed_index(void) {
     if (s_speed_index < 0) return 0;
@@ -104,7 +114,10 @@ int openpete_freecam_speed_index(void) {
 }
 
 void openpete_freecam_adjust_speed(int dir) {
-    int n = s_speed_index + (dir > 0 ? 1 : (dir < 0 ? -1 : 0));
+    openpete_freecam_set_speed(s_speed_index + (dir > 0 ? 1 : (dir < 0 ? -1 : 0)));
+}
+
+void openpete_freecam_set_speed(int n) {
     if (n < 0) n = 0;
     if (n >= OPENPETE_FREECAM_SPEED_STEPS) n = OPENPETE_FREECAM_SPEED_STEPS - 1;
     if (n != s_speed_index) {

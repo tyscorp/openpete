@@ -125,11 +125,13 @@ int openpete_bugknobs_is_env(const struct knob_desc* k);
 
 /** @brief Name a registry row's replay class: action, latched, env, host, sim, follow or render.
  *
- * A fixed table names the live rows the replay leaves to its own options
- * (host), to the sim's timeline (sim) or to game state (follow); every
- * other live row writes renderer state and is render, the only class
- * --bug-report-replay applies. knobs.txt records it for the reader; the
- * replay classifies this build's own row rather than reading it back.
+ * Action, restart-only and OPENPETE_* variable rows derive theirs; every
+ * other live row declares it in knob_desc_t.replay (knob_replay_t): the
+ * replay leaves host rows to its own options, sim rows to the sim's
+ * timeline and follow rows to game state, and applies render rows only.
+ * An undeclared class reads "unset", which the replay never applies.
+ * knobs.txt records it for the reader; the replay classifies this build's
+ * own row rather than reading it back.
  * @param k The row.
  * @return The class word (static). */
 const char* openpete_bugknobs_class(const struct knob_desc* k);

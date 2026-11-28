@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 84933f514422ee433607d9c3449fb32a23140759
+# head: 314d4848e1cd49c7b4ec1d054473de8c0e809854
 file	function	score	marked	accepted
 core/config/config.c	materialize	32	0	
 core/config/config.c	openpete_config_report	42	0	
@@ -71,7 +71,6 @@ core/runtime/run.c	gameplay_hash_compute_ex	81	0
 core/runtime/run.c	run_host_init	80	0	
 core/runtime/run.c	run_on_sim	38	0	
 core/runtime/run.c	stamp_psx_pad_bindings	44	0	
-core/ui/devui.cpp	draw_custom_level_rows	26	0	
 core/ui/devui.cpp	draw_mod_config_rows	76	0	
 core/ui/devui.cpp	draw_mod_row	26	0	
 core/ui/openpete_menu.c	openpete_menu_mouse_poll	52	0	

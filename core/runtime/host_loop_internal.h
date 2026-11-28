@@ -231,9 +231,6 @@ bool host_world_live(const host_session_t* S, const host_iter_t* it, op_time_t n
  * @param kind OP_PACE_CANONICAL, OP_PACE_INTERMEDIATE or OP_PACE_REPEAT (equal to the OP_PROF_* kinds). */
 void present_record_shown(openpete_frame_time_log_t* ftl, int kind);
 
-/** @brief Raise the player screenshot request the next canonical present takes. */
-void host_present_request_screenshot(void);
-
 /** @brief Log the eager-production totals, the count of sub-tick re-extracts presented, eager and inline, and the headless forced re-extract's row. */
 void host_present_exit_report(void);
 

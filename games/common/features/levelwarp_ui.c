@@ -129,7 +129,8 @@ const knob_desc_t levelwarp_level_rows[2] = {
       .help = "Destination for the Warp button. Follows the level you "
               "are in until you pick something.",
       .type = KNOB_ENUM, .mut = KNOB_LIVE,
-      .default_note = "the level the player is in" },
+      .default_note = "the level the player is in",
+      .replay = KNOB_REPLAY_FOLLOW },
     { .id = "warp_go", .label = "Warp to level", .section = "Gameplay",
       .help = "Load the selected level through the game's own level "
               "transition. From the title screen, its menu or the attract "
